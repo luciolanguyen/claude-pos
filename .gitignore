@@ -1,0 +1,25 @@
+# Thư viện cài từ npm
+node_modules/
+
+# Giao diện đã build — tạo lại bằng: npm run build
+dist/
+
+# Cơ sở dữ liệu của cửa hàng — KHÔNG đưa lên git.
+# Chứa toàn bộ hoá đơn, khách hàng, công nợ thật của tiệm.
+# Tạo lại dữ liệu mẫu bằng: npm run seed
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# File sao lưu tải về từ phần mềm
+saoluu-pos-*.json
+
+# Log và file tạm
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Cấu hình công cụ soạn thảo, không thuộc mã nguồn dự án
+.claude/

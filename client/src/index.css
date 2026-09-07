@@ -1,0 +1,231 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==================================================================
+   Design tokens — Flat design, nền slate công nghiệp + xanh kho hàng.
+   Đổi --accent ở đây là đổi màu chủ đạo toàn bộ phần mềm.
+   ================================================================== */
+@layer base {
+  :root {
+    --primary: 51 65 85;        /* #334155 slate-700 */
+    --accent: 4 120 87;         /* #047857 emerald-700 — trắng trên nền này đạt 5.5:1 */
+    --accent-soft: 209 250 229; /* #D1FAE5 */
+    --surface: 248 250 252;     /* #F8FAFC */
+    --card: 255 255 255;
+    --ink: 15 23 42;            /* #0F172A */
+    --muted: 241 245 249;       /* #F1F5F9 */
+    --muted-ink: 71 85 105;     /* #475569 — 7.1:1 trên nền surface */
+    --line: 226 232 240;        /* #E2E8F0 */
+    --danger: 220 38 38;        /* #DC2626 — 4.8:1 với chữ trắng */
+    --warn: 180 83 9;           /* #B45309 — 4.6:1 với chữ trắng */
+    --info: 29 78 216;          /* #1D4ED8 */
+    color-scheme: light;
+  }
+
+  * {
+    @apply border-line;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  /* Bàn phím luôn phải thấy được vị trí đang đứng */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-1 ring-offset-surface;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display font-semibold text-ink;
+  }
+
+  /* Số tiền, mã hàng: dùng font đều nét cho dễ dò cột */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* Ẩn nút tăng giảm mặc định của input number */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-line rounded-full border-2 border-solid border-transparent bg-clip-content;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgb(var(--muted-ink) / 0.4); background-clip: content-box; }
+}
+
+@layer components {
+  /* ---------------- Nút bấm ---------------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded font-semibold
+           whitespace-nowrap transition-colors duration-150 cursor-pointer
+           disabled:opacity-50 disabled:cursor-not-allowed select-none;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+  .btn-lg { min-height: 44px; padding: 0 18px; font-size: 15px; }
+  .btn-sm { min-height: 30px; padding: 0 9px; font-size: 13px; }
+  /* Nút chạm trên máy tính bảng ở quầy: tối thiểu 44px */
+  .btn-touch { min-height: 44px; min-width: 44px; }
+
+  .btn-primary   { @apply btn bg-accent text-white hover:bg-emerald-800 active:bg-emerald-900; }
+  .btn-secondary { @apply btn bg-primary text-white hover:bg-slate-800 active:bg-slate-900; }
+  .btn-outline   { @apply btn bg-card text-ink border border-line hover:bg-muted active:bg-slate-200; }
+  .btn-ghost     { @apply btn bg-transparent text-muted-ink hover:bg-muted hover:text-ink; }
+  .btn-danger    { @apply btn bg-danger text-white hover:bg-red-700 active:bg-red-800; }
+  .btn-soft      { @apply btn bg-accent-soft text-emerald-900 hover:bg-emerald-200; }
+
+  /* ---------------- Ô nhập ---------------- */
+  .field {
+    @apply w-full rounded border border-line bg-card px-2.5 text-ink
+           placeholder:text-slate-400 transition-colors duration-150
+           focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25
+           disabled:bg-muted disabled:text-muted-ink;
+    height: 36px;
+  }
+  .field-lg { height: 44px; @apply text-base px-3; }
+  .field-sm { height: 30px; @apply text-[13px] px-2; }
+  textarea.field { height: auto; @apply py-2 leading-relaxed; }
+  select.field { @apply pr-8 cursor-pointer appearance-none bg-no-repeat;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 8px center;
+  }
+
+  .label { @apply block text-[13px] font-semibold text-muted-ink mb-1; }
+  .hint  { @apply text-2xs text-muted-ink mt-1; }
+  .error-text { @apply text-2xs text-danger mt-1 font-semibold; }
+
+  /* ---------------- Thẻ / bảng ---------------- */
+  .card { @apply bg-card border border-line rounded-lg; }
+  .card-pad { @apply card p-4; }
+
+  .table-wrap { @apply overflow-x-auto rounded-lg border border-line bg-card; }
+  table.data { @apply w-full text-[13px] border-collapse; }
+  table.data thead th {
+    @apply sticky top-0 z-10 bg-muted text-muted-ink font-bold text-left
+           px-2.5 py-2 border-b border-line whitespace-nowrap text-2xs uppercase tracking-wide;
+  }
+  table.data tbody td { @apply px-2.5 py-1.5 border-b border-line/70 align-middle; }
+  table.data tbody tr:last-child td { @apply border-b-0; }
+  table.data tbody tr { @apply transition-colors duration-100; }
+  table.data tbody tr.hoverable:hover { @apply bg-muted/70; }
+  table.data tbody tr.clickable { @apply cursor-pointer; }
+  table.data tfoot td { @apply px-2.5 py-2 font-bold bg-muted border-t-2 border-line; }
+  .num { @apply text-right tabular font-mono; }
+
+  /* ---------------- Nhãn trạng thái ---------------- */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-bold
+           whitespace-nowrap leading-tight;
+  }
+  .badge-ok   { @apply badge bg-emerald-100 text-emerald-800; }
+  .badge-warn { @apply badge bg-amber-100 text-amber-900; }
+  .badge-bad  { @apply badge bg-red-100 text-red-800; }
+  .badge-info { @apply badge bg-blue-100 text-blue-800; }
+  .badge-mute { @apply badge bg-slate-200 text-slate-700; }
+
+  .kbd {
+    @apply inline-flex items-center justify-center rounded border border-line bg-muted
+           px-1.5 py-0.5 font-mono text-2xs font-semibold text-muted-ink;
+    min-width: 20px;
+  }
+}
+
+/* ==================================================================
+   IN HOÁ ĐƠN — K80 (máy in nhiệt), A5, A4
+   ================================================================== */
+@media screen {
+  .print-area { display: none; }
+}
+
+@media print {
+  body * { visibility: hidden !important; }
+  .print-area, .print-area * { visibility: visible !important; }
+  .print-area {
+    display: block !important;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    background: #fff;
+    color: #000;
+  }
+  .no-print { display: none !important; }
+  @page { margin: 0; }
+}
+
+/* Khổ K80: máy in nhiệt 80mm, vùng in thực 72mm */
+.print-k80 {
+  width: 72mm;
+  font-family: 'Roboto Mono', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2mm 0;
+}
+.print-k80 h1 { font-size: 14px; }
+.print-k80 table { width: 100%; border-collapse: collapse; }
+.print-k80 .dashed { border-top: 1px dashed #000; margin: 5px 0; }
+
+/* Khổ A5 ngang giấy dọc */
+.print-a5 {
+  width: 148mm;
+  min-height: 210mm;
+  padding: 8mm;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Khổ A4 — dùng cho hoá đơn GTGT */
+.print-a4 {
+  width: 210mm;
+  min-height: 297mm;
+  padding: 12mm 14mm;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.print-a4 table, .print-a5 table { width: 100%; border-collapse: collapse; }
+.print-a4 table.lines th, .print-a4 table.lines td,
+.print-a5 table.lines th, .print-a5 table.lines td {
+  border: 1px solid #000;
+  padding: 4px 6px;
+}
+.print-a4 table.lines th, .print-a5 table.lines th {
+  background: #f1f5f9;
+  font-weight: 700;
+  text-align: center;
+}
+
+@media print {
+  @page k80 { size: 80mm auto; }
+  .print-area.size-k80 { width: 72mm; }
+  .print-area.size-a5 { width: 148mm; }
+  .print-area.size-a4 { width: 210mm; }
+}
+
+/* Tôn trọng thiết lập giảm chuyển động của hệ điều hành */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
