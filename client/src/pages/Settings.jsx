@@ -19,6 +19,7 @@ const TABS = [
   { key: 'prices', label: 'Bảng giá' },
   { key: 'warehouses', label: 'Kho hàng' },
   { key: 'carriers', label: 'Vận chuyển' },
+  { key: 'warranty', label: 'Bảo hành' },
   { key: 'users', label: 'Người dùng' },
   { key: 'data', label: 'Dữ liệu & sao lưu' },
 ];
@@ -42,6 +43,7 @@ export default function Settings() {
         {tab === 'prices' && <PriceLists />}
         {tab === 'warehouses' && <Warehouses />}
         {tab === 'carriers' && <Carriers />}
+        {tab === 'warranty' && <WarrantySettings />}
         {tab === 'users' && <UsersTab />}
         {tab === 'data' && <DataTab />}
       </Page>
@@ -551,6 +553,137 @@ function Warehouses() {
           toast('Đã lưu kho hàng', 'ok');
         }}
       />
+    </div>
+  );
+}
+
+/* ==================================================================== */
+
+function WarrantySettings() {
+  const { settings, saveSettings, toast } = useApp();
+  const [form, setForm] = useState({ keep_days: 30, photo_keep_days: 37 });
+  const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const { data: usage, reload: reloadUsage } = useFetch(() => api.photoUsage(), []);
+
+  useEffect(() => {
+    setForm({
+      keep_days: Number(settings?.warranty?.keep_days) || 30,
+      photo_keep_days: Number(settings?.warranty?.photo_keep_days) ?? 37,
+    });
+  }, [settings]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await saveSettings({ warranty: form });
+      toast('Đã lưu thiết lập bảo hành', 'ok');
+      reloadUsage();
+    } catch (e) {
+      toast(e.message, 'bad');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cleanNow = async () => {
+    setCleaning(true);
+    try {
+      const res = await api.post('/warranty/cleanup-photos');
+      toast(res.message, 'ok', 6000);
+      reloadUsage();
+    } catch (e) {
+      toast(e.message, 'bad');
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Giữ hàng khách gửi bảo hành</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Số ngày này in lên biên nhận khách giữ, ở dòng &quot;quá ... ngày không tới nhận,
+          cửa hàng không giữ hàng nữa&quot;.
+        </p>
+        <Field label="Số ngày giữ hàng" className="max-w-xs" htmlFor="wa-keep">
+          <div className="flex items-center gap-2">
+            <Input
+              id="wa-keep"
+              type="number"
+              min="1"
+              value={form.keep_days}
+              onChange={(e) => setForm((x) => ({ ...x, keep_days: Number(e.target.value) || 0 }))}
+            />
+            <span className="text-[13px] text-muted-ink whitespace-nowrap">ngày</span>
+          </div>
+        </Field>
+      </div>
+
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Tự dọn ảnh cũ</h2>
+        <p className="text-[13px] text-muted-ink mb-3 leading-relaxed">
+          Ảnh chụp hàng bảo hành chiếm nhiều ổ cứng nhất. Phần mềm tự xoá ảnh của những
+          phiếu <b>đã trả khách hoặc đã huỷ</b> quá số ngày dưới đây.
+          <br />
+          <b>Ảnh của phiếu đang xử lý không bao giờ bị xoá</b>, dù để lâu bao nhiêu — ảnh là
+          bằng chứng tình trạng máy, mất lúc còn đang sửa thì không còn căn cứ với khách.
+        </p>
+
+        <Field
+          label="Giữ ảnh sau khi đóng phiếu"
+          hint="Đặt 0 nếu muốn giữ ảnh vĩnh viễn"
+          className="max-w-xs"
+          htmlFor="wa-photo"
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              id="wa-photo"
+              type="number"
+              min="0"
+              value={form.photo_keep_days}
+              onChange={(e) => setForm((x) => ({ ...x, photo_keep_days: Number(e.target.value) || 0 }))}
+            />
+            <span className="text-[13px] text-muted-ink whitespace-nowrap">ngày</span>
+          </div>
+        </Field>
+
+        {usage && (
+          <div className="card p-2.5 mt-3 bg-muted/50 text-[13px] space-y-1">
+            <div className="flex justify-between">
+              <span className="text-muted-ink">Ảnh đang lưu</span>
+              <span className="tabular font-semibold">{n(usage.files)} tấm · {usage.text}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-ink">Đang chờ dọn</span>
+              <span className={`tabular font-semibold ${usage.pending_cleanup > 0 ? 'text-warn' : ''}`}>
+                {n(usage.pending_cleanup)} tấm
+              </span>
+            </div>
+            <p className="text-2xs text-muted-ink pt-1">
+              Phần mềm tự dọn khi khởi động và mỗi 24 giờ một lần. Bấm nút dưới để dọn ngay.
+            </p>
+          </div>
+        )}
+
+        <Button className="mt-3" icon={Trash2} onClick={cleanNow} loading={cleaning}
+          disabled={!usage?.pending_cleanup}>
+          Dọn ảnh quá hạn ngay
+        </Button>
+      </div>
+
+      <div className="card-pad bg-amber-50 border-warn/30 text-[13px] flex gap-2.5">
+        <AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="text-amber-900">
+          Ảnh nằm ngoài file sao lưu JSON vì quá nặng. Muốn sao lưu cả ảnh thì chép nguyên
+          thư mục <b>data/</b> sang USB.
+        </p>
+      </div>
+
+      <Button variant="primary" icon={Save} onClick={save} loading={busy}>
+        Lưu thiết lập bảo hành
+      </Button>
     </div>
   );
 }

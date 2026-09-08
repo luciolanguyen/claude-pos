@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   all, get, run, tx, nextCode, moveStock, costOf,
-  addCashTx, defaultCashAccount, WARRANTY_DIR,
+  addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings,
 } from '../db.js';
 
 const r = Router();
@@ -97,6 +97,18 @@ r.get('/warranty', (req, res) => {
     LEFT JOIN sales sa ON sa.id = t.sale_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY t.id DESC LIMIT ${Number(limit)}`, params));
+});
+
+/* Đặt trước /warranty/:id, nếu không Express hiểu "photo-usage" là mã phiếu. */
+r.get('/warranty/photo-usage', (req, res) => {
+  const days = keepPhotoDays();
+  const pending = get(
+    "SELECT COUNT(*) AS n FROM warranty_photos p " +
+    "JOIN warranty_tickets t ON t.id = p.ticket_id " +
+    "WHERE t.status IN ('delivered','cancelled') " +
+    "  AND date(COALESCE(t.delivered_at, t.ts)) < date('now','localtime', '-' || ? || ' days')",
+    [days]).n;
+  res.json({ ...photoDiskUsage(), keep_days: days, pending_cleanup: pending });
 });
 
 r.get('/warranty/:id', (req, res) => {
@@ -552,6 +564,161 @@ r.get('/warranty-summary', (req, res) => {
     WHERE status = 'delivered' AND date(delivered_at) >= date('now','localtime','-29 days')`);
 
   res.json({ counts, open, overdue, at_supplier: atSupplier, last30: money30 });
+});
+
+/* ==================================================================== */
+/* Tự dọn ảnh cũ cho đỡ đầy ổ cứng                                       */
+/*                                                                       */
+/* Chỉ xoá ảnh của phiếu ĐÃ ĐÓNG (trả khách hoặc huỷ) quá số ngày quy    */
+/* định. Ảnh của phiếu đang xử lý giữ nguyên dù để lâu bao nhiêu — ảnh   */
+/* là bằng chứng tình trạng máy, xoá lúc còn đang sửa thì mất căn cứ khi */
+/* khách thắc mắc.                                                       */
+/* ==================================================================== */
+
+const DEFAULT_KEEP_PHOTO_DAYS = 37;
+
+/** Đọc số ngày giữ ảnh. Dùng ?? chứ không dùng ||, vì 0 là giá trị hợp lệ
+    (0 = giữ ảnh vĩnh viễn) mà || lại coi 0 là rỗng rồi rơi về mặc định. */
+function keepPhotoDays() {
+  const v = getSettings()?.warranty?.photo_keep_days;
+  const n = Number(v);
+  return v === undefined || v === null || v === '' || Number.isNaN(n)
+    ? DEFAULT_KEEP_PHOTO_DAYS
+    : n;
+}
+
+
+export function cleanupOldPhotos() {
+  const days = keepPhotoDays();
+  if (days <= 0) return { deleted: 0, freed: 0, days };   // 0 = giữ mãi
+
+  const rows = all(
+    "SELECT p.id, p.file FROM warranty_photos p " +
+    "JOIN warranty_tickets t ON t.id = p.ticket_id " +
+    "WHERE t.status IN ('delivered','cancelled') " +
+    "  AND date(COALESCE(t.delivered_at, t.ts)) < date('now','localtime', '-' || ? || ' days')",
+    [days]);
+
+  let deleted = 0;
+  let freed = 0;
+  for (const row of rows) {
+    const full = path.join(WARRANTY_DIR, path.basename(row.file));
+    try {
+      if (fs.existsSync(full)) { freed += fs.statSync(full).size; fs.unlinkSync(full); }
+      run('DELETE FROM warranty_photos WHERE id = ?', [row.id]);
+      deleted++;
+    } catch { /* file đang bị khoá, lần sau dọn tiếp */ }
+  }
+  if (deleted) {
+    console.log('  [dọn ảnh] xoá ' + deleted + ' ảnh của phiếu đã đóng quá ' + days +
+      ' ngày, giải phóng ' + (freed / 1024 / 1024).toFixed(1) + ' MB');
+  }
+  return { deleted, freed, days };
+}
+
+/** Dung lượng ảnh đang chiếm, để hiện ở màn hình Thiết lập. */
+export function photoDiskUsage() {
+  let bytes = 0;
+  let files = 0;
+  try {
+    for (const name of fs.readdirSync(WARRANTY_DIR)) {
+      try { bytes += fs.statSync(path.join(WARRANTY_DIR, name)).size; files++; }
+      catch { /* file vừa bị xoá */ }
+    }
+  } catch { /* chưa có thư mục */ }
+  return { files, bytes, text: (bytes / 1024 / 1024).toFixed(1) + ' MB' };
+}
+
+/** Dọn ngay theo yêu cầu, không đợi tới lịch. */
+r.post('/warranty/cleanup-photos', (req, res) => {
+  const result = cleanupOldPhotos();
+  res.json({
+    ok: true,
+    ...result,
+    message: result.deleted
+      ? 'Đã xoá ' + result.deleted + ' ảnh, giải phóng ' +
+        (result.freed / 1024 / 1024).toFixed(1) + ' MB.'
+      : 'Không có ảnh nào quá hạn cần dọn.',
+  });
+});
+
+/* ==================================================================== */
+/* Báo cáo bảo hành — chủ tiệm mở ra là biết ai đang chờ lấy hàng         */
+/* ==================================================================== */
+
+r.get('/reports/warranty', (req, res) => {
+  const today = new Date().toLocaleDateString('sv-SE');
+  const from = req.query.from || today.slice(0, 8) + '01';
+  const to = req.query.to || today;
+
+  // Đang chờ khách tới lấy — danh sách cần gọi điện
+  const waiting = all(
+    "SELECT t.id, t.code, t.ts, t.product_name, t.serial, t.promised_at, t.charge, t.paid, " +
+    "       COALESCE(c.name, t.customer_name) AS customer_display, " +
+    "       COALESCE(c.phone, t.customer_phone) AS phone_display, " +
+    "       CAST(julianday('now','localtime') - julianday(t.ts) AS INTEGER) AS days_open " +
+    "FROM warranty_tickets t LEFT JOIN customers c ON c.id = t.customer_id " +
+    "WHERE t.status = 'ready' ORDER BY t.promised_at, t.ts");
+
+  // Toàn bộ phiếu chưa đóng, kèm số ngày trễ hẹn
+  const open = all(
+    "SELECT t.id, t.code, t.ts, t.status, t.product_name, t.promised_at, " +
+    "       COALESCE(c.name, t.customer_name) AS customer_display, " +
+    "       COALESCE(c.phone, t.customer_phone) AS phone_display, " +
+    "       s.name AS supplier_name, t.sent_at, t.expected_at, " +
+    "       CAST(julianday('now','localtime') - julianday(t.ts) AS INTEGER) AS days_open, " +
+    "       CASE WHEN t.promised_at IS NOT NULL " +
+    "            THEN CAST(julianday('now','localtime') - julianday(t.promised_at) AS INTEGER) " +
+    "            ELSE NULL END AS days_late " +
+    "FROM warranty_tickets t " +
+    "LEFT JOIN customers c ON c.id = t.customer_id " +
+    "LEFT JOIN suppliers s ON s.id = t.supplier_id " +
+    "WHERE t.status NOT IN ('delivered','cancelled') ORDER BY t.ts");
+
+  // Đã xong trong kỳ — xem tiền và thời gian sửa
+  const done = all(
+    "SELECT t.id, t.code, t.ts, t.delivered_at, t.product_name, t.resolution, " +
+    "       t.labor_fee, t.parts_cost, t.charge, t.paid, t.refund_amount, t.in_warranty, " +
+    "       COALESCE(c.name, t.customer_name) AS customer_display, " +
+    "       (t.charge - t.parts_cost) AS profit, " +
+    "       CAST(julianday(t.delivered_at) - julianday(t.ts) AS INTEGER) AS days_taken " +
+    "FROM warranty_tickets t LEFT JOIN customers c ON c.id = t.customer_id " +
+    "WHERE t.status = 'delivered' AND date(t.delivered_at) BETWEEN date(?) AND date(?) " +
+    "ORDER BY t.delivered_at DESC", [from, to]);
+
+  // Mặt hàng hay hỏng — biết nên ngưng nhập hàng nào
+  const byProduct = all(
+    "SELECT t.product_name, COUNT(*) AS n, " +
+    "       SUM(CASE WHEN t.in_warranty = 1 THEN 1 ELSE 0 END) AS in_warranty_count, " +
+    "       COALESCE(SUM(t.parts_cost), 0) AS parts_cost, " +
+    "       COALESCE(SUM(t.charge), 0) AS charge " +
+    "FROM warranty_tickets t " +
+    "WHERE t.status != 'cancelled' AND date(t.ts) BETWEEN date(?) AND date(?) " +
+    "GROUP BY t.product_name ORDER BY n DESC, parts_cost DESC LIMIT 30", [from, to]);
+
+  const byResolution = all(
+    "SELECT COALESCE(t.resolution, 'chua_quyet') AS resolution, COUNT(*) AS n " +
+    "FROM warranty_tickets t " +
+    "WHERE t.status = 'delivered' AND date(t.delivered_at) BETWEEN date(?) AND date(?) " +
+    "GROUP BY t.resolution ORDER BY n DESC", [from, to]);
+
+  const totals = {
+    received: get("SELECT COUNT(*) AS n FROM warranty_tickets " +
+      "WHERE date(ts) BETWEEN date(?) AND date(?)", [from, to]).n,
+    done: done.length,
+    waiting: waiting.length,
+    open: open.length,
+    late: open.filter((x) => x.days_late > 0).length,
+    charge: done.reduce((a, x) => a + x.charge, 0),
+    paid: done.reduce((a, x) => a + x.paid, 0),
+    parts: done.reduce((a, x) => a + x.parts_cost, 0),
+    refund: done.reduce((a, x) => a + x.refund_amount, 0),
+    avg_days: done.length
+      ? Math.round(done.reduce((a, x) => a + (x.days_taken || 0), 0) / done.length)
+      : 0,
+  };
+
+  res.json({ from, to, waiting, open, done, by_product: byProduct, by_resolution: byResolution, totals });
 });
 
 export default r;

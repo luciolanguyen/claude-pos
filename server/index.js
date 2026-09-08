@@ -10,7 +10,7 @@ import purchases from './routes/purchases.js';
 import sales from './routes/sales.js';
 import inventory from './routes/inventory.js';
 import production from './routes/production.js';
-import warranty from './routes/warranty.js';
+import warranty, { cleanupOldPhotos } from './routes/warranty.js';
 import cash from './routes/cash.js';
 import reports from './routes/reports.js';
 import system from './routes/system.js';
@@ -57,6 +57,13 @@ function lanAddresses() {
   }
   return out;
 }
+
+// Dọn ảnh bảo hành quá hạn: chạy lúc khởi động rồi mỗi 24 giờ một lần.
+// Máy chủ trong tiệm thường bật cả ngày nên không cần lịch phức tạp.
+try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
+setInterval(() => {
+  try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
+}, 24 * 60 * 60 * 1000).unref();
 
 app.listen(PORT, '0.0.0.0', () => {
   const hasUI = fs.existsSync(DIST);

@@ -11,6 +11,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { PurchaseHistory, SaleHistory } from './ReportHistory';
+import ReportWarranty from './ReportWarranty';
 
 const TABS = [
   { key: 'sales', label: 'Bán hàng' },
@@ -20,6 +21,7 @@ const TABS = [
   { key: 'inventory', label: 'Xuất nhập tồn' },
   { key: 'purchases', label: 'Mua hàng' },
   { key: 'purchase-history', label: 'Lịch sử mua hàng' },
+  { key: 'warranty', label: 'Bảo hành' },
 ];
 
 function downloadCsv(name, head, rows) {
@@ -57,6 +59,7 @@ export default function Reports() {
         {tab === 'sales' && <SalesReport r={r} />}
         {tab === 'sale-history' && <SaleHistory r={r} />}
         {tab === 'purchase-history' && <PurchaseHistory r={r} />}
+        {tab === 'warranty' && <ReportWarranty r={r} />}
         {tab === 'products' && <ProductsReport r={r} />}
         {tab === 'pnl' && <PnlReport r={r} />}
         {tab === 'inventory' && <InventoryReport r={r} />}

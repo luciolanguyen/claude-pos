@@ -1410,6 +1410,8 @@ function Lookup() {
 /* ==================================================================== */
 
 function ReceiptPrint({ ticket, store, onClose }) {
+  const { settings } = useApp();
+  const keepDays = Number(settings?.warranty?.keep_days) || 30;
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') onClose?.();
@@ -1468,7 +1470,7 @@ function ReceiptPrint({ ticket, store, onClose }) {
         <div>1. Quý khách vui lòng mang theo phiếu này khi tới nhận hàng.</div>
         <div>2. Cửa hàng chỉ nhận đúng phụ kiện đã ghi ở trên.</div>
         <div>3. Hàng hết hạn bảo hành sẽ báo giá trước khi sửa.</div>
-        <div>4. Quá 60 ngày kể từ ngày hẹn mà không tới nhận, cửa hàng không giữ hàng nữa.</div>
+        <div>4. Quá {keepDays} ngày kể từ ngày hẹn mà không tới nhận, cửa hàng không giữ hàng nữa.</div>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 22 }}>

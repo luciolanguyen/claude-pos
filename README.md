@@ -142,6 +142,11 @@ nhất / cao nhất / lần cuối**; chênh nhau trên 20% sẽ có nhãn cản
 Hiện **giá nhập thấp nhất / cao nhất / bình quân / lần cuối** của từng mặt hàng, để biết
 mối nào đang tăng giá.
 
+**Bảo hành** — bốn bảng: *Chờ khách lấy* (danh sách cần gọi, bấm số là gọi được trên điện
+thoại), *Đang xử lý* (tô đỏ phiếu trễ hẹn), *Đã trả khách* (tiền công, vốn linh kiện, lãi
+từng ca, số ngày sửa), *Hàng hay hỏng* (mặt hàng hỏng từ 3 lần trở lên có nhãn cảnh báo —
+để cân nhắc có nên tiếp tục nhập hay đổi mối).
+
 ### Thiết lập
 Thông tin cửa hàng, mẫu hoá đơn, màn hình bán hàng, bảng giá, kho, người dùng,
 sao lưu/khôi phục dữ liệu.
@@ -226,6 +231,21 @@ giá vốn linh kiện.
 
 Trang này có **hai cảnh báo nổi bật**: phiếu quá ngày hẹn trả khách (đỏ) và món đang ở
 hãng quá lâu (vàng) — hai thứ dễ làm mất lòng khách nhất.
+
+### Ảnh giữ bao lâu
+
+**Thiết lập → Bảo hành** chỉnh hai con số:
+
+- **Giữ hàng khách gửi** — mặc định 30 ngày. Số này in lên biên nhận khách giữ, ở dòng
+  "quá ... ngày không tới nhận, cửa hàng không giữ hàng nữa".
+- **Giữ ảnh sau khi đóng phiếu** — mặc định 37 ngày. Đặt 0 nếu muốn giữ vĩnh viễn.
+
+Phần mềm tự dọn ảnh khi khởi động và mỗi 24 giờ, cũng có nút dọn ngay. Màn hình thiết lập
+hiện dung lượng ảnh đang chiếm và số ảnh đang chờ dọn.
+
+> **Chỉ ảnh của phiếu đã đóng mới bị xoá.** Ảnh của phiếu đang xử lý giữ nguyên dù để lâu
+> bao nhiêu — ảnh là bằng chứng tình trạng máy, xoá lúc còn đang sửa thì mất căn cứ khi
+> khách thắc mắc.
 
 ### Tra hạn bảo hành hàng đã bán
 

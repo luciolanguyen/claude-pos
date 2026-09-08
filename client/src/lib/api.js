@@ -104,6 +104,8 @@ export const api = {
   warrantyMeta: () => request('GET', '/warranty/meta'),
   warrantySummary: () => request('GET', '/warranty-summary'),
   warrantyLookup: (q) => request('GET', '/warranty-lookup' + qs({ q })),
+  warrantyReport: (params) => request('GET', '/reports/warranty' + qs(params)),
+  photoUsage: () => request('GET', '/warranty/photo-usage'),
 
   /* --- Hệ thống --- */
   settings: () => request('GET', '/settings'),
