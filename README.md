@@ -238,14 +238,14 @@ hãng quá lâu (vàng) — hai thứ dễ làm mất lòng khách nhất.
 
 - **Giữ hàng khách gửi** — mặc định 30 ngày. Số này in lên biên nhận khách giữ, ở dòng
   "quá ... ngày không tới nhận, cửa hàng không giữ hàng nữa".
-- **Giữ ảnh sau khi đóng phiếu** — mặc định 37 ngày. Đặt 0 nếu muốn giữ vĩnh viễn.
+- **Giữ ảnh kể từ ngày nhận máy** — mặc định 60 ngày. Đặt 0 nếu muốn giữ vĩnh viễn.
 
 Phần mềm tự dọn ảnh khi khởi động và mỗi 24 giờ, cũng có nút dọn ngay. Màn hình thiết lập
 hiện dung lượng ảnh đang chiếm và số ảnh đang chờ dọn.
 
-> **Chỉ ảnh của phiếu đã đóng mới bị xoá.** Ảnh của phiếu đang xử lý giữ nguyên dù để lâu
-> bao nhiêu — ảnh là bằng chứng tình trạng máy, xoá lúc còn đang sửa thì mất căn cứ khi
-> khách thắc mắc.
+> **Đếm từ ngày nhận máy, không phải ngày trả khách.** Phiếu nào nhận quá 60 ngày là ảnh bị
+> xoá, kể cả phiếu còn đang sửa hay đang nằm ở hãng. Nếu tiệm hay có ca gửi hãng lâu hơn hai
+> tháng, nên nâng con số này lên để giữ được bằng chứng hiện trạng máy tới lúc trả khách.
 
 ### Tra hạn bảo hành hàng đã bán
 

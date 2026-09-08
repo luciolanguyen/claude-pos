@@ -561,7 +561,7 @@ function Warehouses() {
 
 function WarrantySettings() {
   const { settings, saveSettings, toast } = useApp();
-  const [form, setForm] = useState({ keep_days: 30, photo_keep_days: 37 });
+  const [form, setForm] = useState({ keep_days: 30, photo_keep_days: 60 });
   const [busy, setBusy] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const { data: usage, reload: reloadUsage } = useFetch(() => api.photoUsage(), []);
@@ -569,7 +569,7 @@ function WarrantySettings() {
   useEffect(() => {
     setForm({
       keep_days: Number(settings?.warranty?.keep_days) || 30,
-      photo_keep_days: Number(settings?.warranty?.photo_keep_days) ?? 37,
+      photo_keep_days: Number(settings?.warranty?.photo_keep_days) ?? 60,
     });
   }, [settings]);
 
@@ -624,15 +624,12 @@ function WarrantySettings() {
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-1">Tự dọn ảnh cũ</h2>
         <p className="text-[13px] text-muted-ink mb-3 leading-relaxed">
-          Ảnh chụp hàng bảo hành chiếm nhiều ổ cứng nhất. Phần mềm tự xoá ảnh của những
-          phiếu <b>đã trả khách hoặc đã huỷ</b> quá số ngày dưới đây.
-          <br />
-          <b>Ảnh của phiếu đang xử lý không bao giờ bị xoá</b>, dù để lâu bao nhiêu — ảnh là
-          bằng chứng tình trạng máy, mất lúc còn đang sửa thì không còn căn cứ với khách.
+          Ảnh chụp hiện trạng máy chiếm nhiều ổ cứng nhất. Phần mềm tự xoá ảnh của phiếu
+          đã nhận quá số ngày dưới đây, tính từ <b>ngày nhận máy</b>.
         </p>
 
         <Field
-          label="Giữ ảnh sau khi đóng phiếu"
+          label="Giữ ảnh kể từ ngày nhận máy"
           hint="Đặt 0 nếu muốn giữ ảnh vĩnh viễn"
           className="max-w-xs"
           htmlFor="wa-photo"

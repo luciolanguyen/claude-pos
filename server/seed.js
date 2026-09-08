@@ -83,7 +83,7 @@ tx(() => {
   });
   setSetting('warranty', {
     keep_days: 30,        // quá 30 ngày không tới lấy thì tiệm không giữ nữa
-    photo_keep_days: 37,  // ảnh của phiếu đã đóng giữ 37 ngày rồi tự xoá
+    photo_keep_days: 60,  // ảnh giữ 60 ngày kể từ ngày nhận máy rồi tự xoá
   });
   setSetting('allow_negative_stock', false);
   setSetting('vat_enabled', true);

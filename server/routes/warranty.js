@@ -105,8 +105,7 @@ r.get('/warranty/photo-usage', (req, res) => {
   const pending = get(
     "SELECT COUNT(*) AS n FROM warranty_photos p " +
     "JOIN warranty_tickets t ON t.id = p.ticket_id " +
-    "WHERE t.status IN ('delivered','cancelled') " +
-    "  AND date(COALESCE(t.delivered_at, t.ts)) < date('now','localtime', '-' || ? || ' days')",
+    "WHERE date(t.ts) < date('now','localtime', '-' || ? || ' days')",
     [days]).n;
   res.json({ ...photoDiskUsage(), keep_days: days, pending_cleanup: pending });
 });
@@ -569,13 +568,12 @@ r.get('/warranty-summary', (req, res) => {
 /* ==================================================================== */
 /* Tự dọn ảnh cũ cho đỡ đầy ổ cứng                                       */
 /*                                                                       */
-/* Chỉ xoá ảnh của phiếu ĐÃ ĐÓNG (trả khách hoặc huỷ) quá số ngày quy    */
-/* định. Ảnh của phiếu đang xử lý giữ nguyên dù để lâu bao nhiêu — ảnh   */
-/* là bằng chứng tình trạng máy, xoá lúc còn đang sửa thì mất căn cứ khi */
-/* khách thắc mắc.                                                       */
+/* Đếm từ NGÀY NHẬN MÁY của phiếu, không phải ngày trả khách. Quá số     */
+/* ngày quy định thì xoá ảnh, dù phiếu đã đóng hay còn đang xử lý.       */
+/* Đặt 0 ở Thiết lập nếu muốn giữ ảnh vĩnh viễn.                         */
 /* ==================================================================== */
 
-const DEFAULT_KEEP_PHOTO_DAYS = 37;
+const DEFAULT_KEEP_PHOTO_DAYS = 60;
 
 /** Đọc số ngày giữ ảnh. Dùng ?? chứ không dùng ||, vì 0 là giá trị hợp lệ
     (0 = giữ ảnh vĩnh viễn) mà || lại coi 0 là rỗng rồi rơi về mặc định. */
@@ -595,8 +593,7 @@ export function cleanupOldPhotos() {
   const rows = all(
     "SELECT p.id, p.file FROM warranty_photos p " +
     "JOIN warranty_tickets t ON t.id = p.ticket_id " +
-    "WHERE t.status IN ('delivered','cancelled') " +
-    "  AND date(COALESCE(t.delivered_at, t.ts)) < date('now','localtime', '-' || ? || ' days')",
+    "WHERE date(t.ts) < date('now','localtime', '-' || ? || ' days')",
     [days]);
 
   let deleted = 0;
@@ -610,7 +607,7 @@ export function cleanupOldPhotos() {
     } catch { /* file đang bị khoá, lần sau dọn tiếp */ }
   }
   if (deleted) {
-    console.log('  [dọn ảnh] xoá ' + deleted + ' ảnh của phiếu đã đóng quá ' + days +
+    console.log('  [dọn ảnh] xoá ' + deleted + ' ảnh của phiếu nhận quá ' + days +
       ' ngày, giải phóng ' + (freed / 1024 / 1024).toFixed(1) + ' MB');
   }
   return { deleted, freed, days };
