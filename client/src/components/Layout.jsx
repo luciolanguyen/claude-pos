@@ -3,7 +3,7 @@ import { NavLink, useLocation, Link } from 'react-router-dom';
 import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
-  BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark,
+  BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
@@ -37,6 +37,7 @@ const NAV = [
       { to: '/stock', icon: Package, label: 'Tồn kho' },
       { to: '/stock-takes', icon: ClipboardCheck, label: 'Kiểm kê' },
       { to: '/stock-transfers', icon: ArrowLeftRight, label: 'Chuyển kho' },
+      { to: '/production', icon: Wrench, label: 'Sản xuất' },
     ],
   },
   { to: '/cash', icon: Wallet, label: 'Quỹ tiền' },

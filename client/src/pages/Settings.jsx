@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
-  Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info,
+  Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -18,6 +18,7 @@ const TABS = [
   { key: 'pos', label: 'Màn hình bán hàng' },
   { key: 'prices', label: 'Bảng giá' },
   { key: 'warehouses', label: 'Kho hàng' },
+  { key: 'carriers', label: 'Vận chuyển' },
   { key: 'users', label: 'Người dùng' },
   { key: 'data', label: 'Dữ liệu & sao lưu' },
 ];
@@ -40,6 +41,7 @@ export default function Settings() {
         {tab === 'pos' && <PosSettings />}
         {tab === 'prices' && <PriceLists />}
         {tab === 'warehouses' && <Warehouses />}
+        {tab === 'carriers' && <Carriers />}
         {tab === 'users' && <UsersTab />}
         {tab === 'data' && <DataTab />}
       </Page>
@@ -548,6 +550,116 @@ function Warehouses() {
           refresh();
           toast('Đã lưu kho hàng', 'ok');
         }}
+      />
+    </div>
+  );
+}
+
+/* ==================================================================== */
+
+function Carriers() {
+  const { toast } = useApp();
+  const { data, busy, reload } = useFetch(() => api.get('/carriers'), []);
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+
+  const doDelete = async () => {
+    try {
+      const res = await api.del(`/carriers/${deleting.id}`);
+      toast(res.message || `Đã xoá ${deleting.name}`, res.deactivated ? 'warn' : 'ok', 5000);
+      setDeleting(null);
+      reload();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  };
+
+  return (
+    <div className="max-w-3xl space-y-3">
+      <div className="card-pad bg-accent-soft/40 border-accent/25 text-[13px] flex gap-2.5">
+        <Info size={16} className="text-emerald-800 shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="text-emerald-950">
+          Khai các nhà xe, hãng chuyển phát hay shipper ruột mà tiệm hay gửi hàng. Khi bán,
+          chọn đơn vị ở mục Giao hàng để lưu mã vận đơn và tra lại khi khách hỏi.
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>
+          Thêm đơn vị vận chuyển
+        </Button>
+      </div>
+
+      {busy ? <Spinner />
+        : !data?.length ? (
+          <Empty
+            icon={Truck}
+            title="Chưa khai đơn vị vận chuyển nào"
+            message="Ví dụ: nhà xe Thành Bưởi, Viettel Post, GHTK, hoặc shipper quen của tiệm."
+            action={<Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm đơn vị vận chuyển</Button>}
+          />
+        ) : (
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Mã</th><th>Tên đơn vị</th><th>Người liên hệ</th><th>Điện thoại</th>
+                  <th>Ghi chú</th><th className="text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((c) => (
+                  <tr key={c.id} className="hoverable">
+                    <td className="font-mono text-muted-ink">{c.code}</td>
+                    <td className="font-semibold">{c.name}</td>
+                    <td>{c.contact_name || '—'}</td>
+                    <td className="tabular">{c.phone || '—'}</td>
+                    <td className="text-muted-ink truncate max-w-[200px]">{c.note || '—'}</td>
+                    <td>
+                      <div className="flex items-center justify-end gap-0.5">
+                        <IconButton icon={Pencil} label={`Sửa ${c.name}`} size={14}
+                          onClick={() => setEditing(c)} />
+                        <IconButton icon={Trash2} label={`Xoá ${c.name}`} size={14}
+                          className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(c)} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+      <SimpleForm
+        open={!!editing}
+        item={editing === 'new' ? null : editing}
+        title="đơn vị vận chuyển"
+        fields={[
+          { key: 'name', label: 'Tên đơn vị', placeholder: 'Nhà xe Thành Bưởi', required: true },
+          { key: 'contact_name', label: 'Người liên hệ', placeholder: 'Anh Sáu' },
+          { key: 'phone', label: 'Số điện thoại', placeholder: '0918 xxx xxx' },
+          { key: 'note', label: 'Ghi chú', placeholder: 'Xe chạy tuyến Cái Bè - Sài Gòn, 2 chuyến/ngày' },
+        ]}
+        onClose={() => setEditing(null)}
+        onSave={async (form) => {
+          if (editing === 'new') await api.post('/carriers', form);
+          else await api.put(`/carriers/${editing.id}`, form);
+          setEditing(null);
+          reload();
+          toast('Đã lưu đơn vị vận chuyển', 'ok');
+        }}
+      />
+
+      <Confirm
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={doDelete}
+        title="Xoá đơn vị vận chuyển?"
+        confirmText="Xoá"
+        message={deleting && (
+          <>Xoá <b>{deleting.name}</b>? Nếu đã có hoá đơn gắn với đơn vị này thì chỉ ẩn đi,
+            không xoá hẳn, để lịch sử giao hàng còn tra được.</>
+        )}
       />
     </div>
   );

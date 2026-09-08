@@ -93,8 +93,21 @@ r.post('/sales', (req, res) => {
   }
 
   // Kiểm tra hạn mức công nợ
-  const total0 = items.reduce((a, it) =>
-    a + Math.round(Number(it.qty) * Math.round(Number(it.price) || 0) - (Number(it.discount) || 0)), 0);
+  // Ước tính tổng để kiểm tra hạn mức nợ — phải tính cùng cách với lúc lưu,
+  // nếu không đơn giảm giá theo % sẽ bị chặn oan.
+  const lineTotal = (it) => {
+    const gross = Math.round(Number(it.qty) * Math.round(Number(it.price) || 0));
+    const disc = it.discount_type === 'percent'
+      ? Math.round(gross * (Number(it.discount_percent) || 0) / 100)
+      : Math.round(Number(it.discount) || 0);
+    return gross - Math.min(disc, gross);
+  };
+  const sub0 = items.reduce((a, it) => a + lineTotal(it), 0);
+  const orderDisc0 = b.discount_type === 'percent'
+    ? Math.round(sub0 * (Number(b.discount_percent) || 0) / 100)
+    : Math.round(Number(b.discount) || 0);
+  const total0 = sub0 - Math.min(orderDisc0, sub0) +
+    (b.ship_payer === 'customer' ? Math.round(Number(b.ship_fee) || 0) : 0);
   if (b.customer_id) {
     const c = get('SELECT name, debt_limit FROM customers WHERE id = ?', [b.customer_id]);
     if (c?.debt_limit > 0) {
@@ -116,16 +129,32 @@ r.post('/sales', (req, res) => {
       for (const it of items) {
         const qty = Number(it.qty);
         const price = Math.round(Number(it.price) || 0);
-        const disc = Math.round(Number(it.discount) || 0);
-        const amount = Math.round(qty * price - disc);
+        const gross = Math.round(qty * price);
+        // Giảm giá dòng: theo % của tiền hàng dòng đó, hoặc số tiền cố định
+        const disc = it.discount_type === 'percent'
+          ? Math.round(gross * (Number(it.discount_percent) || 0) / 100)
+          : Math.round(Number(it.discount) || 0);
+        it._discount = Math.min(disc, gross);   // không giảm quá tiền hàng
+        const amount = gross - it._discount;
         it._amount = amount;
         it._unitCost = costOf(it.product_id);
         subtotal += amount;
         if (b.is_vat_invoice) vatAmount += Math.round(amount * (Number(it.vat_rate) || 0) / 100);
         cogs += Math.round(qty * (Number(it.factor) || 1) * it._unitCost);
       }
-      const discount = Math.round(Number(b.discount) || 0);
-      const total = subtotal - discount + vatAmount;
+      // Giảm giá toàn hoá đơn: theo % của tạm tính, hoặc số tiền cố định
+      const discountType = b.discount_type === 'percent' ? 'percent' : 'amount';
+      const discountPercent = discountType === 'percent' ? (Number(b.discount_percent) || 0) : 0;
+      const discount = Math.min(
+        discountType === 'percent'
+          ? Math.round(subtotal * discountPercent / 100)
+          : Math.round(Number(b.discount) || 0),
+        subtotal
+      );
+      const shipFee = Math.round(Number(b.ship_fee) || 0);
+      // Phí ship khách chịu thì cộng vào tiền khách phải trả
+      const shipCharged = b.ship_payer === 'customer' ? shipFee : 0;
+      const total = subtotal - discount + vatAmount + shipCharged;
       const paid = Math.max(0, Math.min(Math.round(Number(b.paid) || 0), total));
       const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paid);
       const code = b.code?.trim() || nextCode('sales', 'HD');
@@ -138,25 +167,39 @@ r.post('/sales', (req, res) => {
       const cashAmount = num(b.cash_amount, b.payment_method === 'cash' ? paid : 0);
       const transferAmount = num(b.transfer_amount, b.payment_method === 'transfer' ? paid : 0);
 
+      const hasDelivery = !!(b.delivery_address || b.carrier_id || b.tracking_code);
+
       const info = run(`
         INSERT INTO sales(code, ts, customer_id, warehouse_id, user_id, price_list_id,
-                          subtotal, discount, vat_amount, total, cogs, paid, change_given,
-                          payment_method, cash_amount, transfer_amount, status, is_vat_invoice, note)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?)`,
+                          subtotal, discount, discount_type, discount_percent,
+                          vat_amount, total, cogs, paid, change_given,
+                          payment_method, cash_amount, transfer_amount, status, is_vat_invoice, note,
+                          delivery_name, delivery_phone, delivery_address, carrier_id, tracking_code,
+                          ship_fee, ship_payer, cod_amount, delivery_status, delivery_note)
+        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [code, b.ts || null, b.customer_id || null, warehouseId, b.user_id || null,
-          b.price_list_id || null, subtotal, discount, vatAmount, total, cogs, paid, changeGiven,
+          b.price_list_id || null, subtotal, discount, discountType, discountPercent,
+          vatAmount, total, cogs, paid, changeGiven,
           b.payment_method || 'cash', cashAmount, transferAmount,
-          b.is_vat_invoice ? 1 : 0, b.note || null]);
+          b.is_vat_invoice ? 1 : 0, b.note || null,
+          b.delivery_name || null, b.delivery_phone || null, b.delivery_address || null,
+          b.carrier_id || null, b.tracking_code || null,
+          shipFee, b.ship_payer || 'shop', Math.round(Number(b.cod_amount) || 0),
+          hasDelivery ? (b.delivery_status || 'pending') : null, b.delivery_note || null]);
       const saleId = Number(info.lastInsertRowid);
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_name, factor, qty,
-                                    price, discount, vat_rate, unit_cost, amount)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    price, discount, discount_type, discount_percent,
+                                    vat_rate, unit_cost, amount, note)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, it.product_id, it.name_snapshot || '', it.unit_name, factor, Number(it.qty),
-            Math.round(Number(it.price) || 0), Math.round(Number(it.discount) || 0),
-            Number(it.vat_rate) || 0, it._unitCost, it._amount]);
+            Math.round(Number(it.price) || 0), it._discount,
+            it.discount_type === 'percent' ? 'percent' : 'amount',
+            Number(it.discount_percent) || 0,
+            Number(it.vat_rate) || 0, it._unitCost, it._amount, it.note || null]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,
@@ -339,6 +382,155 @@ r.post('/sale-returns', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+/* ==================================================================== */
+/* Hoá đơn tạm — lưu dở trên máy chủ, mọi máy trong tiệm mở tiếp được    */
+/* ==================================================================== */
+
+r.get('/drafts', (req, res) => {
+  res.json(all(`
+    SELECT d.id, d.code, d.ts, d.updated_at, d.title, d.customer_id, d.total, d.item_count,
+           d.warehouse_id, d.price_list_id,
+           c.name AS customer_name, u.full_name AS user_name
+    FROM draft_sales d
+    LEFT JOIN customers c ON c.id = d.customer_id
+    LEFT JOIN users u ON u.id = d.user_id
+    ORDER BY d.updated_at DESC LIMIT 100`));
+});
+
+r.get('/drafts/:id', (req, res) => {
+  const d = get('SELECT * FROM draft_sales WHERE id = ?', [req.params.id]);
+  if (!d) return res.status(404).json({ error: 'Không tìm thấy hoá đơn tạm' });
+  try { d.payload = JSON.parse(d.payload); } catch { d.payload = null; }
+  res.json(d);
+});
+
+/** Lưu mới hoặc ghi đè hoá đơn tạm (truyền id để ghi đè). */
+r.post('/drafts', (req, res) => {
+  const b = req.body;
+  const payload = JSON.stringify(b.payload ?? {});
+  const total = Math.round(Number(b.total) || 0);
+  const itemCount = Number(b.item_count) || 0;
+
+  if (b.id) {
+    const exists = get('SELECT id FROM draft_sales WHERE id = ?', [b.id]);
+    if (exists) {
+      run(`UPDATE draft_sales SET title = ?, customer_id = ?, user_id = ?, warehouse_id = ?,
+             price_list_id = ?, total = ?, item_count = ?, payload = ?,
+             updated_at = datetime('now','localtime')
+           WHERE id = ?`,
+        [b.title || null, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
+          b.price_list_id || null, total, itemCount, payload, b.id]);
+      return res.json(get('SELECT id, code, title, updated_at FROM draft_sales WHERE id = ?', [b.id]));
+    }
+  }
+  const code = nextCode('draft_sales', 'HDT');
+  const info = run(`
+    INSERT INTO draft_sales(code, title, customer_id, user_id, warehouse_id, price_list_id,
+                            total, item_count, payload)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [code, b.title || null, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
+      b.price_list_id || null, total, itemCount, payload]);
+  res.json(get('SELECT id, code, title, updated_at FROM draft_sales WHERE id = ?',
+    [Number(info.lastInsertRowid)]));
+});
+
+r.delete('/drafts/:id', (req, res) => {
+  run('DELETE FROM draft_sales WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+/* ==================================================================== */
+/* Giá bán 3 lần gần nhất cho một khách — để khỏi báo lệch giá lần trước */
+/* ==================================================================== */
+
+r.get('/price-history', (req, res) => {
+  const { customer_id, product_id, limit = 3 } = req.query;
+  if (!customer_id || !product_id) {
+    return res.status(400).json({ error: 'Thiếu khách hàng hoặc mặt hàng.' });
+  }
+  res.json(all(`
+    SELECT s.code, s.ts, si.unit_name, si.qty, si.price, si.discount,
+           si.discount_type, si.discount_percent, si.amount
+    FROM sale_items si
+    JOIN sales s ON s.id = si.sale_id
+    WHERE s.customer_id = ? AND si.product_id = ? AND s.status = 'done'
+    ORDER BY s.id DESC LIMIT ${Number(limit)}`, [customer_id, product_id]));
+});
+
+/** Giá gần nhất của TẤT CẢ mặt hàng cho một khách — gọi 1 lần khi chọn khách. */
+r.get('/price-history/:customerId/all', (req, res) => {
+  const rows = all(`
+    SELECT si.product_id, si.unit_name, si.price, s.ts, s.code
+    FROM sale_items si
+    JOIN sales s ON s.id = si.sale_id
+    WHERE s.customer_id = ? AND s.status = 'done'
+    ORDER BY s.id DESC LIMIT 900`, [req.params.customerId]);
+  // Gom tối đa 3 lần gần nhất cho mỗi mặt hàng
+  const byProduct = {};
+  for (const r2 of rows) {
+    const list = byProduct[r2.product_id] || (byProduct[r2.product_id] = []);
+    if (list.length < 3) list.push(r2);
+  }
+  res.json(byProduct);
+});
+
+/* ==================================================================== */
+/* Thông tin nhanh của khách khi chọn ở màn hình bán hàng                */
+/* ==================================================================== */
+
+r.get('/customers/:id/quick', (req, res) => {
+  const c = get(`
+    SELECT c.id, c.code, c.name, c.phone, c.address, c.debt_limit, c.opening_debt,
+           c.note, pl.name AS price_list_name
+    FROM customers c LEFT JOIN price_lists pl ON pl.id = c.price_list_id
+    WHERE c.id = ?`, [req.params.id]);
+  if (!c) return res.status(404).json({ error: 'Không tìm thấy khách hàng' });
+
+  c.debt = customerDebt(c.id);
+  c.over_limit = c.debt_limit > 0 && c.debt > c.debt_limit;
+  c.recent_sales = all(`
+    SELECT s.id, s.code, s.ts, s.total, s.paid, s.payment_method,
+           (s.total - s.paid) AS remaining,
+           (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count
+    FROM sales s
+    WHERE s.customer_id = ? AND s.status = 'done'
+    ORDER BY s.id DESC LIMIT 10`, [c.id]);
+  c.unpaid_bills = all(`
+    SELECT s.id, s.code, s.ts, s.total, s.paid, (s.total - s.paid) AS remaining
+    FROM sales s
+    WHERE s.customer_id = ? AND s.status = 'done' AND s.total > s.paid
+    ORDER BY s.ts LIMIT 20`, [c.id]);
+  c.top_products = all(`
+    SELECT si.product_id, si.name_snapshot AS name, si.unit_name,
+           SUM(si.qty) AS qty, MAX(s.ts) AS last_ts
+    FROM sale_items si JOIN sales s ON s.id = si.sale_id
+    WHERE s.customer_id = ? AND s.status = 'done'
+    GROUP BY si.product_id, si.unit_name
+    ORDER BY qty DESC LIMIT 8`, [c.id]);
+  const agg = get(`
+    SELECT COALESCE(SUM(total), 0) AS total, COUNT(*) AS n, MAX(ts) AS last_ts
+    FROM sales WHERE customer_id = ? AND status = 'done'`, [c.id]);
+  c.total_spent = agg.total;
+  c.order_count = agg.n;
+  c.last_order = agg.last_ts;
+  res.json(c);
+});
+
+/* ==================================================================== */
+/* Cập nhật trạng thái giao hàng                                        */
+/* ==================================================================== */
+
+r.put('/sales/:id/delivery', (req, res) => {
+  const b = req.body;
+  const s2 = get('SELECT id FROM sales WHERE id = ?', [req.params.id]);
+  if (!s2) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
+  run(`UPDATE sales SET delivery_status = ?, tracking_code = ?, carrier_id = ?,
+         delivery_note = ? WHERE id = ?`,
+    [b.delivery_status || null, b.tracking_code || null, b.carrier_id || null,
+      b.delivery_note || null, req.params.id]);
+  res.json({ ok: true });
 });
 
 /* ========================== CÔNG NỢ KHÁCH ========================== */

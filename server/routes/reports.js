@@ -295,4 +295,152 @@ r.get('/reports/pnl', (req, res) => {
   });
 });
 
+/* ==================================================================== */
+/* LỊCH SỬ MUA HÀNG — theo mặt hàng hoặc theo nhà cung cấp               */
+/* ==================================================================== */
+
+r.get('/reports/purchase-history', (req, res) => {
+  const from = req.query.from || monthStart();
+  const to = req.query.to || today();
+  const { product_id, supplier_id, q = '', limit = 500 } = req.query;
+
+  const where = ["p.status = 'done'", 'date(p.ts) BETWEEN date(?) AND date(?)'];
+  const params = [from, to];
+  if (product_id) { where.push('pi.product_id = ?'); params.push(product_id); }
+  if (supplier_id) { where.push('p.supplier_id = ?'); params.push(supplier_id); }
+  if (q.trim()) {
+    where.push('(pr.name LIKE ? OR pr.alias LIKE ? OR pr.sku LIKE ? OR s.name LIKE ? OR p.code LIKE ?)');
+    const like = `%${q.trim()}%`;
+    params.push(like, like, like, like, like);
+  }
+
+  const rows = all(`
+    SELECT p.id AS purchase_id, p.code, p.ts, p.supplier_invoice,
+           s.id AS supplier_id, COALESCE(s.name, 'Không rõ') AS supplier_name,
+           pi.product_id, pr.name AS product_name, pr.sku, pr.base_unit,
+           pi.unit_name, pi.factor, pi.qty, pi.price, pi.amount,
+           (pi.qty * pi.factor) AS qty_base,
+           CASE WHEN pi.qty * pi.factor > 0
+                THEN CAST(ROUND(pi.amount / (pi.qty * pi.factor)) AS INTEGER)
+                ELSE 0 END AS unit_price_base
+    FROM purchase_items pi
+    JOIN purchases p ON p.id = pi.purchase_id
+    JOIN products pr ON pr.id = pi.product_id
+    LEFT JOIN suppliers s ON s.id = p.supplier_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY p.ts DESC, p.id DESC LIMIT ${Number(limit)}`, params);
+
+  const totals = {
+    lines: rows.length,
+    qty: rows.reduce((a, x) => a + x.qty_base, 0),
+    amount: rows.reduce((a, x) => a + x.amount, 0),
+    bills: new Set(rows.map((x) => x.purchase_id)).size,
+  };
+
+  // Gom theo mặt hàng để thấy giá nhập biến động thế nào
+  const byProduct = {};
+  for (const x of rows) {
+    const g = byProduct[x.product_id] || (byProduct[x.product_id] = {
+      product_id: x.product_id, name: x.product_name, sku: x.sku, base_unit: x.base_unit,
+      qty: 0, amount: 0, times: 0, min_price: null, max_price: null, last_price: null, last_ts: null,
+    });
+    g.qty += x.qty_base;
+    g.amount += x.amount;
+    g.times += 1;
+    const up = x.unit_price_base;
+    g.min_price = g.min_price === null ? up : Math.min(g.min_price, up);
+    g.max_price = g.max_price === null ? up : Math.max(g.max_price, up);
+    if (!g.last_ts || x.ts > g.last_ts) { g.last_ts = x.ts; g.last_price = up; }
+  }
+  const products = Object.values(byProduct)
+    .map((g) => ({ ...g, avg_price: g.qty > 0 ? Math.round(g.amount / g.qty) : 0 }))
+    .sort((a, b) => b.amount - a.amount);
+
+  res.json({ from, to, rows, totals, products });
+});
+
+/* ==================================================================== */
+/* LỊCH SỬ BÁN HÀNG — theo mặt hàng hoặc theo khách hàng                 */
+/* ==================================================================== */
+
+r.get('/reports/sale-history', (req, res) => {
+  const from = req.query.from || monthStart();
+  const to = req.query.to || today();
+  const { product_id, customer_id, q = '', limit = 500 } = req.query;
+
+  const where = ["s.status = 'done'", 'date(s.ts) BETWEEN date(?) AND date(?)'];
+  const params = [from, to];
+  if (product_id) { where.push('si.product_id = ?'); params.push(product_id); }
+  if (customer_id) { where.push('s.customer_id = ?'); params.push(customer_id); }
+  if (q.trim()) {
+    where.push('(si.name_snapshot LIKE ? OR pr.alias LIKE ? OR pr.sku LIKE ? OR c.name LIKE ? OR s.code LIKE ?)');
+    const like = `%${q.trim()}%`;
+    params.push(like, like, like, like, like);
+  }
+
+  const rows = all(`
+    SELECT s.id AS sale_id, s.code, s.ts, s.payment_method,
+           c.id AS customer_id, COALESCE(c.name, 'Khách lẻ') AS customer_name, c.phone AS customer_phone,
+           u.full_name AS user_name,
+           si.product_id, si.name_snapshot AS product_name, pr.sku, pr.base_unit,
+           si.unit_name, si.factor, si.qty, si.price, si.discount, si.amount, si.unit_cost, si.note,
+           (si.qty * si.factor) AS qty_base,
+           (si.amount - si.qty * si.factor * si.unit_cost) AS profit
+    FROM sale_items si
+    JOIN sales s ON s.id = si.sale_id
+    LEFT JOIN products pr ON pr.id = si.product_id
+    LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY s.ts DESC, s.id DESC LIMIT ${Number(limit)}`, params);
+
+  const totals = {
+    lines: rows.length,
+    qty: rows.reduce((a, x) => a + x.qty_base, 0),
+    amount: rows.reduce((a, x) => a + x.amount, 0),
+    profit: rows.reduce((a, x) => a + x.profit, 0),
+    bills: new Set(rows.map((x) => x.sale_id)).size,
+  };
+
+  // Gom theo mặt hàng: giá bán thấp nhất / cao nhất để soi bán hớ
+  const byProduct = {};
+  for (const x of rows) {
+    const g = byProduct[x.product_id] || (byProduct[x.product_id] = {
+      product_id: x.product_id, name: x.product_name, sku: x.sku, base_unit: x.base_unit,
+      qty: 0, amount: 0, profit: 0, times: 0,
+      min_price: null, max_price: null, last_price: null, last_ts: null,
+    });
+    g.qty += x.qty_base;
+    g.amount += x.amount;
+    g.profit += x.profit;
+    g.times += 1;
+    const up = x.qty_base > 0 ? Math.round(x.amount / x.qty_base) : 0;
+    g.min_price = g.min_price === null ? up : Math.min(g.min_price, up);
+    g.max_price = g.max_price === null ? up : Math.max(g.max_price, up);
+    if (!g.last_ts || x.ts > g.last_ts) { g.last_ts = x.ts; g.last_price = up; }
+  }
+  const products = Object.values(byProduct)
+    .map((g) => ({ ...g, avg_price: g.qty > 0 ? Math.round(g.amount / g.qty) : 0 }))
+    .sort((a, b) => b.amount - a.amount);
+
+  // Gom theo khách hàng
+  const byCustomer = {};
+  for (const x of rows) {
+    const key = x.customer_id ?? 0;
+    const g = byCustomer[key] || (byCustomer[key] = {
+      customer_id: x.customer_id, name: x.customer_name, phone: x.customer_phone,
+      amount: 0, profit: 0, qty: 0, bills: new Set(),
+    });
+    g.amount += x.amount;
+    g.profit += x.profit;
+    g.qty += x.qty_base;
+    g.bills.add(x.sale_id);
+  }
+  const customers = Object.values(byCustomer)
+    .map((g) => ({ ...g, bills: g.bills.size }))
+    .sort((a, b) => b.amount - a.amount);
+
+  res.json({ from, to, rows, totals, products, customers });
+});
+
 export default r;

@@ -83,6 +83,21 @@ export const api = {
   reportInventory: (params) => request('GET', '/reports/inventory' + qs(params)),
   reportPnl: (params) => request('GET', '/reports/pnl' + qs(params)),
 
+  /* --- Sản xuất --- */
+  productions: (params) => request('GET', '/productions' + qs(params)),
+  production: (id) => request('GET', `/productions/${id}`),
+  bom: (id) => request('GET', `/products/${id}/bom`),
+  carriers: () => request('GET', '/carriers'),
+
+  /* --- Hoá đơn tạm & lịch sử giá --- */
+  drafts: () => request('GET', '/drafts'),
+  draft: (id) => request('GET', `/drafts/${id}`),
+  customerQuick: (id) => request('GET', `/customers/${id}/quick`),
+
+  /* --- Báo cáo lịch sử --- */
+  reportPurchaseHistory: (params) => request('GET', '/reports/purchase-history' + qs(params)),
+  reportSaleHistory: (params) => request('GET', '/reports/sale-history' + qs(params)),
+
   /* --- Hệ thống --- */
   settings: () => request('GET', '/settings'),
   users: () => request('GET', '/users'),

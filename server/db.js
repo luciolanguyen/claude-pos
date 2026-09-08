@@ -15,6 +15,54 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
+/* ------------------------------------------------------------------ */
+/* Nâng cấp CSDL đang chạy                                             */
+/*                                                                     */
+/* CREATE TABLE IF NOT EXISTS chỉ tạo bảng mới, không thêm được cột vào */
+/* bảng đã có dữ liệu. Hàm này bổ sung cột còn thiếu, chạy mỗi lần khởi */
+/* động và bỏ qua cột đã tồn tại — nên cửa hàng đang dùng cập nhật lên  */
+/* bản mới không mất dữ liệu.                                          */
+/* ------------------------------------------------------------------ */
+function addColumns(table, columns) {
+  const have = new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
+  );
+  for (const [name, ddl] of Object.entries(columns)) {
+    if (have.has(name)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+    console.log(`  [nâng cấp] thêm cột ${table}.${name}`);
+  }
+}
+
+addColumns('products', {
+  // Tên phụ: tìm được nhưng không in lên hoá đơn cho khách
+  alias: 'TEXT',
+  // Hàng tự sản xuất / lắp ráp từ linh kiện
+  is_manufactured: 'INTEGER NOT NULL DEFAULT 0',
+});
+
+addColumns('sale_items', {
+  discount_type: "TEXT NOT NULL DEFAULT 'amount'",   // amount | percent
+  discount_percent: 'REAL NOT NULL DEFAULT 0',
+  note: 'TEXT',                                      // ghi chú riêng cho dòng hàng
+});
+
+addColumns('sales', {
+  discount_type: "TEXT NOT NULL DEFAULT 'amount'",
+  discount_percent: 'REAL NOT NULL DEFAULT 0',
+  // Giao hàng
+  delivery_name: 'TEXT',
+  delivery_phone: 'TEXT',
+  delivery_address: 'TEXT',
+  carrier_id: 'INTEGER',
+  tracking_code: 'TEXT',
+  ship_fee: 'INTEGER NOT NULL DEFAULT 0',
+  ship_payer: "TEXT NOT NULL DEFAULT 'shop'",        // shop | customer
+  cod_amount: 'INTEGER NOT NULL DEFAULT 0',
+  delivery_status: 'TEXT',                            // NULL = không giao hàng
+  delivery_note: 'TEXT',
+});
+
 export const DB_FILE = DB_PATH;
 
 /* ------------------------------------------------------------------ */

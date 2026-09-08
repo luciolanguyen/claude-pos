@@ -220,6 +220,31 @@
   .print-area.size-a4 { width: 210mm; }
 }
 
+/* ---------------- In tem mã vạch ----------------
+   Mỗi tem là một ô cố định theo mm, xếp liền nhau để máy in tem
+   nhiệt cắt đúng mép. Không có lề trang, không đánh số trang. */
+.print-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-content: flex-start;
+}
+.print-labels .label-box {
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+@media print {
+  .print-area.print-labels {
+    width: auto !important;
+    display: flex !important;
+    flex-wrap: wrap;
+  }
+  .print-labels .label-box {
+    border: none !important;
+  }
+}
+
 /* Tôn trọng thiết lập giảm chuyển động của hệ điều hành */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

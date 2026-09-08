@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Boxes, Plus, Pencil, Trash2, Download, Package, History, Tag, Layers, Upload,
+  Wrench, CheckSquare, Square, ChevronDown,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -11,6 +12,8 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import ImportProducts from '../components/ImportProducts';
+import PrintLabels from '../components/PrintLabels';
+import { ProductPicker } from './Purchases';
 
 export default function Products() {
   const { toast, meta, loadMeta } = useApp();
@@ -28,6 +31,8 @@ export default function Products() {
   const [historyOf, setHistoryOf] = useState(null);
   const [catOpen, setCatOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
   const [busyAction, setBusyAction] = useState(false);
 
   const totals = useMemo(() => {
@@ -78,6 +83,14 @@ export default function Products() {
         actions={<>
           <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
           <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
+          <Button
+            icon={Tag}
+            onClick={() => setLabelOpen(true)}
+            disabled={selected.size === 0}
+            title={selected.size === 0 ? 'Tích chọn hàng ở danh sách bên dưới trước' : ''}
+          >
+            In tem{selected.size > 0 ? ` (${selected.size})` : ''}
+          </Button>
           <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
         </>}
@@ -120,6 +133,19 @@ export default function Products() {
                 <table className="data">
                   <thead>
                     <tr>
+                      <th style={{ width: 34 }}>
+                        <button
+                          onClick={() => setSelected(
+                            selected.size === data.length ? new Set() : new Set(data.map((x) => x.id))
+                          )}
+                          aria-label={selected.size === data.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                          className="flex items-center justify-center w-full cursor-pointer"
+                        >
+                          {selected.size === data.length && data.length > 0
+                            ? <CheckSquare size={15} className="text-accent" aria-hidden="true" />
+                            : <Square size={15} className="text-muted-ink" aria-hidden="true" />}
+                        </button>
+                      </th>
                       <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th><th>ĐVT</th>
                       <th className="text-right">Giá vốn</th>
                       <th className="text-right">Tồn kho</th>
@@ -134,7 +160,22 @@ export default function Products() {
                       const out = p.track_stock && p.total_stock <= 0;
                       const low = p.track_stock && p.min_stock > 0 && p.total_stock > 0 && p.total_stock <= p.min_stock;
                       return (
-                        <tr key={p.id} className={`hoverable ${p.active === 0 ? 'opacity-55' : ''}`}>
+                        <tr key={p.id} className={`hoverable ${p.active === 0 ? 'opacity-55' : ''} ${selected.has(p.id) ? 'bg-accent-soft/30' : ''}`}>
+                          <td>
+                            <button
+                              onClick={() => setSelected((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                                return next;
+                              })}
+                              aria-label={`${selected.has(p.id) ? 'Bỏ chọn' : 'Chọn'} ${p.name}`}
+                              className="flex items-center justify-center w-full cursor-pointer"
+                            >
+                              {selected.has(p.id)
+                                ? <CheckSquare size={15} className="text-accent" aria-hidden="true" />
+                                : <Square size={15} className="text-muted-ink" aria-hidden="true" />}
+                            </button>
+                          </td>
                           <td className="font-mono text-muted-ink">{p.sku}</td>
                           <td>
                             <button
@@ -143,7 +184,17 @@ export default function Products() {
                             >
                               {p.name}
                             </button>
+                            {p.alias && (
+                              <div className="text-2xs text-muted-ink italic truncate max-w-[240px]">
+                                {p.alias}
+                              </div>
+                            )}
                             {p.brand && <div className="text-2xs text-muted-ink">{p.brand}</div>}
+                            {p.is_manufactured === 1 && (
+                              <Badge tone="info" className="ml-1">
+                                <Wrench size={9} aria-hidden="true" /> Tự sản xuất
+                              </Badge>
+                            )}
                             {p.active === 0 && <Badge tone="mute" className="ml-1">Ngừng KD</Badge>}
                           </td>
                           <td className="text-muted-ink">{p.category_name || '—'}</td>
@@ -190,6 +241,12 @@ export default function Products() {
 
       <StockHistory product={historyOf} onClose={() => setHistoryOf(null)} />
 
+      <PrintLabels
+        open={labelOpen}
+        onClose={() => setLabelOpen(false)}
+        products={(data || []).filter((x) => selected.has(x.id))}
+      />
+
       <ImportProducts
         open={importOpen}
         onClose={() => setImportOpen(false)}
@@ -226,7 +283,7 @@ export default function Products() {
 /* ==================================================================== */
 
 const EMPTY = {
-  sku: '', barcode: '', name: '', category_id: '', base_unit: 'Cái',
+  sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
   cost_price: 0, vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
   opening_qty: 0, opening_warehouse_id: '',
@@ -315,6 +372,16 @@ function ProductForm({ open, product, onClose, onSaved }) {
           <Field label="Tên hàng hoá" required className="sm:col-span-2" htmlFor="pf-name">
             <Input id="pf-name" value={form.name} onChange={set('name')}
               placeholder="Ví dụ: Dây điện Cadivi VCm 1x2.5" />
+          </Field>
+
+          <Field
+            label="Tên phụ / tên thường gọi"
+            className="sm:col-span-4"
+            hint="Cách gọi quen ở tiệm, gõ không dấu cũng được. Tìm được ở kho và màn hình bán hàng, KHÔNG in lên hoá đơn của khách."
+            htmlFor="pf-alias"
+          >
+            <Input id="pf-alias" value={form.alias || ''} onChange={set('alias')}
+              placeholder="Ví dụ: day do 2.5, day cadivi do, day 2 ly ruoi" />
           </Field>
           <Field label="Mã hàng" hint={product ? 'Không đổi được' : 'Bỏ trống để tự đặt'} htmlFor="pf-sku">
             <Input id="pf-sku" value={form.sku} onChange={set('sku')} disabled={!!product} />
@@ -474,9 +541,167 @@ function ProductForm({ open, product, onClose, onSaved }) {
           </div>
         </div>
 
+        {/* Định mức nguyên vật liệu — chỉ hiện khi sửa mặt hàng đã có */}
+        {product && <BomEditor product={product} />}
+
         {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>
+  );
+}
+
+/* ==================================================================== */
+/* Khai định mức nguyên vật liệu cho hàng tự lắp ráp                     */
+/* ==================================================================== */
+
+function BomEditor({ product }) {
+  const { toast, defaultWarehouse } = useApp();
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const { data: allProducts } = useFetch(
+    () => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse], { skip: !open }
+  );
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    api.get(`/products/${product.id}/bom`)
+      .then((d) => { setRows(d.rows); setLoaded(true); })
+      .catch(() => setLoaded(true));
+  }, [open, loaded, product.id]);
+
+  const materialCost = rows.reduce((a, x) => a + Math.round(x.qty * x.cost_price), 0);
+
+  const add = (p) => {
+    if (p.id === product.id) {
+      toast('Không thể lấy chính mặt hàng này làm linh kiện.', 'warn');
+      return;
+    }
+    setRows((prev) => prev.some((x) => x.component_id === p.id)
+      ? prev
+      : [...prev, {
+          component_id: p.id, component_name: p.name, sku: p.sku,
+          base_unit: p.base_unit, cost_price: p.cost_price, stock: p.stock, qty: 1,
+        }]);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.put(`/products/${product.id}/bom`, {
+        items: rows.map((r) => ({ component_id: r.component_id, qty: Number(r.qty) || 0 })),
+      });
+      toast(rows.length ? `Đã lưu định mức ${rows.length} linh kiện` : 'Đã xoá định mức', 'ok');
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sm:col-span-4 card p-3">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 text-left cursor-pointer"
+      >
+        <Wrench size={15} className="text-muted-ink shrink-0" aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-[13px]">Định mức nguyên vật liệu</div>
+          <div className="text-2xs text-muted-ink">
+            Khai nếu mặt hàng này do tiệm tự lắp ráp. Khi lập phiếu sản xuất, hệ thống
+            tự trừ kho linh kiện và tính giá vốn thành phẩm.
+          </div>
+        </div>
+        {product.is_manufactured === 1 && <Badge tone="info">Đã khai</Badge>}
+        <ChevronDown
+          size={15}
+          aria-hidden="true"
+          className={`shrink-0 text-muted-ink transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-2xs text-muted-ink">
+              Khai số lượng cần cho <b>1 {product.base_unit}</b> thành phẩm
+            </span>
+            <Button size="sm" icon={Plus} onClick={() => setPickerOpen(true)}>Thêm linh kiện</Button>
+          </div>
+
+          {rows.length === 0 ? (
+            <p className="text-[13px] text-muted-ink py-3 text-center">Chưa khai linh kiện nào.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Linh kiện</th>
+                    <th className="text-right">Tồn kho</th>
+                    <th style={{ width: 100 }} className="text-right">Cần dùng</th>
+                    <th className="text-right">Giá vốn</th>
+                    <th className="text-right">Thành tiền</th>
+                    <th style={{ width: 36 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.component_id}>
+                      <td>
+                        <div className="font-semibold">{r.component_name}</div>
+                        <div className="text-2xs text-muted-ink font-mono">{r.sku}</div>
+                      </td>
+                      <td className="num text-muted-ink">{fq(r.stock ?? 0)} {r.base_unit}</td>
+                      <td>
+                        <QtyInput
+                          value={r.qty}
+                          onChange={(v) => setRows((prev) => prev.map((x) =>
+                            x.component_id === r.component_id ? { ...x, qty: v } : x))}
+                          aria-label={`Số lượng ${r.component_name}`}
+                        />
+                      </td>
+                      <td className="num">{money(r.cost_price)}</td>
+                      <td className="num font-semibold">{money(Math.round(r.qty * r.cost_price))}</td>
+                      <td>
+                        <IconButton
+                          icon={Trash2}
+                          label={`Bỏ ${r.component_name}`}
+                          size={13}
+                          className="!text-danger hover:!bg-red-50"
+                          onClick={() => setRows((prev) => prev.filter((x) => x.component_id !== r.component_id))}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={4} className="text-right">GIÁ VỐN NVL CHO 1 THÀNH PHẨM</td>
+                    <td className="num">{money(materialCost)}</td>
+                    <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          <Button variant="primary" size="sm" onClick={save} loading={busy}>Lưu định mức</Button>
+        </div>
+      )}
+
+      <ProductPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        products={(allProducts || []).filter((p) => p.id !== product.id)}
+        onPick={add}
+        title="Chọn linh kiện"
+      />
+    </div>
   );
 }
 

@@ -59,6 +59,7 @@ Màn hình bán hàng toàn màn hình, tối ưu cho thao tác nhanh tại qu�
 | `F1` | Mở màn hình bán hàng từ bất kỳ đâu |
 | `F2` | Nhảy tới ô tìm hàng / quét mã vạch |
 | `F4` | Mở hộp thanh toán |
+| `F7` | Mở thêm một tab hoá đơn nữa |
 | `F8` | Thêm khách hàng mới |
 | `Enter` | Thêm hàng vừa quét vào giỏ · hoàn tất thanh toán |
 | `Esc` | Xoá ô tìm kiếm · đóng hộp thoại |
@@ -66,6 +67,36 @@ Màn hình bán hàng toàn màn hình, tối ưu cho thao tác nhanh tại qu�
 Quét mã vạch: máy quét gõ mã rồi Enter, hàng tự vào giỏ. Đổi đơn vị tính ngay trên
 từng dòng (bán lẻ mét hay nguyên cuộn). Sửa đơn giá tại chỗ. Thanh toán tiền mặt,
 chuyển khoản, ghi nợ hoặc kết hợp.
+
+**Nhiều tab hoá đơn cùng lúc.** Khách này đang chọn hàng thì mở tab mới bán cho khách
+khác, không phải huỷ giỏ. Mỗi tab giữ riêng giỏ hàng, khách, bảng giá và giảm giá.
+
+**Giảm giá linh hoạt.** Bấm nút `đ` hoặc `%` để chọn giảm theo số tiền hay theo phần trăm
+— áp được cho **từng dòng hàng** và cho **cả hoá đơn**. Giảm dòng tính trước, giảm cả đơn
+tính trên số còn lại.
+
+**Giá đã bán lần trước.** Với khách quen, mỗi dòng hàng hiện nút nhỏ kèm giá bán gần nhất.
+Bấm vào xem 3 lần gần nhất kèm ngày và mã hoá đơn, bấm tiếp để áp lại đúng giá đó —
+khỏi báo lệch giá với khách ruột. Khách lẻ không hiện nút này.
+
+**Xem giá vốn khi bán.** Chỉ tài khoản Chủ cửa hàng và Quản lý mới thấy nút *Giá vốn*
+trên thanh trên. Bật lên thì mỗi ô hàng, mỗi dòng trong giỏ và tổng đơn đều hiện giá vốn
+và lãi — biết ngay có bán dưới vốn không. Thu ngân không thấy nút này.
+
+**Xem nhanh khách hàng.** Chọn khách rồi bấm nút đồng hồ: hiện công nợ, hạn mức, các hoá
+đơn chưa trả đủ, 10 đơn gần nhất và hàng khách hay mua — không phải rời màn hình bán hàng.
+
+**Ghi chú riêng từng mặt hàng.** Ví dụ "cắt đúng 12,5m", "màu đỏ", "giao đợt 2".
+Ghi chú in kèm trên hoá đơn ngay dưới tên hàng.
+
+**Lưu hoá đơn tạm.** Khách đặt hàng rồi hẹn mai lấy? Bấm *Lưu tạm*. Phiếu lưu trên máy
+chủ nên máy nào trong tiệm cũng mở tiếp được, tắt máy hay mất điện vẫn còn.
+
+**In hoá đơn tạm tính.** Bấm *Tạm tính* để in phiếu báo giá cho khách xem trước khi chốt.
+Phiếu ghi rõ "CHƯA THANH TOÁN" để không lẫn với hoá đơn thật, và không trừ kho.
+
+**Thông tin giao hàng.** Ghi người nhận, địa chỉ, nhà xe, mã vận đơn, phí ship (chọn khách
+trả hay tiệm chịu) và tiền thu hộ COD. Thông tin in kèm trên hoá đơn A4/A5 và K80.
 
 ### Quản lý bán hàng
 - **Hoá đơn** — tìm theo mã, khách, số điện thoại; lọc theo kỳ và hình thức thanh toán;
@@ -88,6 +119,8 @@ chuyển khoản, ghi nợ hoặc kết hợp.
 - **Tồn kho** — lọc sắp hết / hết hàng / vượt định mức; điều chỉnh tồn thủ công có ghi lý do.
 - **Kiểm kê** — tạo phiếu nháp, nhập số đếm thực tế, xem chênh lệch rồi mới cân bằng kho.
 - **Chuyển kho** — điều chuyển giữa kho cửa hàng và kho phụ.
+- **Sản xuất** — lắp ráp thành phẩm từ linh kiện theo định mức, hoặc chia nhỏ hàng lớn
+  ra bán lẻ (xem mục dưới).
 
 ### Quỹ tiền
 Nhiều quỹ (tiền mặt, ngân hàng, ví điện tử). Phiếu thu chi tự sinh từ bán hàng,
@@ -97,6 +130,14 @@ giữa các quỹ. Biểu đồ dòng tiền theo ngày.
 ### Báo cáo
 Bán hàng (theo ngày/tháng/nhân viên/khách/hình thức TT), lãi lỗ theo mặt hàng,
 kết quả kinh doanh, xuất nhập tồn, mua hàng theo NCC. Tất cả xuất được ra Excel.
+
+**Lịch sử bán hàng** — xem theo mặt hàng, theo khách hàng, hoặc chi tiết từng dòng.
+Lọc được theo một mặt hàng hoặc một khách cụ thể. Bảng theo mặt hàng hiện **giá bán thấp
+nhất / cao nhất / lần cuối**; chênh nhau trên 20% sẽ có nhãn cảnh báo — dấu hiệu bán lệch giá.
+
+**Lịch sử mua hàng** — xem theo mặt hàng hoặc chi tiết từng dòng, lọc theo nhà cung cấp.
+Hiện **giá nhập thấp nhất / cao nhất / bình quân / lần cuối** của từng mặt hàng, để biết
+mối nào đang tăng giá.
 
 ### Thiết lập
 Thông tin cửa hàng, mẫu hoá đơn, màn hình bán hàng, bảng giá, kho, người dùng,
@@ -130,6 +171,72 @@ khi nhập. Có nút tải file mẫu.
 mã thì khớp theo tên. Chọn *Bỏ qua, chỉ thêm hàng mới* để giữ nguyên hàng cũ, hoặc
 *Cập nhật lại thông tin và giá* để sửa giá hàng loạt — chế độ cập nhật **không đụng tới
 tồn kho**, tránh làm sai số liệu.
+
+---
+
+## Tên phụ cho hàng hoá
+
+Mỗi mặt hàng khai thêm một **tên phụ** — cách gọi quen ở tiệm, gõ không dấu cũng được.
+Ví dụ hàng tên chính thức là *"Dây điện Cadivi VCm 1x2.5 (đỏ)"* nhưng ở tiệm quen gọi
+*"dây đỏ 2.5"* hay *"dây 2 ly rưỡi"*.
+
+Tên phụ **tìm được** ở màn hình Hàng hoá và màn hình Bán hàng, nhưng **không in lên hoá
+đơn** của khách. Người mới vào làm gõ theo cách gọi dân dã vẫn ra đúng hàng.
+
+Khai ở **Kho hàng → Hàng hoá → sửa mặt hàng → ô Tên phụ**, hoặc thêm cột *Tên phụ* khi
+nhập từ Excel.
+
+---
+
+## In tem mã vạch
+
+Chọn hàng ở **Kho hàng → Hàng hoá** (tích ô đầu dòng), bấm **In tem**.
+
+Mã vạch sinh theo chuẩn **Code 128** — chuẩn phổ biến nhất cho tem hàng hoá, mọi máy quét
+đều đọc được. Mã sinh ngay trong phần mềm nên **không cần Internet**.
+
+Khổ tem có sẵn cho máy in tem nhiệt: 35×22, 50×30, 40×30, 30×20, 50×40 mm. Chọn in kèm
+tên cửa hàng, tên hàng, giá bán, đơn vị tính, mã hàng — có xem trước đúng kích thước thật
+trước khi in. Bấm *Lưu làm mặc định* để lần sau khỏi chọn lại.
+
+Mã vạch lấy theo thứ tự: mã vạch của mặt hàng, không có thì dùng mã hàng. Mặt hàng không
+có cả hai sẽ được báo rõ chứ không in tem trắng.
+
+---
+
+## Sản xuất hàng hoá
+
+Hai kiểu phiếu, ở **Kho hàng → Sản xuất**:
+
+### Lắp ráp theo định mức
+
+Dùng khi tiệm tự lắp thành phẩm từ linh kiện. Ví dụ *1 tủ điện 4 đường lắp sẵn = 1 vỏ tủ
++ 4 aptomat + 3m dây*.
+
+1. Khai định mức một lần: **Kho hàng → Hàng hoá → sửa thành phẩm → Định mức nguyên vật liệu**.
+2. Mỗi lần làm hàng: **Sản xuất → Lắp ráp thành phẩm**, chọn thành phẩm và số lượng.
+
+Hệ thống tự nhân định mức theo số lượng, **kiểm tra đủ linh kiện trước** (thiếu thì báo rõ
+thiếu bao nhiêu và làm được tối đa mấy cái), **trừ kho linh kiện**, **cộng kho thành phẩm**,
+và tính **giá vốn thành phẩm = giá vốn linh kiện + tiền công**.
+
+### Chia nhỏ / cắt lẻ
+
+Dùng khi tách hàng lớn thành mã hàng lẻ khác. Ví dụ 1 cuộn dây 100m cắt ra 98m dây lẻ
+(hao 2m). Nhập số lấy ra và số nhận về, phần hao tự tính vào giá vốn hàng lẻ.
+
+> Nếu hàng lớn và hàng lẻ chỉ là **hai đơn vị tính của cùng một mã hàng** (Cuộn 100m và
+> Mét) thì **không cần** phiếu này — hệ thống đã tự quy đổi khi bán.
+
+Huỷ phiếu sản xuất sẽ hoàn linh kiện về kho và thu hồi thành phẩm. Nếu thành phẩm đã bán
+ra rồi thì hệ thống từ chối huỷ.
+
+---
+
+## Đơn vị vận chuyển
+
+Khai ở **Thiết lập → Vận chuyển**: nhà xe, hãng chuyển phát, hoặc shipper quen của tiệm.
+Khi bán, mở mục *Giao hàng* để chọn đơn vị và ghi mã vận đơn.
 
 ---
 
@@ -201,9 +308,10 @@ server/            Máy chủ Node.js + Express
   schema.sql       Lược đồ CSDL SQLite
   db.js            Kết nối, transaction, các hàm nghiệp vụ dùng chung
   seed.js          Nạp dữ liệu mẫu (mô phỏng 70 ngày kinh doanh)
-  routes/          API theo module
+  routes/          API theo module (gồm production.js: định mức, sản xuất, vận chuyển)
 client/            Giao diện React + Vite + Tailwind
-  src/lib/         Gọi API, định dạng số tiền/ngày Việt Nam, trạng thái chung
+  src/lib/         Gọi API, định dạng số tiền/ngày Việt Nam, trạng thái chung,
+                   barcode.js sinh mã vạch Code 128 không cần thư viện ngoài
   src/components/  Bộ giao diện dùng chung, mẫu in hoá đơn
   src/pages/       Các màn hình
 data/pos.db        Toàn bộ dữ liệu (SQLite, tạo tự động)
@@ -229,6 +337,8 @@ Dùng `node:sqlite` có sẵn trong Node 22+ nên không phải biên dịch th�
 - Mọi biến động kho đều ghi vào `stock_moves` kèm tồn sau biến động, nên tra lại được
   lịch sử đầy đủ của từng mặt hàng.
 - Mọi thao tác ghi nhiều bảng đều chạy trong transaction, lỗi giữa chừng sẽ rollback sạch.
+- Cập nhật lên bản mới **không mất dữ liệu**: `server/db.js` tự thêm cột còn thiếu vào
+  bảng đã có mỗi lần khởi động, chạy lại nhiều lần cũng không lỗi.
 
 **Bảo mật.** Đăng nhập chỉ để phân biệt người bán trên hoá đơn, không phải lớp bảo mật
 mạnh (mật khẩu lưu dạng chữ thường). Phần mềm thiết kế cho mạng nội bộ trong tiệm —

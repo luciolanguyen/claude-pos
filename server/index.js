@@ -9,6 +9,7 @@ import partners from './routes/partners.js';
 import purchases from './routes/purchases.js';
 import sales from './routes/sales.js';
 import inventory from './routes/inventory.js';
+import production from './routes/production.js';
 import cash from './routes/cash.js';
 import reports from './routes/reports.js';
 import system from './routes/system.js';
@@ -29,7 +30,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/api', catalog, partners, purchases, sales, inventory, cash, reports, system);
+app.use('/api', catalog, partners, purchases, sales, inventory, production, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));
 

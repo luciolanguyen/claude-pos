@@ -124,9 +124,9 @@ r.get('/products', (req, res) => {
   const where = [];
   const params = [];
   if (q.trim()) {
-    where.push('(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?)');
+    where.push('(p.name LIKE ? OR p.alias LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?)');
     const like = `%${q.trim()}%`;
-    params.push(like, like, like, like);
+    params.push(like, like, like, like, like);
   }
   if (category_id) { where.push('p.category_id = ?'); params.push(category_id); }
   if (active !== undefined && active !== '') { where.push('p.active = ?'); params.push(Number(active)); }
@@ -147,8 +147,8 @@ r.get('/products', (req, res) => {
 r.get('/products/pos', (req, res) => {
   const warehouseId = Number(req.query.warehouse_id) || 1;
   const products = all(`
-    SELECT p.id, p.sku, p.barcode, p.name, p.base_unit, p.cost_price, p.vat_rate,
-           p.track_stock, p.min_stock, p.category_id, p.brand, p.location,
+    SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.cost_price, p.vat_rate,
+           p.track_stock, p.min_stock, p.category_id, p.brand, p.location, p.is_manufactured,
            c.name AS category_name,
            COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0) AS stock
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
@@ -240,10 +240,10 @@ r.post('/products', (req, res) => {
   try {
     const id = tx(() => {
       const info = run(`
-        INSERT INTO products(sku, barcode, name, category_id, base_unit, cost_price, vat_rate,
+        INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
                              track_stock, min_stock, max_stock, brand, location, note, active)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sku, b.barcode || null, b.name.trim(), b.category_id || null, b.base_unit || 'Cái',
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1]);
@@ -277,11 +277,11 @@ r.put('/products/:id', (req, res) => {
   }
   try {
     tx(() => {
-      run(`UPDATE products SET barcode = ?, name = ?, category_id = ?, base_unit = ?,
+      run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
              vat_rate = ?, track_stock = ?, min_stock = ?, max_stock = ?,
              brand = ?, location = ?, note = ?, active = ?
            WHERE id = ?`,
-        [b.barcode || null, b.name, b.category_id || null, b.base_unit || 'Cái',
+        [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1, id]);
@@ -400,18 +400,19 @@ r.post('/products/import', (req, res) => {
 
         let productId;
         if (existing) {
-          run(`UPDATE products SET barcode = ?, name = ?, category_id = ?, base_unit = ?,
+          run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
                  vat_rate = ?, min_stock = ?, brand = ?, location = ? WHERE id = ?`,
-            [...fields, existing.id]);
+            [fields[0], fields[1], raw.alias ? String(raw.alias).trim() : null,
+              fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], existing.id]);
           productId = existing.id;
           updated++;
         } else {
           productId = Number(run(`
-            INSERT INTO products(sku, barcode, name, category_id, base_unit, cost_price,
+            INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price,
                                  vat_rate, min_stock, brand, location, track_stock, active)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
-            [sku, fields[0], fields[1], fields[2], fields[3], cost,
-              fields[4], fields[5], fields[6], fields[7]]).lastInsertRowid);
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+            [sku, fields[0], fields[1], raw.alias ? String(raw.alias).trim() : null,
+              fields[2], fields[3], cost, fields[4], fields[5], fields[6], fields[7]]).lastInsertRowid);
           created++;
         }
 

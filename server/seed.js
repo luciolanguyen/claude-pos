@@ -9,6 +9,7 @@ const RESET = process.argv.includes('--reset');
 
 const TABLES = [
   'activity_log', 'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
+  'draft_sales', 'production_items', 'productions', 'product_boms', 'carriers',
   'cash_transactions', 'cash_accounts', 'sale_return_items', 'sale_returns', 'sale_items', 'sales',
   'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
   'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
@@ -155,6 +156,32 @@ tx(() => {
 
   /* ----------------------------- Sản phẩm --------------------------- */
   // [sku, tên, nhóm, đvcb, giá vốn, min, vị trí, hãng, units[[tên,hệ số]], giá [lẻ, sỉ, thợ] theo đvcb]
+  /* Tên phụ: cách gọi dân dã ở tiệm, gõ không dấu vẫn tìm ra.
+     Không in lên hoá đơn của khách. */
+  const ALIASES = {
+    DC001: 'day den 1.5, day cadivi den, day 1 ly ruoi',
+    DC002: 'day do 2.5, day cadivi do, day 2 ly ruoi',
+    DC003: 'day doi 1.5, day doi nho',
+    DC004: 'day doi 2.5, day doi lon',
+    DC005: 'cap 3 pha, cap 4 loi',
+    CB001: 'cb 16, aptomat 16, cb 1 pha 16a',
+    CB002: 'cb 32, aptomat 32',
+    CB004: 'cb chong giat, aptomat chong giat, rcbo',
+    CB006: 'tu am 8, hop dien am tuong',
+    CB007: 'tu noi 4, hop dien noi',
+    OC001: 'o cam doi, o dien doi',
+    OC002: 'cong tac don, cong tac 1',
+    DE001: 'bong 9w, den tron 9w, bong tron nho',
+    DE002: 'bong 15w, den tron 15w',
+    DE003: 'tuyp 1m2, den tuyp dai',
+    DE006: 'den pha 50, den roi san',
+    QU001: 'quat tran, quat 5 canh',
+    TN006: 'may bom, bom nuoc panasonic',
+    PK001: 'bang keo dien, keo den',
+    PK002: 'ong ruot ga, ong mem',
+    DU003: 'but thu dien, but do dien',
+  };
+
   const P = [
     ['DC001', 'Dây điện Cadivi VCm 1x1.5 (đen)', 'Dây & cáp điện', 'Mét', 6800, 200, 'Kệ A1', 'CADIVI', [['Mét', 1], ['Cuộn 100m', 100]], [9000, 8200, 8500]],
     ['DC002', 'Dây điện Cadivi VCm 1x2.5 (đỏ)', 'Dây & cáp điện', 'Mét', 10500, 200, 'Kệ A1', 'CADIVI', [['Mét', 1], ['Cuộn 100m', 100]], [14000, 12800, 13200]],
@@ -222,10 +249,11 @@ tx(() => {
   for (const [sku, name, cat, unit, cost, min, loc, brand, units, prices] of P) {
     const isService = sku === 'DU007';
     const info = run(`
-      INSERT INTO products(sku, barcode, name, category_id, base_unit, cost_price, vat_rate,
+      INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
                            track_stock, min_stock, brand, location)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-      [sku, '893' + String(rnd(1000000, 9999999)), name, C[cat], unit, cost, 8,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [sku, '893' + String(rnd(1000000, 9999999)), name, ALIASES[sku] || null,
+        C[cat], unit, cost, 8,
         isService ? 0 : 1, min, brand, loc]);
     const pid = Number(info.lastInsertRowid);
     productIds.push({ id: pid, sku, name, cost, units, prices, track: !isService });
@@ -554,6 +582,86 @@ tx(() => {
     });
   }
 
+  /* ---------------------- Đơn vị vận chuyển ------------------------- */
+  const carriers = [
+    ['VC001', 'Nhà xe Thành Bưởi', 'Anh Sáu', '02838300100', 'Tuyến Cái Bè - Sài Gòn, 2 chuyến/ngày'],
+    ['VC002', 'Viettel Post Cái Bè', 'Chị Nhung', '02733823456', 'Nhận tại bưu cục, giao toàn quốc'],
+    ['VC003', 'Shipper Tí (xe máy)', 'Em Tí', '0919888777', 'Giao trong huyện, dưới 20km'],
+  ];
+  carriers.forEach((c, i) =>
+    run('INSERT INTO carriers(code, name, contact_name, phone, note, sort_order) VALUES(?,?,?,?,?,?)',
+      [c[0], c[1], c[2], c[3], c[4], i]));
+
+  /* ------- Thành phẩm tự lắp ráp: định mức + hai phiếu sản xuất ------- */
+  const findId = (sku) => get('SELECT id FROM products WHERE sku = ?', [sku])?.id;
+
+  const tuDien = Number(run(`
+    INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price,
+                         vat_rate, track_stock, min_stock, brand, location, is_manufactured)
+    VALUES('TP001', ?, 'Tủ điện 8 đường lắp sẵn', 'tu dien lap san, tu 8 duong, tu dien 8',
+           ?, 'Bộ', 0, 8, 1, 2, 'Tiệm tự lắp', 'Kệ B3', 1)`,
+    ['893' + rnd(1000000, 9999999), C['Thiết bị đóng cắt']]).lastInsertRowid);
+
+  const tuUnit = Number(run(
+    "INSERT INTO product_units(product_id, unit_name, factor, is_base) VALUES(?,'Bộ',1,1)",
+    [tuDien]).lastInsertRowid);
+  [[PL.LE, 1450000], [PL.SI, 1350000], [PL.THO, 1390000]].forEach(([pl, price]) =>
+    run('INSERT INTO product_prices(product_id, price_list_id, unit_id, price) VALUES(?,?,?,?)',
+      [tuDien, pl, tuUnit, price]));
+
+  // 1 tủ = 1 vỏ tủ âm 8 đường + 8 aptomat 16A + 5m dây 2.5 + 2 domino
+  const bomLines = [
+    [findId('CB006'), 1],
+    [findId('CB001'), 8],
+    [findId('DC002'), 5],
+    [findId('PK005'), 2],
+  ].filter((x) => x[0]);
+  for (const [cid, q] of bomLines) {
+    run('INSERT INTO product_boms(product_id, component_id, qty) VALUES(?,?,?)', [tuDien, cid, q]);
+  }
+
+  let sxSeq = 0;
+  for (const [daysBack, madeQty, labor] of [[18, 3, 450000], [6, 2, 300000]]) {
+    const ts = daysAgo(daysBack, rnd(9, 15));
+    const lines = bomLines.map(([cid, per]) => {
+      const cost = get('SELECT cost_price FROM products WHERE id = ?', [cid]).cost_price;
+      const need = per * madeQty;
+      return { cid, need, cost, amount: Math.round(need * cost) };
+    });
+    // Bỏ qua nếu kho không đủ linh kiện tại thời điểm chạy seed
+    const enough = lines.every(({ cid, need }) =>
+      (get('SELECT qty FROM stock WHERE product_id = ? AND warehouse_id = ?', [cid, WH])?.qty ?? 0) >= need);
+    if (!enough) continue;
+
+    const materialCost = lines.reduce((a, l) => a + l.amount, 0);
+    const totalCost = materialCost + labor;
+    const unitCost = Math.round(totalCost / madeQty);
+    const code = 'SX' + ts.slice(2, 4) + ts.slice(5, 7) + ts.slice(8, 10) +
+      '-' + String(++sxSeq).padStart(4, '0');
+
+    const prodId = Number(run(`
+      INSERT INTO productions(code, ts, kind, warehouse_id, user_id, product_id, qty,
+                              material_cost, labor_cost, total_cost, unit_cost, note)
+      VALUES(?,?,'assemble',?,4,?,?,?,?,?,?,'Lắp theo đơn đặt của nhà thầu')`,
+      [code, ts, WH, tuDien, madeQty, materialCost, labor, totalCost, unitCost]).lastInsertRowid);
+
+    for (const l of lines) {
+      run(`INSERT INTO production_items(production_id, component_id, qty, unit_cost, amount)
+           VALUES(?,?,?,?,?)`, [prodId, l.cid, l.need, l.cost, l.amount]);
+      moveStock({
+        productId: l.cid, warehouseId: WH, qtyChange: -l.need, unitCost: l.cost,
+        refType: 'production', refId: prodId, refCode: code,
+        note: 'Dùng lắp tủ điện 8 đường', ts,
+      });
+    }
+    moveStock({
+      productId: tuDien, warehouseId: WH, qtyChange: madeQty, unitCost,
+      refType: 'production', refId: prodId, refCode: code,
+      note: 'Sản xuất ' + madeQty + ' bộ', ts,
+    });
+    run('UPDATE products SET cost_price = ? WHERE id = ?', [unitCost, tuDien]);
+  }
+
   /* ---------------------- Phiếu kiểm kê mẫu ------------------------- */
   const takeTs = daysAgo(10, 18);
   const takeId = Number(run(`
@@ -574,7 +682,7 @@ console.log('');
 console.log('Hoàn tất. Tổng kết:');
 console.log(`  sản phẩm ${n('products')} | khách hàng ${n('customers')} | NCC ${n('suppliers')}`);
 console.log(`  hoá đơn ${n('sales')} | phiếu nhập ${n('purchases')} | phiếu quỹ ${n('cash_transactions')}`);
-console.log(`  biến động kho ${n('stock_moves')}`);
+console.log(`  biến động kho ${n('stock_moves')} | phiếu sản xuất ${n('productions')} | nhà xe ${n('carriers')}`);
 console.log('');
 console.log('  Đăng nhập: chu / 1234  (Chủ cửa hàng)');
 console.log('             thungan / 1234  (Thu ngân)');

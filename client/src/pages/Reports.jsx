@@ -10,13 +10,16 @@ import {
   Button, Select, Spinner, Empty, ErrorBox, Stat, Tabs, SearchInput,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { PurchaseHistory, SaleHistory } from './ReportHistory';
 
 const TABS = [
   { key: 'sales', label: 'Bán hàng' },
+  { key: 'sale-history', label: 'Lịch sử bán hàng' },
   { key: 'products', label: 'Lãi lỗ theo mặt hàng' },
   { key: 'pnl', label: 'Kết quả kinh doanh' },
   { key: 'inventory', label: 'Xuất nhập tồn' },
   { key: 'purchases', label: 'Mua hàng' },
+  { key: 'purchase-history', label: 'Lịch sử mua hàng' },
 ];
 
 function downloadCsv(name, head, rows) {
@@ -52,6 +55,8 @@ export default function Reports() {
 
       <Page>
         {tab === 'sales' && <SalesReport r={r} />}
+        {tab === 'sale-history' && <SaleHistory r={r} />}
+        {tab === 'purchase-history' && <PurchaseHistory r={r} />}
         {tab === 'products' && <ProductsReport r={r} />}
         {tab === 'pnl' && <PnlReport r={r} />}
         {tab === 'inventory' && <InventoryReport r={r} />}

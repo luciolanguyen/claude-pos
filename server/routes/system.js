@@ -85,6 +85,7 @@ const TABLES = [
   'purchase_items', 'purchase_returns', 'purchase_return_items', 'sales', 'sale_items',
   'sale_returns', 'sale_return_items', 'cash_accounts', 'cash_transactions',
   'stock_takes', 'stock_take_items', 'stock_transfers', 'stock_transfer_items', 'activity_log',
+  'carriers', 'product_boms', 'productions', 'production_items', 'draft_sales',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -145,14 +146,16 @@ r.post('/clear-transactions', (req, res) => {
     return res.status(400).json({ error: 'Cần gõ đúng chuỗi xác nhận để thực hiện.' });
   }
   tx(() => {
+    // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     for (const t of ['sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
       'stock_take_items', 'stock_takes', 'stock_transfer_items', 'stock_transfers',
+      'production_items', 'productions', 'draft_sales',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
       run(`DELETE FROM ${t}`);
     }
   });
-  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, khách hàng, NCC được giữ nguyên.' });
+  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC và nhà xe được giữ nguyên.' });
 });
 
 export default r;

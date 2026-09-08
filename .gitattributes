@@ -1,0 +1,13 @@
+# Giữ xuống dòng LF cho mọi file văn bản, kể cả trên Windows.
+# Không có dòng này, git đổi sang CRLF khi lấy về, làm các công cụ
+# xử lý văn bản khớp nhầm và sinh diff giả toàn file.
+* text=auto eol=lf
+
+# File chạy trên Windows thì phải giữ CRLF, nếu không cmd.exe hiểu sai
+*.bat text eol=crlf
+
+# File nhị phân, không đụng vào
+*.png binary
+*.jpg binary
+*.pdf binary
+*.db binary

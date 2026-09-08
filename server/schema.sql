@@ -366,3 +366,73 @@ CREATE TABLE IF NOT EXISTS activity_log (
   entity_id INTEGER,
   detail  TEXT
 );
+
+-- ============================================================
+-- MỞ RỘNG v2: sản xuất, giao hàng, hoá đơn tạm, tem mã vạch
+-- ============================================================
+
+-- ---------- Đối tác vận chuyển ----------
+CREATE TABLE IF NOT EXISTS carriers (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  code     TEXT NOT NULL UNIQUE,
+  name     TEXT NOT NULL,
+  phone    TEXT,
+  contact_name TEXT,
+  note     TEXT,
+  active   INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---------- Định mức nguyên vật liệu (BOM) ----------
+-- 1 tủ điện 8 đường = 1 vỏ tủ + 8 aptomat + 3m dây + 1 domino
+CREATE TABLE IF NOT EXISTS product_boms (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  component_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  qty          REAL NOT NULL DEFAULT 1,   -- số lượng theo đơn vị cơ bản của linh kiện
+  note         TEXT,
+  UNIQUE(product_id, component_id)
+);
+
+-- ---------- Phiếu sản xuất ----------
+-- kind = 'assemble' (lắp ráp theo định mức) | 'split' (chia nhỏ / cắt lẻ)
+CREATE TABLE IF NOT EXISTS productions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  kind         TEXT NOT NULL DEFAULT 'assemble',
+  warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  product_id   INTEGER NOT NULL REFERENCES products(id),  -- thành phẩm
+  qty          REAL NOT NULL DEFAULT 1,                   -- số thành phẩm làm ra
+  material_cost INTEGER NOT NULL DEFAULT 0,               -- tổng giá vốn nguyên liệu
+  labor_cost   INTEGER NOT NULL DEFAULT 0,                -- chi phí nhân công
+  total_cost   INTEGER NOT NULL DEFAULT 0,
+  unit_cost    INTEGER NOT NULL DEFAULT 0,                -- giá vốn 1 thành phẩm
+  note         TEXT
+);
+CREATE TABLE IF NOT EXISTS production_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  production_id INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+  component_id  INTEGER NOT NULL REFERENCES products(id),
+  qty           REAL NOT NULL,        -- tổng số dùng, theo đơn vị cơ bản
+  unit_cost     INTEGER NOT NULL DEFAULT 0,
+  amount        INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---------- Hoá đơn tạm (lưu dở, dùng chung mọi máy) ----------
+CREATE TABLE IF NOT EXISTS draft_sales (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        TEXT NOT NULL UNIQUE,
+  ts          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  title       TEXT,                  -- tên tab: "Hoá đơn 1", "Anh Tuấn đặt"
+  customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  warehouse_id  INTEGER,
+  price_list_id INTEGER,
+  total       INTEGER NOT NULL DEFAULT 0,
+  item_count  INTEGER NOT NULL DEFAULT 0,
+  payload     TEXT NOT NULL          -- toàn bộ giỏ hàng dạng JSON
+);
+CREATE INDEX IF NOT EXISTS idx_drafts_updated ON draft_sales(updated_at);

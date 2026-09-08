@@ -151,7 +151,8 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
 
       <div className="dashed" />
       <div style={{ textAlign: 'center', fontWeight: 700, fontSize: 12, letterSpacing: 1 }}>
-        {sale.is_vat_invoice ? 'HOÁ ĐƠN GTGT' : 'PHIẾU TÍNH TIỀN'}
+        {sale.provisional ? 'PHIẾU TẠM TÍNH'
+          : sale.is_vat_invoice ? 'HOÁ ĐƠN GTGT' : 'PHIẾU TÍNH TIỀN'}
       </div>
       <div style={{ textAlign: 'center', fontSize: 10 }}>Số: {sale.code}</div>
       <div className="dashed" />
@@ -179,6 +180,12 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
                   <span>{fq(it.qty)} {it.unit_name} x {n(it.price)}</span>
                   <span style={{ fontWeight: 700 }}>{n(it.amount)}</span>
                 </div>
+                {it.discount > 0 && (
+                  <div style={{ fontSize: 9, fontStyle: 'italic' }}>Giảm: -{n(it.discount)}</div>
+                )}
+                {it.note && (
+                  <div style={{ fontSize: 9, fontStyle: 'italic' }}>({it.note})</div>
+                )}
               </td>
             </tr>
           ))}
@@ -218,6 +225,19 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
         </tbody>
       </table>
 
+      {sale.delivery_address && (
+        <>
+          <div className="dashed" />
+          <div style={{ fontSize: 10 }}>
+            <b>GIAO HÀNG</b><br />
+            {sale.delivery_name} {sale.delivery_phone ? `- ${sale.delivery_phone}` : ''}<br />
+            {sale.delivery_address}
+            {sale.tracking_code && <><br />Vận đơn: {sale.tracking_code}</>}
+            {sale.cod_amount > 0 && <><br />Thu hộ: {n(sale.cod_amount)}</>}
+          </div>
+        </>
+      )}
+
       {sale.note && (
         <>
           <div className="dashed" />
@@ -238,6 +258,11 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
       )}
 
       <div className="dashed" />
+      {sale.provisional && (
+        <div style={{ textAlign: 'center', fontSize: 10, fontWeight: 700, padding: '3px 0' }}>
+          *** PHIẾU TẠM TÍNH — CHƯA THANH TOÁN ***
+        </div>
+      )}
       <div style={{ textAlign: 'center', fontSize: 9, lineHeight: 1.4 }}>
         {store.footer_note || 'Cảm ơn Quý khách!'}
         {store.warranty_note && <div>{store.warranty_note}</div>}
@@ -252,7 +277,8 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
 function Sheet({ sale, store, showCost, qrUrl, size }) {
   const remaining = sale.total - sale.paid;
   const isA4 = size === 'a4';
-  const title = sale.is_vat_invoice ? 'HOÁ ĐƠN GIÁ TRỊ GIA TĂNG' : 'HOÁ ĐƠN BÁN HÀNG';
+  const title = sale.provisional ? 'PHIẾU TẠM TÍNH'
+    : sale.is_vat_invoice ? 'HOÁ ĐƠN GIÁ TRỊ GIA TĂNG' : 'HOÁ ĐƠN BÁN HÀNG';
 
   return (
     <div className={`print-${size} text-black bg-white`}>
@@ -275,7 +301,9 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
 
       <div style={{ textAlign: 'center', margin: isA4 ? '18px 0 4px' : '12px 0 3px' }}>
         <div style={{ fontWeight: 800, fontSize: isA4 ? 19 : 15, letterSpacing: 1 }}>{title}</div>
-        <div style={{ fontSize: isA4 ? 11 : 10 }}>Liên 2: Giao khách hàng</div>
+        <div style={{ fontSize: isA4 ? 11 : 10 }}>
+          {sale.provisional ? 'Phiếu báo giá tạm tính — chưa thanh toán' : 'Liên 2: Giao khách hàng'}
+        </div>
       </div>
 
       {/* Thông tin khách */}
@@ -324,6 +352,9 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
               <td>
                 {it.name_snapshot}
                 {it.sku && <span style={{ fontSize: 9, color: '#555' }}> ({it.sku})</span>}
+                {it.note && (
+                  <div style={{ fontSize: 9, fontStyle: 'italic', color: '#333' }}>{it.note}</div>
+                )}
               </td>
               <td style={{ textAlign: 'center' }}>{it.unit_name}</td>
               <td style={{ textAlign: 'right' }}>{fq(it.qty)}</td>
@@ -385,6 +416,17 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
         </div>
       )}
 
+      {sale.delivery_address && (
+        <div style={{ fontSize: isA4 ? 12 : 10, marginTop: 6, border: '1px solid #000', padding: '4px 6px' }}>
+          <b>GIAO HÀNG:</b> {sale.delivery_name}
+          {sale.delivery_phone ? ` — ${sale.delivery_phone}` : ''}
+          <br />
+          Địa chỉ: {sale.delivery_address}
+          {sale.tracking_code && <><br />Mã vận đơn: <b>{sale.tracking_code}</b></>}
+          {sale.cod_amount > 0 && <><br />Thu hộ (COD): <b>{n(sale.cod_amount)}</b></>}
+        </div>
+      )}
+
       {sale.note && (
         <div style={{ fontSize: isA4 ? 12 : 10, marginTop: 6 }}>
           <b>Ghi chú:</b> {sale.note}
@@ -392,6 +434,13 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
       )}
 
       {/* Chữ ký + QR */}
+      {sale.provisional && (
+        <div style={{ textAlign: 'center', fontSize: isA4 ? 12 : 10, fontWeight: 700,
+          marginTop: 10, padding: '4px 0', border: '1px dashed #000' }}>
+          PHIẾU TẠM TÍNH — CHƯA THANH TOÁN, KHÔNG CÓ GIÁ TRỊ THAY HOÁ ĐƠN
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: isA4 ? 26 : 16, gap: 12 }}>
         <div style={{ textAlign: 'center', flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: isA4 ? 12 : 10 }}>NGƯỜI MUA HÀNG</div>
