@@ -98,6 +98,13 @@ export const api = {
   reportPurchaseHistory: (params) => request('GET', '/reports/purchase-history' + qs(params)),
   reportSaleHistory: (params) => request('GET', '/reports/sale-history' + qs(params)),
 
+  /* --- Bảo hành --- */
+  warranty: (params) => request('GET', '/warranty' + qs(params)),
+  warrantyTicket: (id) => request('GET', `/warranty/${id}`),
+  warrantyMeta: () => request('GET', '/warranty/meta'),
+  warrantySummary: () => request('GET', '/warranty-summary'),
+  warrantyLookup: (q) => request('GET', '/warranty-lookup' + qs({ q })),
+
   /* --- Hệ thống --- */
   settings: () => request('GET', '/settings'),
   users: () => request('GET', '/users'),

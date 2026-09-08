@@ -436,3 +436,85 @@ CREATE TABLE IF NOT EXISTS draft_sales (
   payload     TEXT NOT NULL          -- toàn bộ giỏ hàng dạng JSON
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_updated ON draft_sales(updated_at);
+
+-- ============================================================
+-- MỞ RỘNG v3: quản lý hàng bảo hành
+-- ============================================================
+
+-- ---------- Phiếu tiếp nhận bảo hành ----------
+-- Khách mang máy hư tới, tiệm lập phiếu này và in biên nhận cho khách giữ.
+CREATE TABLE IF NOT EXISTS warranty_tickets (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  code          TEXT NOT NULL UNIQUE,
+  ts            TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id   INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name TEXT,                 -- khách lẻ không có hồ sơ thì ghi tay
+  customer_phone TEXT,
+  sale_id       INTEGER REFERENCES sales(id) ON DELETE SET NULL,   -- hoá đơn gốc nếu tra được
+  product_id    INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_name  TEXT NOT NULL,        -- ghi tay được, phòng hàng mua nơi khác
+  serial        TEXT,
+  qty           REAL NOT NULL DEFAULT 1,
+  issue         TEXT,                 -- lỗi khách báo
+  condition_note TEXT,                -- tình trạng máy lúc nhận (trầy, thiếu ốc...)
+  accessories   TEXT,                 -- phụ kiện kèm theo: dây, phích, hộp
+  in_warranty   INTEGER NOT NULL DEFAULT 0,   -- còn hạn bảo hành hay không
+  warranty_until TEXT,
+  status        TEXT NOT NULL DEFAULT 'received',
+    -- received: đã nhận | checking: đang kiểm tra | repairing: đang sửa
+    -- sent_supplier: đã gửi hãng | ready: sửa xong chờ khách lấy
+    -- delivered: đã trả khách | cancelled: huỷ
+  resolution    TEXT,
+    -- repair: tiệm sửa | supplier: hãng sửa | exchange: đổi mới
+    -- refund: hoàn tiền | reject: từ chối bảo hành
+  supplier_id   INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+  sent_at       TEXT,                 -- ngày gửi hãng
+  expected_at   TEXT,                 -- hãng hẹn trả
+  back_at       TEXT,                 -- ngày nhận lại từ hãng
+  promised_at   TEXT,                 -- hẹn trả khách
+  delivered_at  TEXT,                 -- đã trả khách
+  exchange_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  labor_fee     INTEGER NOT NULL DEFAULT 0,   -- tiền công sửa
+  parts_cost    INTEGER NOT NULL DEFAULT 0,   -- giá vốn linh kiện đã thay
+  charge        INTEGER NOT NULL DEFAULT 0,   -- tiền thu của khách (hết hạn BH)
+  paid          INTEGER NOT NULL DEFAULT 0,
+  refund_amount INTEGER NOT NULL DEFAULT 0,
+  received_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wt_status ON warranty_tickets(status);
+CREATE INDEX IF NOT EXISTS idx_wt_phone ON warranty_tickets(customer_phone);
+CREATE INDEX IF NOT EXISTS idx_wt_ts ON warranty_tickets(ts);
+
+-- ---------- Ảnh chụp lúc nhận và lúc trả ----------
+-- Lưu tên file, ảnh nằm trong data/warranty/ để CSDL không phình to.
+CREATE TABLE IF NOT EXISTS warranty_photos (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES warranty_tickets(id) ON DELETE CASCADE,
+  kind      TEXT NOT NULL DEFAULT 'received',  -- received | done
+  file      TEXT NOT NULL,
+  caption   TEXT,
+  ts        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_wp_ticket ON warranty_photos(ticket_id);
+
+-- ---------- Nhật ký chuyển trạng thái ----------
+CREATE TABLE IF NOT EXISTS warranty_logs (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES warranty_tickets(id) ON DELETE CASCADE,
+  ts        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  status    TEXT NOT NULL,
+  user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wl_ticket ON warranty_logs(ticket_id);
+
+-- ---------- Linh kiện đã thay khi sửa (trừ kho) ----------
+CREATE TABLE IF NOT EXISTS warranty_parts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id  INTEGER NOT NULL REFERENCES warranty_tickets(id) ON DELETE CASCADE,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty        REAL NOT NULL,
+  unit_cost  INTEGER NOT NULL DEFAULT 0,
+  amount     INTEGER NOT NULL DEFAULT 0
+);

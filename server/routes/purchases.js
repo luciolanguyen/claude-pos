@@ -48,7 +48,7 @@ r.get('/purchases/:id', (req, res) => {
     WHERE p.id = ?`, [req.params.id]);
   if (!p) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
   p.items = all(`
-    SELECT pi.*, pr.name AS product_name, pr.sku, pr.base_unit
+    SELECT pi.*, pr.name AS product_name, pr.sku, pr.base_unit, pr.barcode
     FROM purchase_items pi JOIN products pr ON pr.id = pi.product_id
     WHERE pi.purchase_id = ?`, [p.id]);
   p.returns = all('SELECT id, code, ts, total FROM purchase_returns WHERE purchase_id = ?', [p.id]);

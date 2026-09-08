@@ -17,6 +17,7 @@ import { CustomerDebts, SupplierDebts } from './pages/Debts';
 import Products from './pages/Products';
 import Stock, { StockTakes, StockTransfers } from './pages/Stock';
 import Production from './pages/Production';
+import Warranty from './pages/Warranty';
 import Cash from './pages/Cash';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
@@ -190,6 +191,7 @@ function Shell() {
               <Route path="stock-takes" element={<StockTakes />} />
               <Route path="stock-transfers" element={<StockTransfers />} />
               <Route path="production" element={<Production />} />
+              <Route path="warranty" element={<Warranty />} />
 
               <Route path="cash" element={<Cash />} />
               <Route path="reports" element={<Reports />} />

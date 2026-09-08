@@ -10,6 +10,10 @@ const DB_PATH = process.env.POS_DB || path.join(DATA_DIR, 'pos.db');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
+/** Ảnh chụp hàng bảo hành — để ngoài CSDL cho file pos.db khỏi phình to. */
+export const WARRANTY_DIR = path.join(DATA_DIR, 'warranty');
+if (!fs.existsSync(WARRANTY_DIR)) fs.mkdirSync(WARRANTY_DIR, { recursive: true });
+
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
@@ -45,6 +49,10 @@ addColumns('sale_items', {
   discount_type: "TEXT NOT NULL DEFAULT 'amount'",   // amount | percent
   discount_percent: 'REAL NOT NULL DEFAULT 0',
   note: 'TEXT',                                      // ghi chú riêng cho dòng hàng
+  // Bảo hành nhập tay lúc bán; warranty_until tính sẵn để tra cho nhanh
+  warranty_months: 'INTEGER NOT NULL DEFAULT 0',
+  warranty_until: 'TEXT',
+  serial: 'TEXT',
 });
 
 addColumns('sales', {

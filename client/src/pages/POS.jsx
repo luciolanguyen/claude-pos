@@ -186,6 +186,8 @@ export default function POS() {
           discountType: 'amount',
           discountValue: 0,
           note: '',
+          warrantyMonths: 0,
+          serial: '',
           vat_rate: product.vat_rate,
           track_stock: product.track_stock,
           stock: product.stock,
@@ -406,6 +408,8 @@ export default function POS() {
       discount_percent: l.discountType === 'percent' ? l.discountValue : 0,
       vat_rate: l.vat_rate,
       note: l.note || null,
+      warranty_months: Number(l.warrantyMonths) || 0,
+      serial: l.serial || null,
     })),
     customer_id: tab.customerId,
     warehouse_id: warehouseId,
@@ -719,8 +723,13 @@ export default function POS() {
                             <span className="text-2xs tabular">{n(hist[0].price)}</span>
                           </button>
                         )}
-                        <IconButton icon={StickyNote} label={`Ghi chú cho ${l.name}`} size={13}
-                          className={l.note ? '!text-info' : ''} onClick={() => setNoteOf(l)} />
+                        <IconButton
+                          icon={StickyNote}
+                          label={`Ghi chú và bảo hành cho ${l.name}`}
+                          size={13}
+                          className={l.note || l.warrantyMonths > 0 ? '!text-info' : ''}
+                          onClick={() => setNoteOf(l)}
+                        />
                         <IconButton icon={Trash2} label={`Bỏ ${l.name} khỏi giỏ`} size={14}
                           className="!text-danger hover:!bg-red-50" onClick={() => removeLine(l.key)} />
                       </div>
@@ -829,9 +838,15 @@ export default function POS() {
                           )}
                           {overStock && <Badge tone="bad">Vượt tồn ({fq(l.stock)} {l.base_unit})</Badge>}
                           {l.note && (
-                            <span className="text-2xs text-info truncate max-w-[200px]">
+                            <span className="text-2xs text-info truncate max-w-[180px]">
                               Ghi chú: {l.note}
                             </span>
+                          )}
+                          {l.warrantyMonths > 0 && (
+                            <Badge tone="ok">BH {l.warrantyMonths} tháng</Badge>
+                          )}
+                          {l.serial && (
+                            <span className="text-2xs text-muted-ink font-mono">SN {l.serial}</span>
                           )}
                         </div>
                         {maySeeCost && showCost && (
@@ -1022,7 +1037,7 @@ export default function POS() {
       <LineNoteModal
         line={noteOf}
         onClose={() => setNoteOf(null)}
-        onSave={(note) => { updateLine(noteOf.key, { note }); setNoteOf(null); }}
+        onSave={(patch) => { updateLine(noteOf.key, patch); setNoteOf(null); }}
       />
 
       <CustomerQuickModal
@@ -1109,29 +1124,88 @@ function PriceHistoryModal({ line, customer, onClose, onApply }) {
 
 function LineNoteModal({ line, onClose, onSave }) {
   const [text, setText] = useState('');
-  useEffect(() => { if (line) setText(line.note || ''); }, [line]);
+  const [months, setMonths] = useState(0);
+  const [serial, setSerial] = useState('');
+
+  useEffect(() => {
+    if (!line) return;
+    setText(line.note || '');
+    setMonths(Number(line.warrantyMonths) || 0);
+    setSerial(line.serial || '');
+  }, [line]);
+
+  /* Hạn bảo hành xem trước cho khách biết ngay */
+  const until = months > 0
+    ? new Date(new Date().setMonth(new Date().getMonth() + Number(months)))
+    : null;
 
   return (
     <Modal
       open={!!line}
       onClose={onClose}
-      title="Ghi chú cho mặt hàng"
+      title="Ghi chú & bảo hành"
       subtitle={line?.name}
       size="sm"
       footer={<>
         <Button onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" onClick={() => onSave(text.trim())}>Lưu ghi chú</Button>
+        <Button
+          variant="primary"
+          onClick={() => onSave({
+            note: text.trim(),
+            warrantyMonths: Number(months) || 0,
+            serial: serial.trim(),
+          })}
+        >
+          Lưu
+        </Button>
       </>}
     >
-      <Field
-        label="Ghi chú"
-        hint="Sẽ in trên hoá đơn ngay dưới tên hàng. Ví dụ: cắt 12,5m; màu đỏ; giao đợt 2."
-        htmlFor="ln-note"
-      >
-        <Textarea id="ln-note" rows={3} value={text} autoFocus
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Cắt đúng 12,5 mét, bó riêng" />
-      </Field>
+      <div className="space-y-3">
+        <Field
+          label="Ghi chú"
+          hint="In trên hoá đơn ngay dưới tên hàng. Ví dụ: cắt 12,5m; màu đỏ; giao đợt 2."
+          htmlFor="ln-note"
+        >
+          <Textarea id="ln-note" rows={2} value={text} autoFocus
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Cắt đúng 12,5 mét, bó riêng" />
+        </Field>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field
+            label="Bảo hành (tháng)"
+            hint="Để 0 nếu hàng không bảo hành"
+            htmlFor="ln-warranty"
+          >
+            <div className="flex items-center gap-1.5">
+              <QtyInput size="md" value={months} onChange={setMonths} min={0} className="flex-1" />
+              <div className="flex gap-1">
+                {[6, 12, 24].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMonths(m)}
+                    className={`btn btn-sm ${Number(months) === m ? 'btn-soft' : 'btn-outline'}`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {until && (
+              <p className="hint">Hết hạn ngày <b>{date(until)}</b></p>
+            )}
+          </Field>
+
+          <Field
+            label="Số serial / số máy"
+            hint="Ghi để sau này tra ra ai mua"
+            htmlFor="ln-serial"
+          >
+            <Input id="ln-serial" value={serial} onChange={(e) => setSerial(e.target.value)}
+              placeholder="PNS-2026-0099" />
+          </Field>
+        </div>
+      </div>
     </Modal>
   );
 }

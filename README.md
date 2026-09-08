@@ -86,8 +86,10 @@ và lãi — biết ngay có bán dưới vốn không. Thu ngân không thấy 
 **Xem nhanh khách hàng.** Chọn khách rồi bấm nút đồng hồ: hiện công nợ, hạn mức, các hoá
 đơn chưa trả đủ, 10 đơn gần nhất và hàng khách hay mua — không phải rời màn hình bán hàng.
 
-**Ghi chú riêng từng mặt hàng.** Ví dụ "cắt đúng 12,5m", "màu đỏ", "giao đợt 2".
-Ghi chú in kèm trên hoá đơn ngay dưới tên hàng.
+**Ghi chú, bảo hành và serial cho từng mặt hàng.** Bấm nút giấy nhớ ở mỗi dòng để ghi
+chú ("cắt đúng 12,5m", "màu đỏ"), khai **số tháng bảo hành** (có nút nhanh 6/12/24 tháng,
+xem trước ngày hết hạn) và ghi **số serial** cho hàng giá trị cao. Ghi chú in kèm trên
+hoá đơn; hạn bảo hành và serial dùng để tra cứu sau này.
 
 **Lưu hoá đơn tạm.** Khách đặt hàng rồi hẹn mai lấy? Bấm *Lưu tạm*. Phiếu lưu trên máy
 chủ nên máy nào trong tiệm cũng mở tiếp được, tắt máy hay mất điện vẫn còn.
@@ -104,6 +106,7 @@ trả hay tiệm chịu) và tiền thu hộ COD. Thông tin in kèm trên hoá 
 - **Khách trả hàng** — lập từ hoá đơn gốc nên không trả quá số đã bán.
 - **Khách hàng** — hồ sơ, lịch sử mua, hàng hay mua, công nợ, hạn mức nợ, bảng giá riêng.
 - **Công nợ khách** — danh sách phải thu, cảnh báo vượt hạn mức và nợ quá 60 ngày.
+- **Bảo hành** — nhận hàng khách mang tới sửa và tra hạn bảo hành hàng đã bán (xem mục dưới).
 
 ### Mua hàng
 - **Phiếu nhập hàng** — nhập theo đơn vị lớn (cuộn, thùng), tự quy đổi tồn kho và
@@ -188,9 +191,61 @@ nhập từ Excel.
 
 ---
 
+## Quản lý bảo hành
+
+Vào **Quản lý bán hàng → Bảo hành**. Hai phần:
+
+### Phiếu bảo hành — khách mang hàng tới sửa
+
+Bấm **Nhận hàng bảo hành**. Có ô tra sẵn: gõ số điện thoại khách, mã hoá đơn hoặc số
+serial là hệ thống lấy luôn tên hàng, tên khách và **cho biết còn hạn bảo hành hay không**.
+
+Phiếu ghi: lỗi khách báo, **tình trạng máy lúc nhận** (trầy, móp, thiếu ốc), phụ kiện kèm
+theo, ngày hẹn trả. Lưu xong tự mở **biên nhận khổ A5** để in cho khách giữ.
+
+**Chụp ảnh lúc nhận.** Bấm *Chụp ảnh* (điện thoại mở thẳng camera) hoặc *Chọn file*.
+Ảnh tự thu nhỏ còn tối đa 1400px trước khi lưu — ảnh 5MB từ điện thoại xuống còn vài trăm
+KB, đủ nhìn rõ vết hỏng mà không làm đầy ổ cứng. Đây là bằng chứng khi khách thắc mắc
+"máy tôi mang tới đâu có trầy chỗ này".
+
+**Trạng thái theo dõi:** Mới nhận → Đang kiểm tra → Đang sửa / Đã gửi hãng → Xong chờ
+khách lấy → Đã trả khách. Mỗi lần đổi đều ghi vào nhật ký kèm người thao tác và giờ.
+
+**Bốn cách xử lý:**
+
+| Cách | Phần mềm làm gì |
+|---|---|
+| Tiệm tự sửa | Thêm linh kiện đã thay — **trừ kho thật**, tính giá vốn ca sửa |
+| Gửi hãng / NCC | Ghi nơi gửi, ngày gửi, ngày hãng hẹn trả. Có danh sách "đang ở hãng" để không quên đòi |
+| Đổi cái mới | Trừ kho hàng mới giao cho khách |
+| Hoàn tiền | Lập phiếu chi từ quỹ |
+
+Khi trả khách: chốt tiền công, tiền thu (hàng còn bảo hành thì để 0), có thể chụp thêm
+ảnh lúc trả. Tiền thu tự vào quỹ. Màn hình hiện luôn **lãi của ca sửa** = tiền thu trừ
+giá vốn linh kiện.
+
+Trang này có **hai cảnh báo nổi bật**: phiếu quá ngày hẹn trả khách (đỏ) và món đang ở
+hãng quá lâu (vàng) — hai thứ dễ làm mất lòng khách nhất.
+
+### Tra hạn bảo hành hàng đã bán
+
+Gõ số điện thoại khách, mã hoá đơn, số serial hoặc tên hàng. Ra danh sách hàng đã bán kèm
+hạn bảo hành và **còn bao nhiêu ngày**. Khách quay lại mà không nhớ mua hồi nào thì tra
+bằng số điện thoại là ra.
+
+Hạn bảo hành khai **khi bán**: ở màn hình bán hàng, bấm nút giấy nhớ trên dòng hàng rồi
+điền số tháng.
+
+---
+
 ## In tem mã vạch
 
-Chọn hàng ở **Kho hàng → Hàng hoá** (tích ô đầu dòng), bấm **In tem**.
+Hai chỗ in được:
+
+- **Kho hàng → Hàng hoá**: tích ô đầu dòng chọn hàng, bấm **In tem**.
+- **Mua hàng → Phiếu nhập hàng**: mở một phiếu, bấm **In tem hàng vừa nhập**. Số tem đề
+  sẵn đúng bằng số lượng vừa nhập về, sửa được trước khi in — dán tem cho lô hàng mới về
+  mà không phải đếm lại.
 
 Mã vạch sinh theo chuẩn **Code 128** — chuẩn phổ biến nhất cho tem hàng hoá, mọi máy quét
 đều đọc được. Mã sinh ngay trong phần mềm nên **không cần Internet**.
@@ -282,6 +337,10 @@ cất file vào USB hoặc Google Drive.
 Toàn bộ dữ liệu nằm trong một file duy nhất: `data/pos.db`. Sao chép file này cũng
 là một cách sao lưu.
 
+**Ảnh hàng bảo hành nằm riêng** trong thư mục `data/warranty/` và **không có trong file
+sao lưu JSON** (ảnh nặng hơn dữ liệu rất nhiều). Muốn sao lưu đủ cả ảnh thì chép nguyên
+thư mục `data/`.
+
 Khi đã quen phần mềm và muốn bỏ dữ liệu mẫu để nhập số liệu thật:
 **Thiết lập → Dữ liệu & sao lưu → Xoá dữ liệu giao dịch** (giữ lại danh mục hàng hoá,
 khách hàng, nhà cung cấp).
@@ -315,6 +374,7 @@ client/            Giao diện React + Vite + Tailwind
   src/components/  Bộ giao diện dùng chung, mẫu in hoá đơn
   src/pages/       Các màn hình
 data/pos.db        Toàn bộ dữ liệu (SQLite, tạo tự động)
+data/warranty/     Ảnh chụp hàng bảo hành (để ngoài CSDL cho file pos.db khỏi phình to)
 dist/              Giao diện đã build, máy chủ phục vụ từ đây
 ```
 

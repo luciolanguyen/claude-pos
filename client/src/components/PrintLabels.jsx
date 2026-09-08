@@ -40,7 +40,8 @@ export default function PrintLabels({ open, onClose, products = [] }) {
       return {
         ...p,
         units: full?.units?.length ? full.units : [{ unit_name: p.base_unit, factor: 1, prices: {} }],
-        count: 1,
+        // Gọi từ phiếu nhập thì đề sẵn đúng số lượng vừa nhập về
+        count: p.defaultCount ?? 1,
       };
     }));
   }, [open, products, priced]);

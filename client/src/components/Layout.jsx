@@ -4,6 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
   BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
+  ShieldCheck,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
@@ -19,6 +20,7 @@ const NAV = [
       { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng' },
       { to: '/customers', icon: Users, label: 'Khách hàng' },
       { to: '/customer-debts', icon: HandCoins, label: 'Công nợ khách' },
+      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành' },
     ],
   },
   {

@@ -191,15 +191,24 @@ r.post('/sales', (req, res) => {
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
+        // Hạn bảo hành tính sẵn từ số tháng nhập tay, để tra cứu cho nhanh
+        const wm = Number(it.warranty_months) || 0;
+        const wUntil = wm > 0
+          ? get("SELECT date(COALESCE(?, datetime('now','localtime')), '+' || ? || ' months') AS d",
+              [b.ts || null, wm]).d
+          : null;
+
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
-                                    vat_rate, unit_cost, amount, note)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    vat_rate, unit_cost, amount, note,
+                                    warranty_months, warranty_until, serial)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, it.product_id, it.name_snapshot || '', it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._discount,
             it.discount_type === 'percent' ? 'percent' : 'amount',
             Number(it.discount_percent) || 0,
-            Number(it.vat_rate) || 0, it._unitCost, it._amount, it.note || null]);
+            Number(it.vat_rate) || 0, it._unitCost, it._amount, it.note || null,
+            wm, wUntil, it.serial?.trim() || null]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,

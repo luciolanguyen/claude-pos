@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet,
+  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -12,6 +12,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { SupplierForm } from '../components/CustomerForm';
+import PrintLabels from '../components/PrintLabels';
 
 export default function Purchases() {
   const { toast, meta, user } = useApp();
@@ -30,6 +31,7 @@ export default function Purchases() {
   const [detail, setDetail] = useState(null);
   const [cancelling, setCancelling] = useState(null);
   const [paying, setPaying] = useState(null);
+  const [labelsOf, setLabelsOf] = useState(null);
   const [busyAction, setBusyAction] = useState(false);
 
   const totals = useMemo(() => {
@@ -181,6 +183,7 @@ export default function Purchases() {
             <Button variant="danger" icon={XCircle} onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
           )}
           <div className="flex-1" />
+          <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
           <Button onClick={() => setDetail(null)}>Đóng</Button>
         </>}
       >
@@ -255,6 +258,20 @@ export default function Purchases() {
           </div>
         )}
       </Modal>
+
+      {/* In tem cho đúng số lượng vừa nhập về, khỏi phải đếm lại */}
+      <PrintLabels
+        open={!!labelsOf}
+        onClose={() => setLabelsOf(null)}
+        products={(labelsOf?.items || []).map((it) => ({
+          id: it.product_id,
+          sku: it.sku,
+          name: it.product_name,
+          barcode: it.barcode,
+          base_unit: it.base_unit,
+          defaultCount: Math.max(1, Math.round(Number(it.qty) || 1)),
+        }))}
+      />
 
       <PurchasePayModal
         purchase={paying}

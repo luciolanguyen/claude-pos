@@ -86,6 +86,7 @@ const TABLES = [
   'sale_returns', 'sale_return_items', 'cash_accounts', 'cash_transactions',
   'stock_takes', 'stock_take_items', 'stock_transfers', 'stock_transfer_items', 'activity_log',
   'carriers', 'product_boms', 'productions', 'production_items', 'draft_sales',
+  'warranty_tickets', 'warranty_photos', 'warranty_logs', 'warranty_parts',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -151,6 +152,7 @@ r.post('/clear-transactions', (req, res) => {
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
       'stock_take_items', 'stock_takes', 'stock_transfer_items', 'stock_transfers',
       'production_items', 'productions', 'draft_sales',
+      'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
       run(`DELETE FROM ${t}`);
     }

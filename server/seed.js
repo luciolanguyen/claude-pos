@@ -9,6 +9,7 @@ const RESET = process.argv.includes('--reset');
 
 const TABLES = [
   'activity_log', 'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
+  'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
   'draft_sales', 'production_items', 'productions', 'product_boms', 'carriers',
   'cash_transactions', 'cash_accounts', 'sale_return_items', 'sale_returns', 'sale_items', 'sales',
   'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
@@ -621,17 +622,20 @@ tx(() => {
   }
 
   let sxSeq = 0;
-  for (const [daysBack, madeQty, labor] of [[18, 3, 450000], [6, 2, 300000]]) {
+  for (const [daysBack, wantQty, labor] of [[18, 3, 450000], [6, 2, 300000]]) {
     const ts = daysAgo(daysBack, rnd(9, 15));
+    // Kho sau 60 ngày bán có thể thiếu linh kiện — làm bớt lại thay vì bỏ hẳn phiếu,
+    // để dữ liệu mẫu luôn có ví dụ về sản xuất cho chủ tiệm xem.
+    const canMake = Math.min(...bomLines.map(([cid, per]) =>
+      Math.floor((get('SELECT qty FROM stock WHERE product_id = ? AND warehouse_id = ?', [cid, WH])?.qty ?? 0) / per)));
+    const madeQty = Math.min(wantQty, canMake);
+    if (madeQty < 1) continue;
+
     const lines = bomLines.map(([cid, per]) => {
       const cost = get('SELECT cost_price FROM products WHERE id = ?', [cid]).cost_price;
       const need = per * madeQty;
       return { cid, need, cost, amount: Math.round(need * cost) };
     });
-    // Bỏ qua nếu kho không đủ linh kiện tại thời điểm chạy seed
-    const enough = lines.every(({ cid, need }) =>
-      (get('SELECT qty FROM stock WHERE product_id = ? AND warehouse_id = ?', [cid, WH])?.qty ?? 0) >= need);
-    if (!enough) continue;
 
     const materialCost = lines.reduce((a, l) => a + l.amount, 0);
     const totalCost = materialCost + labor;
