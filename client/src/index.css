@@ -116,7 +116,10 @@
   .card { @apply bg-card border border-line rounded-lg; }
   .card-pad { @apply card p-4; }
 
-  .table-wrap { @apply overflow-x-auto rounded-lg border border-line bg-card; }
+  .table-wrap { @apply overflow-auto rounded-lg border border-line bg-card; }
+  /* Bảng dài: lăn chuột cuộn ngay trong khung, dòng tiêu đề dính lại trên
+     cùng nên xem tới dòng thứ 90 vẫn biết cột nào là cột nào. */
+  .table-scroll { @apply max-h-[min(62vh,44rem)]; }
   table.data { @apply w-full text-[13px] border-collapse; }
   table.data thead th {
     @apply sticky top-0 z-10 bg-muted text-muted-ink font-bold text-left

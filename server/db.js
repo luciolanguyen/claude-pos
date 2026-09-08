@@ -43,6 +43,12 @@ addColumns('products', {
   alias: 'TEXT',
   // Hàng tự sản xuất / lắp ráp từ linh kiện
   is_manufactured: 'INTEGER NOT NULL DEFAULT 0',
+  // Cách tính giá vốn riêng cho món này: 'average' | 'fixed'.
+  // Để trống nghĩa là theo thiết lập chung của tiệm.
+  cost_method: 'TEXT',
+  // Giá vốn cố định đã được chốt chưa. Lần nhập đầu tiên tự chốt, sau đó
+  // giá nhập có đổi cũng không đụng tới nữa; chỉ người dùng sửa tay mới đổi.
+  cost_fixed: 'INTEGER NOT NULL DEFAULT 0',
 });
 
 addColumns('sale_items', {
@@ -53,6 +59,11 @@ addColumns('sale_items', {
   warranty_months: 'INTEGER NOT NULL DEFAULT 0',
   warranty_until: 'TEXT',
   serial: 'TEXT',
+});
+
+/* Đổi hàng: nối phiếu trả hàng với hoá đơn hàng mới */
+addColumns('sale_returns', {
+  exchange_sale_id: 'INTEGER',
 });
 
 addColumns('sales', {
@@ -92,14 +103,27 @@ export function run(sql, params = []) {
 }
 
 /** Chạy fn trong một transaction. Rollback nếu ném lỗi. */
+/* Đếm số lớp tx đang mở. SQLite không cho BEGIN lồng trong BEGIN, nên lớp
+   ngoài cùng dùng BEGIN/COMMIT, các lớp trong dùng SAVEPOINT. Nhờ vậy một
+   nghiệp vụ lớn (giao hàng cho đơn đặt) gọi lại được nghiệp vụ nhỏ đã có
+   sẵn (lập hoá đơn) mà vẫn giữ nguyên tính "được ăn cả, ngã về không". */
+let txDepth = 0;
+
 export function tx(fn) {
-  db.exec('BEGIN');
+  const nested = txDepth > 0;
+  const sp = `sp${txDepth}`;
+  db.exec(nested ? `SAVEPOINT ${sp}` : 'BEGIN');
+  txDepth++;
   try {
     const result = fn();
-    db.exec('COMMIT');
+    txDepth--;
+    db.exec(nested ? `RELEASE ${sp}` : 'COMMIT');
     return result;
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* đã rollback */ }
+    txDepth--;
+    try {
+      db.exec(nested ? `ROLLBACK TO ${sp}; RELEASE ${sp}` : 'ROLLBACK');
+    } catch { /* đã rollback */ }
     throw err;
   }
 }
@@ -123,6 +147,23 @@ export function setSetting(key, value) {
     'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     [key, JSON.stringify(value)]
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Phân trang                                                          */
+/*                                                                     */
+/* Bảng hoá đơn, phiếu nhập, sổ quỹ mỗi năm thêm vài nghìn dòng. Đổ hết */
+/* một lượt thì máy cũ trong tiệm tải nặng, nên cắt theo trang ngay ở   */
+/* câu truy vấn. Chặn trên 200 dòng để một lời gọi lỡ tay không kéo cả  */
+/* cơ sở dữ liệu về.                                                   */
+/* ------------------------------------------------------------------ */
+
+export const PAGE_SIZES = [10, 20, 50, 100];
+
+export function pageParams(query = {}, defaultSize = 20) {
+  const size = Math.min(Math.max(Number(query.page_size) || defaultSize, 1), 200);
+  const page = Math.max(Number(query.page) || 1, 1);
+  return { page, size, offset: (page - 1) * size };
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,14 +222,57 @@ export function moveStock({
   return bal.qty;
 }
 
+/* ------------------------------------------------------------------ *
+ * GIÁ VỐN
+ *
+ * Hai cách tính, chọn ở Thiết lập cho cả tiệm, đổi riêng được từng món:
+ *
+ *  - bình quân (average): mỗi lần nhập hàng thì bình quân gia quyền lại
+ *    theo số đang tồn; trả hàng cho nhà cung cấp thì rút phần đó ra.
+ *    Giá vốn bám sát giá thị trường, hợp với hàng hay đổi giá như dây
+ *    điện, cáp.
+ *
+ *  - cố định (fixed): chốt một lần rồi thôi. Lần nhập đầu tiên tự lấy giá
+ *    nhập làm giá vốn; sau đó giá nhập lên xuống cũng không đụng tới, chỉ
+ *    người dùng sửa tay mới đổi. Hợp với hàng giá ổn định, và với chủ
+ *    tiệm muốn con số lãi nhìn cho dễ hiểu.
+ *
+ * Đổi phương pháp giữa chừng KHÔNG tính lại lịch sử: giá vốn đang có giữ
+ * nguyên, cách mới chỉ ăn từ lần nhập kế tiếp. Làm vậy để lãi lỗ của các
+ * hoá đơn đã xuất không bị đổi số sau lưng.
+ * ------------------------------------------------------------------ */
+
+export const COST_METHODS = {
+  average: 'Bình quân gia quyền',
+  fixed: 'Cố định',
+};
+
+/** Cách tính giá vốn thực sự áp dụng cho một mặt hàng. */
+export function costMethodOf(product) {
+  const own = product?.cost_method;
+  if (own === 'average' || own === 'fixed') return own;
+  const shop = getSettings()?.cost_method;
+  return shop === 'fixed' ? 'fixed' : 'average';
+}
+
 /**
- * Cập nhật giá vốn bình quân gia quyền khi nhập hàng.
- * newCost tính theo đơn vị cơ bản.
+ * Cập nhật giá vốn khi NHẬP hàng. newUnitCost tính theo đơn vị cơ bản.
+ * Trả về giá vốn mới, hoặc null nếu không đổi gì.
  */
 export function updateAvgCost(productId, inQtyBase, newUnitCost) {
-  if (inQtyBase <= 0) return;
-  const p = get('SELECT cost_price FROM products WHERE id = ?', [productId]);
-  if (!p) return;
+  if (inQtyBase <= 0) return null;
+  const p = get('SELECT cost_price, cost_method, cost_fixed FROM products WHERE id = ?', [productId]);
+  if (!p) return null;
+
+  if (costMethodOf(p) === 'fixed') {
+    // Đã chốt rồi thì thôi. Chưa chốt thì lần nhập này là lần đầu.
+    if (p.cost_fixed) return null;
+    const v = Math.round(newUnitCost);
+    run('UPDATE products SET cost_price = ?, cost_fixed = 1 WHERE id = ?', [v, productId]);
+    return v;
+  }
+
+  // Bình quân gia quyền theo số đang tồn SAU khi đã cộng hàng mới vào
   const totalQty = get(
     'SELECT COALESCE(SUM(qty), 0) AS q FROM stock WHERE product_id = ?',
     [productId]
@@ -197,7 +281,38 @@ export function updateAvgCost(productId, inQtyBase, newUnitCost) {
   const avg = oldQty > 0
     ? (oldQty * p.cost_price + inQtyBase * newUnitCost) / totalQty
     : newUnitCost;
-  run('UPDATE products SET cost_price = ? WHERE id = ?', [Math.round(avg), productId]);
+  const v = Math.round(avg);
+  run('UPDATE products SET cost_price = ? WHERE id = ?', [v, productId]);
+  return v;
+}
+
+/**
+ * Cập nhật giá vốn khi TRẢ hàng lại cho nhà cung cấp — rút lô hàng đó ra
+ * khỏi bình quân. outQtyBase và returnUnitCost tính theo đơn vị cơ bản.
+ *
+ * Giá vốn cố định thì không đụng tới: đã chốt là chốt.
+ */
+export function reverseAvgCost(productId, outQtyBase, returnUnitCost) {
+  if (outQtyBase <= 0) return null;
+  const p = get('SELECT cost_price, cost_method, cost_fixed FROM products WHERE id = ?', [productId]);
+  if (!p) return null;
+  if (costMethodOf(p) === 'fixed') return null;
+
+  // Số tồn TRƯỚC khi trả = số tồn hiện tại + số vừa trả đi
+  const totalQty = get(
+    'SELECT COALESCE(SUM(qty), 0) AS q FROM stock WHERE product_id = ?',
+    [productId]
+  ).q;
+  const before = totalQty + outQtyBase;
+  const left = before - outQtyBase;
+  // Trả hết sạch, hoặc số liệu không hợp lệ thì giữ nguyên giá vốn cũ —
+  // thà giữ con số cũ còn hơn cho ra một con số âm hay bằng 0 vô nghĩa.
+  if (left <= 0) return null;
+  const rest = before * p.cost_price - outQtyBase * returnUnitCost;
+  if (rest <= 0) return null;
+  const v = Math.round(rest / left);
+  run('UPDATE products SET cost_price = ? WHERE id = ?', [v, productId]);
+  return v;
 }
 
 /** Giá vốn hiện tại theo đơn vị cơ bản. */

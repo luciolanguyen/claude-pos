@@ -1,15 +1,14 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, costOf,
-  addCashTx, defaultCashAccount, customerDebt, getSettings,
-} from '../db.js';
+  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
 
 const r = Router();
 
 /* ============================ HOÁ ĐƠN BÁN ========================== */
 
 r.get('/sales', (req, res) => {
-  const { q = '', customer_id, from, to, status, payment_method, unpaid, user_id, limit = 200 } = req.query;
+  const { q = '', customer_id, from, to, status, payment_method, unpaid, user_id } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
@@ -25,7 +24,17 @@ r.get('/sales', (req, res) => {
   if (user_id) { where.push('s.user_id = ?'); params.push(user_id); }
   if (unpaid === '1') where.push("s.total > s.paid AND s.status = 'done'");
 
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM sales s
+    LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN users u ON u.id = s.user_id
+    LEFT JOIN warehouses w ON w.id = s.warehouse_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.code AS customer_code,
            u.full_name AS user_name, w.name AS warehouse_name,
            (s.total - s.paid) AS remaining,
@@ -35,8 +44,18 @@ r.get('/sales', (req, res) => {
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN warehouses w ON w.id = s.warehouse_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY s.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY s.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  /* Tổng của cả bộ lọc, để thẻ số liệu phía trên không phụ thuộc trang */
+  const sums = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(s.total), 0) AS revenue,
+           COALESCE(SUM(s.total - s.vat_amount - s.cogs), 0) AS profit,
+           COALESCE(SUM(MAX(s.total - s.paid, 0)), 0) AS unpaid
+    FROM sales s
+    LEFT JOIN customers c ON c.id = s.customer_id
+    ${w ? w + " AND s.status = 'done'" : "WHERE s.status = 'done'"}`, params);
+  res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
 r.get('/sales/:id', (req, res) => {
@@ -60,17 +79,25 @@ r.get('/sales/:id', (req, res) => {
   res.json(s);
 });
 
+/** Lỗi nghiệp vụ có mã, để tay xử lý route đổi thành HTTP 400. */
+function badRequest(message, code) {
+  const e = new Error(message);
+  e.status = 400;
+  if (code) e.code = code;
+  return e;
+}
+
 /**
- * Tạo hoá đơn bán hàng.
- * items: [{ product_id, name_snapshot, unit_name, factor, qty, price, discount, vat_rate }]
+ * Lập một hoá đơn bán hàng. Dùng chung cho màn hình bán hàng và cho
+ * việc giao hàng của đơn đặt hàng, nên tách khỏi tay xử lý HTTP.
+ * Ném lỗi nếu thiếu hàng trong kho hoặc vượt hạn mức công nợ.
  */
-r.post('/sales', (req, res) => {
-  const b = req.body;
+export function createSale(b) {
   const items = Array.isArray(b.items) ? b.items.filter((i) => Number(i.qty) > 0) : [];
-  if (!items.length) return res.status(400).json({ error: 'Hoá đơn phải có ít nhất 1 mặt hàng' });
+  if (!items.length) throw badRequest('Hoá đơn phải có ít nhất 1 mặt hàng');
 
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
-  if (!warehouseId) return res.status(400).json({ error: 'Chưa thiết lập kho' });
+  if (!warehouseId) throw badRequest('Chưa thiết lập kho');
 
   const settings = getSettings();
   const allowNegative = settings.allow_negative_stock === true;
@@ -84,10 +111,9 @@ r.post('/sales', (req, res) => {
       const st = get('SELECT qty FROM stock WHERE product_id = ? AND warehouse_id = ?',
         [it.product_id, warehouseId]);
       if ((st?.qty ?? 0) < qtyBase) {
-        return res.status(400).json({
-          error: `"${p.name}" chỉ còn ${st?.qty ?? 0} trong kho, không đủ bán ${qtyBase}.`,
-          code: 'INSUFFICIENT_STOCK',
-        });
+        throw badRequest(
+          `"${p.name}" chỉ còn ${st?.qty ?? 0} trong kho, không đủ bán ${qtyBase}.`
+          , 'INSUFFICIENT_STOCK');
       }
     }
   }
@@ -113,16 +139,14 @@ r.post('/sales', (req, res) => {
     if (c?.debt_limit > 0) {
       const willOwe = customerDebt(b.customer_id) + (total0 - Math.round(Number(b.paid) || 0));
       if (willOwe > c.debt_limit) {
-        return res.status(400).json({
-          error: `Công nợ của "${c.name}" sẽ là ${willOwe.toLocaleString('vi-VN')} đ, vượt hạn mức ${c.debt_limit.toLocaleString('vi-VN')} đ.`,
-          code: 'DEBT_LIMIT',
-        });
+        throw badRequest(
+          `Công nợ của "${c.name}" sẽ là ${willOwe.toLocaleString('vi-VN')} đ, vượt hạn mức ${c.debt_limit.toLocaleString('vi-VN')} đ.`
+          , 'DEBT_LIMIT');
       }
     }
   }
 
-  try {
-    const result = tx(() => {
+  return tx(() => {
       let subtotal = 0;
       let vatAmount = 0;
       let cogs = 0;
@@ -238,10 +262,14 @@ r.post('/sales', (req, res) => {
         });
       }
       return { id: saleId, code, total, paid, change_given: changeGiven };
-    });
-    res.json(result);
+  });
+}
+
+r.post('/sales', (req, res) => {
+  try {
+    res.json(createSale(req.body));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
 });
 
@@ -301,20 +329,38 @@ r.post('/sales/:id/cancel', (req, res) => {
 /* ========================== TRẢ HÀNG KHÁCH ========================= */
 
 r.get('/sale-returns', (req, res) => {
-  const { from, to, customer_id, limit = 200 } = req.query;
+  const { from, to, customer_id } = req.query;
   const where = [];
   const params = [];
   if (customer_id) { where.push('sr.customer_id = ?'); params.push(customer_id); }
   if (from) { where.push('date(sr.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(sr.ts) <= date(?)'); params.push(to); }
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM sale_returns sr
+    LEFT JOIN customers c ON c.id = sr.customer_id
+    LEFT JOIN sales s ON s.id = sr.sale_id
+    LEFT JOIN warehouses w ON w.id = sr.warehouse_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT sr.*, c.name AS customer_name, s.code AS sale_code, w.name AS warehouse_name
     FROM sale_returns sr
     LEFT JOIN customers c ON c.id = sr.customer_id
     LEFT JOIN sales s ON s.id = sr.sale_id
     LEFT JOIN warehouses w ON w.id = sr.warehouse_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY sr.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY sr.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  const sums = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(sr.total), 0) AS total,
+           COALESCE(SUM(sr.refunded), 0) AS refunded
+    FROM sale_returns sr
+    LEFT JOIN customers c ON c.id = sr.customer_id
+    ${w}`, params);
+  res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
 r.get('/sale-returns/:id', (req, res) => {
@@ -334,14 +380,18 @@ r.get('/sale-returns/:id', (req, res) => {
   res.json(sr);
 });
 
-r.post('/sale-returns', (req, res) => {
-  const b = req.body;
+/**
+ * Lập phiếu khách trả hàng. Dùng chung cho màn hình Hoá đơn và cho việc
+ * đổi hàng tại quầy, nên tách khỏi tay xử lý HTTP.
+ *
+ * Trả về { id, code, total } — total là tiền hàng trả lại sau khi trừ phí.
+ */
+export function createSaleReturn(b) {
   const items = Array.isArray(b.items) ? b.items.filter((i) => Number(i.qty) > 0) : [];
-  if (!items.length) return res.status(400).json({ error: 'Phiếu trả hàng phải có ít nhất 1 mặt hàng' });
+  if (!items.length) throw badRequest('Phiếu trả hàng phải có ít nhất 1 mặt hàng');
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
 
-  try {
-    const result = tx(() => {
+  return tx(() => {
       let subtotal = 0;
       for (const it of items) {
         it._amount = Math.round(Number(it.qty) * Math.round(Number(it.price) || 0));
@@ -385,11 +435,153 @@ r.post('/sale-returns', (req, res) => {
           note: `Hoàn tiền trả hàng ${code}`, ts: b.ts || null,
         });
       }
-      return { id: returnId, code };
-    });
-    res.json(result);
+    return { id: returnId, code, total, subtotal, fee, refunded };
+  });
+}
+
+r.post('/sale-returns', (req, res) => {
+  try {
+    res.json(createSaleReturn(req.body));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/* ==================================================================== *
+ * ĐỔI HÀNG TẠI QUẦY
+ *
+ * Khách trả món cũ rồi lấy món khác. Phần mềm làm hai chứng từ nối với
+ * nhau — một phiếu trả hàng và một hoá đơn mới — rồi bù trừ tiền:
+ *
+ *   tiền hàng trả lại  >=  tiền hàng mới  ->  tiệm hoàn phần chênh
+ *   tiền hàng trả lại  <   tiền hàng mới  ->  khách bù phần chênh
+ *
+ * Phần bù trừ KHÔNG chạy qua quỹ, vì tiền đó chưa từng ra vào két. Chỉ
+ * phần chênh lệch thật sự mới ghi thu hoặc chi.
+ * ==================================================================== */
+
+r.post('/sale-exchanges', (req, res) => {
+  const b = req.body;
+  const backItems = Array.isArray(b.return_items) ? b.return_items.filter((i) => Number(i.qty) > 0) : [];
+  const newItems = Array.isArray(b.new_items) ? b.new_items.filter((i) => Number(i.qty) > 0) : [];
+  if (!backItems.length) {
+    return res.status(400).json({ error: 'Chưa chọn món khách trả lại' });
+  }
+
+  try {
+    const out = tx(() => {
+      const ret = createSaleReturn({
+        ts: b.ts || null,
+        sale_id: b.sale_id || null,
+        customer_id: b.customer_id || null,
+        warehouse_id: b.warehouse_id,
+        user_id: b.user_id || null,
+        items: backItems,
+        fee: b.fee || 0,
+        refunded: 0,          // chưa hoàn tiền vội, còn chờ bù trừ bên dưới
+        reason: b.reason || 'Đổi hàng',
+        note: b.note || null,
+      });
+      const credit = Math.max(0, ret.total);   // tiền khách được trừ
+
+      // Không lấy món mới nào: thành phiếu trả hàng thường, hoàn tiền luôn
+      if (!newItems.length) {
+        /* Không truyền refund thì hoàn hết. Phải kiểm tra trước khi ép kiểu:
+           Number(undefined) ra NaN mà ?? không bắt NaN, nên viết
+           "Number(b.refund) ?? credit" sẽ ra NaN và khách không được hoàn đồng nào. */
+        const asked = b.refund === undefined || b.refund === null || b.refund === ''
+          || Number.isNaN(Number(b.refund))
+          ? credit
+          : Math.round(Number(b.refund));
+        const refund = Math.max(0, Math.min(asked, credit));
+        if (refund > 0) {
+          const accountId = Number(b.account_id) || defaultCashAccount();
+          const cust = b.customer_id ? get('SELECT name FROM customers WHERE id = ?', [b.customer_id]) : null;
+          if (accountId) addCashTx({
+            accountId, direction: 'out', amount: refund, category: 'sale_return',
+            partnerType: 'customer', partnerId: b.customer_id || null,
+            partnerName: cust?.name || 'Khách lẻ',
+            refType: 'sale_return', refId: ret.id, refCode: ret.code,
+            userId: b.user_id || null, note: `Hoàn tiền trả hàng ${ret.code}`, ts: b.ts || null,
+          });
+          run('UPDATE sale_returns SET refunded = ? WHERE id = ?', [refund, ret.id]);
+        }
+        return {
+          return_id: ret.id, return_code: ret.code, credit,
+          sale_id: null, sale_code: null, sale_total: 0,
+          customer_pays: 0, shop_refunds: refund,
+        };
+      }
+
+      const paidExtra = Math.round(Number(b.paid) || 0);
+      // Lập hoá đơn mới trước để biết tổng chính xác, rồi mới chia tiền
+      const sale = createSale({
+        ts: b.ts || null,
+        customer_id: b.customer_id || null,
+        warehouse_id: b.warehouse_id,
+        price_list_id: b.price_list_id || null,
+        user_id: b.user_id || null,
+        items: newItems,
+        discount_type: b.discount_type || 'amount',
+        discount: b.discount || 0,
+        discount_percent: b.discount_percent || 0,
+        is_vat_invoice: b.is_vat_invoice ? 1 : 0,
+        // Phần trừ từ hàng trả lại tính là đã trả, nhưng không ghi vào quỹ
+        paid: 0,
+        received: 0,
+        payment_method: b.payment_method || 'cash',
+        cash_amount: 0,
+        transfer_amount: 0,
+        note: `Đổi hàng theo phiếu ${ret.code}${b.note ? ' — ' + b.note : ''}`,
+      });
+
+      const used = Math.min(credit, sale.total);          // phần bù trừ
+      const customerPays = Math.max(0, sale.total - credit);
+      const shopRefunds = Math.max(0, credit - sale.total);
+
+      // Ghi nhận phần bù trừ + phần khách trả thêm vào hoá đơn mới
+      const cashIn = Math.min(paidExtra, customerPays);
+      run('UPDATE sales SET paid = ? WHERE id = ?', [used + cashIn, sale.id]);
+
+      const cust = b.customer_id ? get('SELECT name FROM customers WHERE id = ?', [b.customer_id]) : null;
+      const partnerName = cust?.name || 'Khách lẻ';
+      const accountId = Number(b.account_id) || defaultCashAccount();
+
+      if (cashIn > 0 && accountId) {
+        const isTransfer = b.payment_method === 'transfer';
+        run('UPDATE sales SET cash_amount = ?, transfer_amount = ? WHERE id = ?',
+          [isTransfer ? 0 : cashIn, isTransfer ? cashIn : 0, sale.id]);
+        addCashTx({
+          accountId, direction: 'in', amount: cashIn, category: 'sale',
+          partnerType: 'customer', partnerId: b.customer_id || null, partnerName,
+          refType: 'sale', refId: sale.id, refCode: sale.code, userId: b.user_id || null,
+          note: `Khách bù thêm khi đổi hàng ${sale.code}`, ts: b.ts || null,
+        });
+      }
+      if (shopRefunds > 0) {
+        if (accountId) addCashTx({
+          accountId, direction: 'out', amount: shopRefunds, category: 'sale_return',
+          partnerType: 'customer', partnerId: b.customer_id || null, partnerName,
+          refType: 'sale_return', refId: ret.id, refCode: ret.code, userId: b.user_id || null,
+          note: `Hoàn phần chênh khi đổi hàng ${ret.code}`, ts: b.ts || null,
+        });
+        run('UPDATE sale_returns SET refunded = ? WHERE id = ?', [shopRefunds, ret.id]);
+      }
+      run('UPDATE sale_returns SET exchange_sale_id = ? WHERE id = ?', [sale.id, ret.id]);
+
+      return {
+        return_id: ret.id, return_code: ret.code, credit,
+        sale_id: sale.id, sale_code: sale.code, sale_total: sale.total,
+        applied: used,
+        customer_pays: customerPays,
+        paid_now: cashIn,
+        still_owed: Math.max(0, customerPays - cashIn),
+        shop_refunds: shopRefunds,
+      };
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
 });
 

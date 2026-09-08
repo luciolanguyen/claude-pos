@@ -9,6 +9,7 @@ const RESET = process.argv.includes('--reset');
 
 const TABLES = [
   'activity_log', 'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
+  'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
   'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
   'draft_sales', 'production_items', 'productions', 'product_boms', 'carriers',
   'cash_transactions', 'cash_accounts', 'sale_return_items', 'sale_returns', 'sale_items', 'sales',
@@ -86,6 +87,8 @@ tx(() => {
     photo_keep_days: 60,  // ảnh giữ 60 ngày kể từ ngày nhận máy rồi tự xoá
   });
   setSetting('allow_negative_stock', false);
+  // Bình quân gia quyền: hợp với tiệm điện, dây cáp lên xuống giá liên tục
+  setSetting('cost_method', 'average');
   setSetting('vat_enabled', true);
   setSetting('theme', { accent: 'emerald', density: 'compact' });
 

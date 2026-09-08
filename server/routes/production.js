@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, tx, nextCode, moveStock, costOf } from '../db.js';
+import { all, get, run, tx, nextCode, moveStock, costOf , pageParams } from '../db.js';
 
 const r = Router();
 
@@ -57,13 +57,23 @@ r.put('/products/:id/bom', (req, res) => {
 /* ==================================================================== */
 
 r.get('/productions', (req, res) => {
-  const { kind, from, to, limit = 200 } = req.query;
+  const { kind, from, to } = req.query;
   const where = [];
   const params = [];
   if (kind) { where.push('pr.kind = ?'); params.push(kind); }
   if (from) { where.push('date(pr.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(pr.ts) <= date(?)'); params.push(to); }
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM productions pr
+    JOIN products p ON p.id = pr.product_id
+    JOIN warehouses w ON w.id = pr.warehouse_id
+    LEFT JOIN users u ON u.id = pr.user_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT pr.*, p.name AS product_name, p.sku, p.base_unit,
            w.name AS warehouse_name, u.full_name AS user_name,
            (SELECT COUNT(*) FROM production_items i WHERE i.production_id = pr.id) AS item_count
@@ -71,8 +81,18 @@ r.get('/productions', (req, res) => {
     JOIN products p ON p.id = pr.product_id
     JOIN warehouses w ON w.id = pr.warehouse_id
     LEFT JOIN users u ON u.id = pr.user_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY pr.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY pr.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  /* Số tổng của cả bộ lọc, để thẻ số liệu không đổi theo trang đang xem */
+  const sums = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(CASE WHEN pr.kind = 'assemble' THEN 1 ELSE 0 END), 0) AS assembled,
+           COALESCE(SUM(CASE WHEN pr.kind = 'split' THEN 1 ELSE 0 END), 0) AS split,
+           COALESCE(SUM(pr.total_cost), 0) AS cost,
+           COALESCE(SUM(pr.labor_cost), 0) AS labor
+    FROM productions pr
+    ${w}`, params);
+  res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
 r.get('/productions/:id', (req, res) => {

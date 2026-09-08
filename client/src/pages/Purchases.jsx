@@ -4,11 +4,11 @@ import {
   FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input,
+  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { SupplierForm } from '../components/CustomerForm';
@@ -22,9 +22,13 @@ export default function Purchases() {
   const [onlyUnpaid, setOnlyUnpaid] = useState(false);
   const r = useMemo(() => range(rangeKey), [rangeKey]);
 
-  const { data, busy, error, reload } = useFetch(
-    () => api.purchases({ q: dq, from: r.from, to: r.to, unpaid: onlyUnpaid ? 1 : '' }),
-    [dq, r.from, r.to, onlyUnpaid]
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged(
+    (pg) => api.purchases({ q: dq, from: r.from, to: r.to, unpaid: onlyUnpaid ? 1 : '', ...pg }),
+    [dq, r.from, r.to, onlyUnpaid],
+    { key: 'purchases' }
   );
 
   const [creating, setCreating] = useState(false);
@@ -34,16 +38,8 @@ export default function Purchases() {
   const [labelsOf, setLabelsOf] = useState(null);
   const [busyAction, setBusyAction] = useState(false);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    const done = data.filter((p) => p.status === 'done');
-    return {
-      count: done.length,
-      total: done.reduce((a, p) => a + p.total, 0),
-      paid: done.reduce((a, p) => a + p.paid, 0),
-      unpaid: done.reduce((a, p) => a + Math.max(0, p.remaining), 0),
-    };
-  }, [data]);
+  /* Số tổng do máy chủ tính trên cả bộ lọc, không phải trang đang xem */
+  const totals = extra?.totals || null;
 
   const doCancel = async () => {
     setBusyAction(true);
@@ -102,7 +98,8 @@ export default function Purchases() {
                 action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu nhập</Button>}
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -161,6 +158,14 @@ export default function Purchases() {
                     })}
                   </tbody>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>

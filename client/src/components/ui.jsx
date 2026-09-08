@@ -420,16 +420,35 @@ export function Tabs({ tabs, value, onChange, className = '' }) {
 
 /* ========================== Phân trang ========================== */
 
-export function Pager({ page, pageSize, total, onPage }) {
+export const PAGE_SIZES = [10, 20, 50, 100];
+
+/**
+ * Thanh phân trang dưới mỗi bảng.
+ * Luôn hiện ô "mỗi trang" kể cả khi chỉ có một trang, để người dùng đổi
+ * được sang 100 dòng mà không phải đợi dữ liệu nhiều lên mới thấy ô chọn.
+ */
+export function Pager({ page, pageSize, total, onPage, onPageSize, sizes = PAGE_SIZES }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (total <= pageSize) return null;
-  const from = (page - 1) * pageSize + 1;
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-line text-[13px]">
-      <span className="text-muted-ink tabular">
-        {n(from)}–{n(to)} trên {n(total)}
-      </span>
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2
+                    px-3 py-2 border-t border-line text-[13px]">
+      <div className="flex items-center gap-2">
+        <label htmlFor="pager-size" className="text-muted-ink">Mỗi trang</label>
+        <select
+          id="pager-size"
+          className="input !w-auto !py-1 !px-2 tabular"
+          value={pageSize}
+          onChange={(e) => onPageSize?.(Number(e.target.value))}
+          disabled={!onPageSize}
+        >
+          {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span className="text-muted-ink tabular">
+          {total === 0 ? 'chưa có dòng nào' : `${n(from)}–${n(to)} trên ${n(total)}`}
+        </span>
+      </div>
       <div className="flex items-center gap-1">
         <IconButton
           icon={ChevronLeft}
@@ -438,7 +457,7 @@ export function Pager({ page, pageSize, total, onPage }) {
           disabled={page <= 1}
           onClick={() => onPage(page - 1)}
         />
-        <span className="px-2 tabular font-semibold">{page} / {pages}</span>
+        <span className="px-2 tabular font-semibold whitespace-nowrap">{page} / {pages}</span>
         <IconButton
           icon={ChevronRight}
           label="Trang sau"

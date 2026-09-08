@@ -121,6 +121,20 @@ export const PAYMENT_LABEL = {
   debt: 'Ghi nợ', mixed: 'Kết hợp',
 };
 
+/* Hai cách tính giá vốn. Nói bằng lời người bán hàng hiểu, không dùng
+   thuật ngữ kế toán. */
+export const COST_METHOD_LABEL = {
+  average: 'Bình quân gia quyền',
+  fixed: 'Cố định',
+};
+
+export const COST_METHOD_HINT = {
+  average: 'Mỗi lần nhập hàng thì tính bình quân lại theo số đang tồn. '
+    + 'Trả hàng cho mối thì rút phần đó ra. Hợp với hàng hay đổi giá.',
+  fixed: 'Chốt một lần rồi thôi: lần nhập đầu tiên lấy luôn giá nhập làm giá vốn, '
+    + 'sau đó giá nhập lên xuống cũng không đổi. Muốn đổi thì sửa tay.',
+};
+
 export const ROLE_LABEL = {
   owner: 'Chủ cửa hàng', manager: 'Quản lý',
   cashier: 'Thu ngân', stock: 'Nhân viên kho',

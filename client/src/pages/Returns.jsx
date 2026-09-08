@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Undo2, Eye, Plus, Trash2, Search } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch } from '../lib/store';
+import { useApp, useFetch, usePaged } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, Select, Modal, Spinner, Empty, ErrorBox, Badge, Stat,
-  Field, MoneyInput, Textarea, Combo, QtyInput,
+  Field, MoneyInput, Textarea, Combo, QtyInput, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { ProductPicker } from './Purchases';
@@ -17,19 +17,14 @@ import { ProductPicker } from './Purchases';
 export function SaleReturns() {
   const [rangeKey, setRangeKey] = useState('day30');
   const r = useMemo(() => range(rangeKey), [rangeKey]);
-  const { data, busy, error, reload } = useFetch(
-    () => api.saleReturns({ from: r.from, to: r.to }), [r.from, r.to]
-  );
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged((pg) => api.saleReturns({ from: r.from, to: r.to, ...pg }), [r.from, r.to],
+    { key: 'sale-returns' });
   const [detail, setDetail] = useState(null);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    return {
-      count: data.length,
-      total: data.reduce((a, x) => a + x.total, 0),
-      refunded: data.reduce((a, x) => a + x.refunded, 0),
-    };
-  }, [data]);
+  const totals = extra?.totals || null;
 
   return (
     <>
@@ -60,7 +55,8 @@ export function SaleReturns() {
                 message="Khi khách mang hàng đến trả, vào màn hình Hoá đơn, tìm hoá đơn gốc rồi bấm nút Trả hàng."
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -92,6 +88,14 @@ export function SaleReturns() {
                   </tbody>
                 </table>
               </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
+              </div>
             )}
       </Page>
 
@@ -108,20 +112,15 @@ export function PurchaseReturns() {
   const { toast } = useApp();
   const [rangeKey, setRangeKey] = useState('day30');
   const r = useMemo(() => range(rangeKey), [rangeKey]);
-  const { data, busy, error, reload } = useFetch(
-    () => api.purchaseReturns({ from: r.from, to: r.to }), [r.from, r.to]
-  );
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged((pg) => api.purchaseReturns({ from: r.from, to: r.to, ...pg }), [r.from, r.to],
+    { key: 'purchase-returns' });
   const [detail, setDetail] = useState(null);
   const [creating, setCreating] = useState(false);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    return {
-      count: data.length,
-      total: data.reduce((a, x) => a + x.total, 0),
-      refunded: data.reduce((a, x) => a + x.refunded, 0),
-    };
-  }, [data]);
+  const totals = extra?.totals || null;
 
   return (
     <>
@@ -158,7 +157,8 @@ export function PurchaseReturns() {
                 action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Lập phiếu trả hàng</Button>}
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -187,6 +187,14 @@ export function PurchaseReturns() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>

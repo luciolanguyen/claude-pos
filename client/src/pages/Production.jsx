@@ -3,11 +3,11 @@ import {
   Wrench, Plus, Eye, XCircle, Scissors, Package, AlertTriangle, Trash2,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch } from '../lib/store';
+import { useApp, useFetch, usePaged } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, Select, Modal, Spinner, Empty, ErrorBox, Badge, Confirm,
-  Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Tabs,
+  Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 
@@ -17,9 +17,13 @@ export default function Production() {
   const [rangeKey, setRangeKey] = useState('day30');
   const r = useMemo(() => range(rangeKey), [rangeKey]);
 
-  const { data, busy, error, reload } = useFetch(
-    () => api.get('/productions', { kind, from: r.from, to: r.to }),
-    [kind, r.from, r.to]
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged(
+    (pg) => api.get('/productions', { kind, from: r.from, to: r.to, ...pg }),
+    [kind, r.from, r.to],
+    { key: 'production' }
   );
 
   const [creating, setCreating] = useState(null);  // 'assemble' | 'split'
@@ -27,16 +31,8 @@ export default function Production() {
   const [cancelling, setCancelling] = useState(null);
   const [busyAction, setBusyAction] = useState(false);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    return {
-      count: data.length,
-      assembled: data.filter((x) => x.kind === 'assemble').length,
-      split: data.filter((x) => x.kind === 'split').length,
-      cost: data.reduce((a, x) => a + x.total_cost, 0),
-      labor: data.reduce((a, x) => a + x.labor_cost, 0),
-    };
-  }, [data]);
+  /* Số tổng do máy chủ tính trên cả bộ lọc, không phải trang đang xem */
+  const totals = extra?.totals || null;
 
   const doCancel = async () => {
     setBusyAction(true);
@@ -101,7 +97,8 @@ export default function Production() {
                 action={<Button variant="primary" icon={Wrench} onClick={() => setCreating('assemble')}>Lắp ráp thành phẩm</Button>}
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -152,6 +149,14 @@ export default function Production() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, addCashTx, accountBalance } from '../db.js';
+import { all, get, run, addCashTx, accountBalance , pageParams } from '../db.js';
 
 const r = Router();
 
@@ -8,6 +8,7 @@ export const CASH_CATEGORIES = {
   in: [
     { code: 'sale', label: 'Thu bán hàng' },
     { code: 'debt_in', label: 'Thu công nợ khách' },
+    { code: 'deposit_in', label: 'Khách đặt cọc đơn hàng' },
     { code: 'purchase_return', label: 'NCC hoàn tiền trả hàng' },
     { code: 'capital_in', label: 'Chủ góp vốn' },
     { code: 'other_in', label: 'Thu khác' },
@@ -16,6 +17,7 @@ export const CASH_CATEGORIES = {
     { code: 'purchase', label: 'Chi mua hàng' },
     { code: 'debt_out', label: 'Trả nợ nhà cung cấp' },
     { code: 'sale_return', label: 'Hoàn tiền khách trả hàng' },
+    { code: 'deposit_out', label: 'Hoàn cọc đơn đã huỷ' },
     { code: 'salary', label: 'Lương nhân viên' },
     { code: 'rent', label: 'Tiền thuê mặt bằng' },
     { code: 'utility', label: 'Điện, nước, internet' },
@@ -84,7 +86,7 @@ r.delete('/cash/accounts/:id', (req, res) => {
 /* =========================== SỔ QUỸ ================================ */
 
 r.get('/cash/transactions', (req, res) => {
-  const { account_id, direction, category, partner_type, from, to, q = '', limit = 300 } = req.query;
+  const { account_id, direction, category, partner_type, from, to, q = '' } = req.query;
   const where = [];
   const params = [];
   if (account_id) { where.push('t.account_id = ?'); params.push(account_id); }
@@ -98,13 +100,22 @@ r.get('/cash/transactions', (req, res) => {
     const like = `%${q.trim()}%`;
     params.push(like, like, like, like);
   }
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM cash_transactions t
+    JOIN cash_accounts a ON a.id = t.account_id
+    LEFT JOIN users u ON u.id = t.user_id
+    ${w}`, params).n;
+
   const rows = all(`
     SELECT t.*, a.name AS account_name, a.type AS account_type, u.full_name AS user_name
     FROM cash_transactions t
     JOIN cash_accounts a ON a.id = t.account_id
     LEFT JOIN users u ON u.id = t.user_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY t.id DESC LIMIT ${Number(limit)}`, params);
+    ${w}
+    ORDER BY t.id DESC LIMIT ${size} OFFSET ${offset}`, params);
 
   const totals = get(`
     SELECT COALESCE(SUM(CASE WHEN t.direction = 'in'  THEN t.amount END), 0) AS total_in,
@@ -112,7 +123,7 @@ r.get('/cash/transactions', (req, res) => {
     FROM cash_transactions t
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`, params);
 
-  res.json({ rows, ...totals, net: totals.total_in - totals.total_out });
+  res.json({ rows, total, page, page_size: size, ...totals, net: totals.total_in - totals.total_out });
 });
 
 /** Lập phiếu thu / chi thủ công. */

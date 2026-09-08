@@ -4,11 +4,11 @@ import {
   Receipt, Printer, Undo2, XCircle, Eye, Filter, Download, ShoppingCart, HandCoins,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, usePaged, useDebounced, fetchAllPages } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, PAYMENT_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox,
-  Badge, Confirm, Field, MoneyInput, Textarea, Stat,
+  Badge, Confirm, Field, MoneyInput, Textarea, Stat, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import InvoicePrint from '../components/InvoicePrint';
@@ -24,13 +24,14 @@ export default function Sales() {
   const [onlyUnpaid, setOnlyUnpaid] = useState(false);
 
   const r = useMemo(() => range(rangeKey), [rangeKey]);
-  const { data, busy, error, reload } = useFetch(
-    () => api.sales({
-      q: dq, from: r.from, to: r.to, payment_method: method,
-      unpaid: onlyUnpaid ? 1 : '', limit: 500,
-    }),
-    [dq, r.from, r.to, method, onlyUnpaid]
-  );
+  const filters = useMemo(() => ({
+    q: dq, from: r.from, to: r.to, payment_method: method, unpaid: onlyUnpaid ? 1 : '',
+  }), [dq, r.from, r.to, method, onlyUnpaid]);
+
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged((pg) => api.sales({ ...filters, ...pg }), [filters], { key: 'sales' });
 
   const [detail, setDetail] = useState(null);
   const [printing, setPrinting] = useState(null);
@@ -39,16 +40,9 @@ export default function Sales() {
   const [paying, setPaying] = useState(null);
   const [busyAction, setBusyAction] = useState(false);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    const done = data.filter((s) => s.status === 'done');
-    return {
-      count: done.length,
-      revenue: done.reduce((a, s) => a + s.total, 0),
-      profit: done.reduce((a, s) => a + s.profit, 0),
-      unpaid: done.reduce((a, s) => a + Math.max(0, s.remaining), 0),
-    };
-  }, [data]);
+  /* Số tổng do máy chủ tính trên CẢ bộ lọc. Nếu cộng từ data thì phân trang
+     xong chỉ còn cộng đúng một trang, mà sai kiểu đó rất khó nhận ra. */
+  const totals = extra?.totals || null;
 
   const openDetail = async (id) => {
     try { setDetail(await api.sale(id)); }
@@ -70,10 +64,12 @@ export default function Sales() {
     }
   };
 
-  const exportCsv = () => {
-    if (!data?.length) return;
+  const exportCsv = async () => {
+    if (!rowCount) return;
+    // Xuất toàn bộ kết quả lọc, không phải mỗi trang đang xem
+    const allRows = await fetchAllPages((pg) => api.sales({ ...filters, ...pg }));
     const head = ['Mã HĐ', 'Ngày', 'Khách hàng', 'Số ĐT', 'Thu ngân', 'Tổng tiền', 'Đã trả', 'Còn nợ', 'Thanh toán', 'Trạng thái'];
-    const rows = data.map((s) => [
+    const rows = allRows.map((s) => [
       s.code, datetime(s.ts), s.customer_name || 'Khách lẻ', s.customer_phone || '',
       s.user_name || '', s.total, s.paid, s.remaining,
       PAYMENT_LABEL[s.payment_method] || s.payment_method,
@@ -88,7 +84,7 @@ export default function Sales() {
     a.download = `hoadon-${r.from}-${r.to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast('Đã tải file danh sách hoá đơn', 'ok');
+    toast(`Đã tải file ${allRows.length} hoá đơn`, 'ok');
   };
 
   return (
@@ -97,7 +93,7 @@ export default function Sales() {
         title="Hoá đơn bán hàng"
         subtitle={`${r.label} · ${date(r.from)} — ${date(r.to)}`}
         actions={<>
-          <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          <Button icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
           <Link to="/pos" className="btn btn-primary btn-touch">
             <ShoppingCart size={16} aria-hidden="true" />
             Bán hàng
@@ -147,7 +143,8 @@ export default function Sales() {
                 message={q ? `Không tìm thấy hoá đơn khớp "${q}" trong khoảng thời gian này.` : 'Chưa phát sinh hoá đơn trong khoảng thời gian đã chọn.'}
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -225,6 +222,14 @@ export default function Sales() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>

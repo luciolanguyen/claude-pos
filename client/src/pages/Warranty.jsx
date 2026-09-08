@@ -4,11 +4,11 @@ import {
   PackageCheck, Printer, XCircle, Trash2, RefreshCw, CheckCircle2, ArrowRight,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, smartTime, isoDate, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs,
+  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import PhotoPicker, { PhotoGallery } from '../components/PhotoPicker';
@@ -76,9 +76,13 @@ function Tickets() {
   const [status, setStatus] = useState('');
   const [openOnly, setOpenOnly] = useState(true);
 
-  const { data, busy, error, reload } = useFetch(
-    () => api.warranty({ q: dq, status, open_only: openOnly ? 1 : '' }),
-    [dq, status, openOnly]
+  const {
+    rows: data, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged(
+    (pg) => api.warranty({ q: dq, status, open_only: openOnly ? 1 : '', ...pg }),
+    [dq, status, openOnly],
+    { key: 'warranty' }
   );
   const { data: summary, reload: reloadSummary } = useFetch(() => api.warrantySummary(), []);
 
@@ -183,7 +187,8 @@ function Tickets() {
               action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Nhận hàng bảo hành</Button>}
             />
           ) : (
-            <div className="table-wrap">
+            <div className="card">
+            <div className="table-wrap table-scroll !border-0 !rounded-none">
               <table className="data">
                 <thead>
                   <tr>
@@ -250,6 +255,14 @@ function Tickets() {
                   })}
                 </tbody>
               </table>
+            </div>
+            <Pager
+              page={page}
+              pageSize={pageSize}
+              total={rowCount}
+              onPage={setPage}
+              onPageSize={setPageSize}
+            />
             </div>
           )}
 

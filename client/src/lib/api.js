@@ -1,10 +1,25 @@
 /** Lớp gọi API. Khi build chạy thật, server phục vụ luôn giao diện nên dùng đường dẫn tương đối. */
 const BASE = '/api';
 
+/* Máy chủ cần biết ai đang gọi để chặn quyền. Đọc thẳng từ localStorage chứ
+   không qua React, vì lớp gọi API này dùng được cả ngoài component. */
+function currentUserId() {
+  try {
+    return JSON.parse(localStorage.getItem('thpos.user') || 'null')?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 async function request(method, path, body) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  const uid = currentUserId();
+  if (uid) headers['x-user-id'] = String(uid);
+
   const res = await fetch(BASE + path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -107,7 +122,18 @@ export const api = {
   warrantyReport: (params) => request('GET', '/reports/warranty' + qs(params)),
   photoUsage: () => request('GET', '/warranty/photo-usage'),
 
+  /* --- Đổi trả hàng tại quầy --- */
+  saleExchange: (body) => request('POST', '/sale-exchanges', body),
+  saleLookup: (params) => request('GET', '/sales' + qs(params)),
+
+  /* --- Đặt hàng --- */
+  orders: (params) => request('GET', '/orders' + qs(params)),
+  order: (id) => request('GET', `/orders/${id}`),
+  ordersSummary: () => request('GET', '/orders-summary'),
+  ordersShortage: () => request('GET', '/orders-shortage'),
+
   /* --- Hệ thống --- */
+  me: () => request('GET', '/me'),
   settings: () => request('GET', '/settings'),
   users: () => request('GET', '/users'),
   systemInfo: () => request('GET', '/system-info'),

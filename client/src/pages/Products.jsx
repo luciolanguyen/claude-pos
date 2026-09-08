@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
-import { money, n, short, qty as fq, datetime, MOVE_LABEL } from '../lib/format';
+import { money, n, short, qty as fq, datetime, MOVE_LABEL, COST_METHOD_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
   Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs,
@@ -287,20 +287,28 @@ const EMPTY = {
   cost_price: 0, vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
   opening_qty: 0, opening_warehouse_id: '',
+  cost_method: '',        // rỗng = theo thiết lập chung của tiệm
 };
 
 function ProductForm({ open, product, onClose, onSaved }) {
-  const { meta, defaultWarehouse } = useApp();
+  const { meta, defaultWarehouse, settings } = useApp();
+  const shopCostMethod = settings?.cost_method === 'fixed' ? 'fixed' : 'average';
   const [form, setForm] = useState(EMPTY);
   const [units, setUnits] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /* Cách tính thật sự áp cho món này: đặt riêng thì theo riêng, không thì theo tiệm */
+  const effectiveCostMethod = form.cost_method || shopCostMethod;
 
   useEffect(() => {
     if (!open) return;
     setErr('');
     if (product) {
-      setForm({ ...EMPTY, ...product, category_id: product.category_id || '' });
+      setForm({
+        ...EMPTY, ...product,
+        category_id: product.category_id || '',
+        cost_method: product.cost_method || '',
+      });
       // Dựng lại danh sách đơn vị kèm giá của từng bảng giá
       const list = (product.units || []).map((u) => {
         const prices = {};
@@ -487,8 +495,33 @@ function ProductForm({ open, product, onClose, onSaved }) {
 
         {/* Kho & thuế */}
         <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Giá vốn / đơn vị cơ bản" hint={product ? 'Tự cập nhật khi nhập hàng' : 'Giá nhập ban đầu'} htmlFor="pf-cost">
+          <Field
+            label="Giá vốn / đơn vị cơ bản"
+            hint={product
+              ? (effectiveCostMethod === 'fixed'
+                ? 'Cố định — sửa ở nút "Sửa giá vốn"'
+                : 'Tự tính lại mỗi lần nhập hàng')
+              : 'Giá nhập ban đầu'}
+            htmlFor="pf-cost"
+          >
             <MoneyInput id="pf-cost" value={form.cost_price} onChange={(v) => setForm((f) => ({ ...f, cost_price: v }))} disabled={!!product} />
+          </Field>
+          <Field
+            label="Cách tính giá vốn"
+            hint={form.cost_method ? 'Riêng cho món này' : 'Theo thiết lập chung'}
+            htmlFor="pf-costmethod"
+          >
+            <Select
+              id="pf-costmethod"
+              value={form.cost_method || ''}
+              onChange={(e) => setForm((f) => ({ ...f, cost_method: e.target.value }))}
+            >
+              <option value="">
+                Theo tiệm — {COST_METHOD_LABEL[shopCostMethod]}
+              </option>
+              <option value="average">{COST_METHOD_LABEL.average}</option>
+              <option value="fixed">{COST_METHOD_LABEL.fixed}</option>
+            </Select>
           </Field>
           <Field label="Thuế GTGT (%)" htmlFor="pf-vat">
             <Select id="pf-vat" value={form.vat_rate} onChange={(e) => setForm((f) => ({ ...f, vat_rate: Number(e.target.value) }))}>

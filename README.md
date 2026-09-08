@@ -36,7 +36,8 @@ Nếu máy khác không vào được, mở Windows Firewall trên máy chủ v�
 | `thungan` | `1234` | Thu ngân |
 | `kho` | `1234` | Nhân viên kho |
 
-Đổi mật khẩu ở **Thiết lập → Người dùng**.
+Đổi mật khẩu ở **Thiết lập → Người dùng**. Mỗi vai trò thấy một menu khác nhau —
+xem mục [Phân quyền](#phân-quyền).
 
 Tiệm chỉ 1–2 người bán có thể bỏ hẳn màn hình đăng nhập:
 **Thiết lập → Màn hình bán hàng → Bỏ qua màn hình đăng nhập**. Mở phần mềm là vào thẳng,
@@ -67,6 +68,17 @@ Màn hình bán hàng toàn màn hình, tối ưu cho thao tác nhanh tại qu�
 Quét mã vạch: máy quét gõ mã rồi Enter, hàng tự vào giỏ. Đổi đơn vị tính ngay trên
 từng dòng (bán lẻ mét hay nguyên cuộn). Sửa đơn giá tại chỗ. Thanh toán tiền mặt,
 chuyển khoản, ghi nợ hoặc kết hợp.
+
+Ba việc hay gặp giữa lúc đông khách làm được ngay tại quầy, khỏi đổi màn hình:
+
+- **Đặt hàng** — khách hỏi món tiệm hết hàng: bấm *Đặt hàng*, giỏ đang gõ dở biến
+  thành đơn đặt, nhận cọc luôn.
+- **Giao đơn đặt** — khách tới lấy hàng đã đặt: tìm đơn theo tên hoặc số điện thoại,
+  chọn món giao, xuất hoá đơn. Tiền cọc tự trừ.
+- **Đổi trả hàng** — khách đem hàng lại: tìm hoá đơn cũ, chọn món trả, chọn món đổi
+  lấy. Phần mềm bù trừ tiền hai chiều.
+
+Chuông trên thanh đầu đếm số đơn đặt đang chờ, đỏ lên khi có đơn quá hẹn giao.
 
 **Nhiều tab hoá đơn cùng lúc.** Khách này đang chọn hàng thì mở tab mới bán cho khách
 khác, không phải huỷ giỏ. Mỗi tab giữ riêng giỏ hàng, khách, bảng giá và giảm giá.
@@ -101,6 +113,8 @@ Phiếu ghi rõ "CHƯA THANH TOÁN" để không lẫn với hoá đơn thật, 
 trả hay tiệm chịu) và tiền thu hộ COD. Thông tin in kèm trên hoá đơn A4/A5 và K80.
 
 ### Quản lý bán hàng
+- **Đặt hàng** — khách đặt trước, tiệm gom hàng rồi giao; nhận cọc, giao nhiều đợt,
+  cảnh báo trễ hẹn (xem mục dưới).
 - **Hoá đơn** — tìm theo mã, khách, số điện thoại; lọc theo kỳ và hình thức thanh toán;
   xem chi tiết kèm giá vốn và lãi; thu tiền nợ; huỷ hoá đơn (hàng tự về kho); xuất Excel.
 - **Khách trả hàng** — lập từ hoá đơn gốc nên không trả quá số đã bán.
@@ -332,6 +346,108 @@ nên cần Internet để hiện; mọi phần khác của hoá đơn in bình t
 **Máy in nhiệt in lệch mép?** Vào **Thiết lập → Hoá đơn & in ấn → Căn khổ giấy máy in nhiệt**.
 Chọn 72mm cho giấy 80mm thông thường, 76mm nếu muốn in sát mép, 48mm nếu tiệm dùng giấy 58mm.
 In thử lại sau mỗi lần đổi.
+
+---
+
+## Đặt hàng của khách
+
+Khách hỏi món tiệm chưa có, hoặc lấy số lượng lớn cần gom hàng. Ghi đơn, nhận cọc,
+hẹn ngày giao.
+
+**Đơn đặt hàng không trừ kho.** Kho chỉ trừ lúc giao hàng — vì lúc nhận đơn thì hàng
+chưa chắc đã có trong tiệm. Nhờ vậy nhận đơn được cho cả món đang hết sạch.
+
+**Giao nhiều đợt.** Đơn 100 cái nhưng chỉ đủ 60: giao 60 trước, phần mềm ghi còn nợ
+40 cái, đơn ở trạng thái *Giao một phần*. Mỗi đợt giao xuất một hoá đơn riêng.
+
+**Tiền cọc.** Nhận cọc bao nhiêu lần cũng được, tiền vào quỹ ngay. Lúc giao hàng, cọc
+tự trừ vào hoá đơn — và **không sinh phiếu thu mới**, vì tiền đó đã vào két từ lúc
+nhận cọc. Huỷ đơn thì hoàn cọc lại, ghi thành phiếu chi.
+
+**Trễ hẹn.** Đơn quá ngày hẹn mà chưa giao xong bị tô đỏ, đếm riêng ở thẻ *Trễ hẹn
+giao*, và hiện lên chuông ở màn hình bán hàng.
+
+### Cần mua để giao đơn
+
+Thẻ thứ hai của màn hình Đặt hàng gom lại những mặt hàng còn thiếu, **gộp theo nhà
+cung cấp** — mỗi mối một bảng, kèm số điện thoại bấm là gọi được. Số cần mua tính
+bằng:
+
+> (số khách đã đặt mà chưa giao + mức tồn tối thiểu) − số đang có trong kho
+
+In ra được thành danh sách đi lấy hàng, có sẵn cột trống để tích *đã lấy*.
+
+---
+
+## Cách tính giá vốn
+
+**Thiết lập → Bán hàng → Cách tính giá vốn.** Hai lựa chọn:
+
+| Cách | Tính thế nào | Hợp với |
+|---|---|---|
+| **Bình quân gia quyền** | Mỗi lần nhập hàng thì bình quân lại theo số đang tồn. Trả hàng cho mối thì rút lô đó ra khỏi bình quân. | Hàng hay đổi giá — dây điện, cáp, đồng |
+| **Cố định** | Lần nhập đầu tiên lấy luôn giá nhập làm giá vốn. Sau đó giá nhập lên xuống cũng không đổi. Muốn đổi thì sửa tay. | Hàng giá ổn định; chủ tiệm muốn con số lãi nhìn cho dễ hiểu |
+
+Chọn chung một lần cho cả tiệm, món nào cần khác thì vào thẻ hàng hoá đổi riêng ở ô
+*Cách tính giá vốn*.
+
+> **Đổi cách tính không tính lại lịch sử.** Giá vốn đang có của từng món giữ nguyên,
+> cách mới chỉ ăn từ lần nhập kế tiếp. Làm vậy để lãi lỗ của những hoá đơn đã xuất
+> không bị đổi số sau lưng.
+
+Ví dụ bình quân: nhập 10 cái giá 100k, rồi 10 cái giá 200k → giá vốn 150k. Trả lại
+mối 10 cái giá 200k → giá vốn về lại 100k.
+
+---
+
+## Phân quyền
+
+Bốn vai trò. **Chủ cửa hàng** và **Quản lý** toàn quyền như nhau. **Thu ngân** chỉ lo
+phần bán hàng. **Nhân viên kho** chỉ lo hàng hoá và kho.
+
+| Việc | Chủ | Quản lý | Thu ngân | Kho |
+|---|:-:|:-:|:-:|:-:|
+| Bán hàng tại quầy | ✓ | ✓ | ✓ | — |
+| Xem hoá đơn đã xuất | ✓ | ✓ | ✓ | — |
+| Sửa, huỷ hoá đơn đã xuất | ✓ | ✓ | — | — |
+| Nhận khách trả hàng | ✓ | ✓ | ✓ | — |
+| Đơn đặt hàng của khách | ✓ | ✓ | ✓ | — |
+| Khách hàng, công nợ khách | ✓ | ✓ | ✓ | — |
+| Nhận và trả hàng bảo hành | ✓ | ✓ | ✓ | — |
+| Xem hàng hoá, giá bán, tồn kho | ✓ | ✓ | ✓ | ✓ |
+| Thêm sửa hàng hoá, đổi giá bán | ✓ | ✓ | — | ✓ |
+| Kiểm kê, chuyển kho, sản xuất | ✓ | ✓ | — | ✓ |
+| Nhập hàng, nhà cung cấp, công nợ NCC | ✓ | ✓ | — | ✓ |
+| Quỹ tiền, thu chi | ✓ | ✓ | — | — |
+| **Xem giá vốn và lãi lỗ** | ✓ | ✓ | — | — |
+| Xem báo cáo | ✓ | ✓ | — | — |
+| Thiết lập, người dùng, sao lưu | ✓ | ✓ | — | — |
+
+Mục nào không có quyền thì **ẩn hẳn khỏi menu**. Gõ thẳng địa chỉ cũng không vào được:
+máy chủ chặn chứ không phải chỉ giấu trên màn hình. Giá vốn còn bị **cắt khỏi dữ liệu
+gửi về máy khách**, nên mở công cụ nhà phát triển cũng không thấy.
+
+Xem bảng này ngay trong phần mềm: **Thiết lập → Người dùng → Ai làm được gì**.
+
+> Đây là hàng rào chống thao tác nhầm giữa người trong tiệm, **không phải lớp bảo mật
+> chống kẻ xấu**. Phần mềm chạy trong mạng LAN của tiệm, mật khẩu lưu dạng chữ thường.
+> Đừng mở cổng 5175 ra Internet.
+
+Bật **Thiết lập → Bán hàng → Bỏ qua đăng nhập** thì không phân quyền được nữa — cả
+tiệm dùng chung một tài khoản chủ. Chỉ nên bật ở tiệm một người.
+
+---
+
+## Xem danh sách dài
+
+Mọi bảng danh sách đều **cuộn trong khung** với dòng tiêu đề dính lại trên cùng, nên
+xem tới dòng thứ 90 vẫn biết cột nào là cột nào. Dưới mỗi bảng có ô **Mỗi trang** chọn
+10 / 20 / 50 / 100 dòng — phần mềm nhớ lựa chọn riêng cho từng màn hình.
+
+Phân trang chạy ở máy chủ với những bảng lớn (hoá đơn, phiếu nhập, sổ quỹ, phiếu bảo
+hành, phiếu sản xuất), nên tiệm có 5.000 hoá đơn máy vẫn nhẹ. Số tổng trên các thẻ
+phía trên là **của cả bộ lọc**, không phải của riêng trang đang xem. Nút *Xuất Excel*
+cũng tải hết mọi trang.
 
 ---
 

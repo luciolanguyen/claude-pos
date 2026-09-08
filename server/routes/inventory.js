@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, tx, nextCode, moveStock, costOf } from '../db.js';
+import { all, get, run, tx, nextCode, moveStock, costOf , pageParams } from '../db.js';
 
 const r = Router();
 
@@ -41,7 +41,7 @@ r.get('/stock', (req, res) => {
 
 /** Sổ thẻ kho tổng hợp. */
 r.get('/stock-moves', (req, res) => {
-  const { product_id, warehouse_id, ref_type, from, to, limit = 300 } = req.query;
+  const { product_id, warehouse_id, ref_type, from, to } = req.query;
   const where = [];
   const params = [];
   if (product_id) { where.push('m.product_id = ?'); params.push(product_id); }
@@ -49,13 +49,23 @@ r.get('/stock-moves', (req, res) => {
   if (ref_type) { where.push('m.ref_type = ?'); params.push(ref_type); }
   if (from) { where.push('date(m.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(m.ts) <= date(?)'); params.push(to); }
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM stock_moves m
+    JOIN products p ON p.id = m.product_id
+    JOIN warehouses w ON w.id = m.warehouse_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT m.*, p.name AS product_name, p.sku, p.base_unit, w.name AS warehouse_name
     FROM stock_moves m
     JOIN products p ON p.id = m.product_id
     JOIN warehouses w ON w.id = m.warehouse_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY m.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY m.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  res.json({ rows, total, page, page_size: size });
 });
 
 /** Điều chỉnh tồn nhanh cho 1 sản phẩm. */

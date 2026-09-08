@@ -4,48 +4,65 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
   BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
-  ShieldCheck,
+  ShieldCheck, ClipboardList,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
 
-/* Cấu trúc menu theo nghiệp vụ, không theo bảng dữ liệu. */
-const NAV = [
-  { to: '/', icon: LayoutDashboard, label: 'Tổng quan', end: true },
-  { to: '/pos', icon: ShoppingCart, label: 'Bán hàng', highlight: true },
+/* Cấu trúc menu theo nghiệp vụ, không theo bảng dữ liệu.
+   Mỗi mục ghi kèm quyền cần có; ai không có quyền thì mục đó biến mất
+   khỏi menu. Nhóm nào rỗng hết con thì cũng ẩn luôn cả nhóm. */
+export const NAV = [
+  { to: '/', icon: LayoutDashboard, label: 'Tổng quan', end: true, perm: 'report.view' },
+  { to: '/pos', icon: ShoppingCart, label: 'Bán hàng', highlight: true, perm: 'sale.pos' },
   {
     label: 'Quản lý bán hàng', icon: Receipt, key: 'sale',
     children: [
-      { to: '/sales', icon: Receipt, label: 'Hoá đơn' },
-      { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng' },
-      { to: '/customers', icon: Users, label: 'Khách hàng' },
-      { to: '/customer-debts', icon: HandCoins, label: 'Công nợ khách' },
-      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành' },
+      { to: '/orders', icon: ClipboardList, label: 'Đặt hàng', perm: 'order.manage' },
+      { to: '/sales', icon: Receipt, label: 'Hoá đơn', perm: 'sale.view' },
+      { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng', perm: 'sale.return' },
+      { to: '/customers', icon: Users, label: 'Khách hàng', perm: 'customer.manage' },
+      { to: '/customer-debts', icon: HandCoins, label: 'Công nợ khách', perm: 'customer.manage' },
+      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành', perm: 'warranty.manage' },
     ],
   },
   {
     label: 'Mua hàng', icon: Truck, key: 'buy',
     children: [
-      { to: '/purchases', icon: FileText, label: 'Phiếu nhập hàng' },
-      { to: '/purchase-returns', icon: Undo2, label: 'Trả hàng NCC' },
-      { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp' },
-      { to: '/supplier-debts', icon: Landmark, label: 'Công nợ NCC' },
+      { to: '/purchases', icon: FileText, label: 'Phiếu nhập hàng', perm: 'purchase.manage' },
+      { to: '/purchase-returns', icon: Undo2, label: 'Trả hàng NCC', perm: 'purchase.manage' },
+      { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp', perm: 'purchase.manage' },
+      { to: '/supplier-debts', icon: Landmark, label: 'Công nợ NCC', perm: 'purchase.manage' },
     ],
   },
   {
     label: 'Kho hàng', icon: Package, key: 'stock',
     children: [
-      { to: '/products', icon: Boxes, label: 'Hàng hoá' },
-      { to: '/stock', icon: Package, label: 'Tồn kho' },
-      { to: '/stock-takes', icon: ClipboardCheck, label: 'Kiểm kê' },
-      { to: '/stock-transfers', icon: ArrowLeftRight, label: 'Chuyển kho' },
-      { to: '/production', icon: Wrench, label: 'Sản xuất' },
+      { to: '/products', icon: Boxes, label: 'Hàng hoá', perm: 'product.view' },
+      { to: '/stock', icon: Package, label: 'Tồn kho', perm: 'product.view' },
+      { to: '/stock-takes', icon: ClipboardCheck, label: 'Kiểm kê', perm: 'stock.manage' },
+      { to: '/stock-transfers', icon: ArrowLeftRight, label: 'Chuyển kho', perm: 'stock.manage' },
+      { to: '/production', icon: Wrench, label: 'Sản xuất', perm: 'stock.manage' },
     ],
   },
-  { to: '/cash', icon: Wallet, label: 'Quỹ tiền' },
-  { to: '/reports', icon: BarChart3, label: 'Báo cáo' },
-  { to: '/settings', icon: Cog, label: 'Thiết lập' },
+  { to: '/cash', icon: Wallet, label: 'Quỹ tiền', perm: 'cash.manage' },
+  { to: '/reports', icon: BarChart3, label: 'Báo cáo', perm: 'report.view' },
+  { to: '/settings', icon: Cog, label: 'Thiết lập', perm: 'settings.manage' },
 ];
+
+/** Lọc menu theo quyền. Nhóm mất hết con thì bỏ luôn nhóm. */
+export function visibleNav(can) {
+  const out = [];
+  for (const item of NAV) {
+    if (item.children) {
+      const kids = item.children.filter((c) => !c.perm || can(c.perm));
+      if (kids.length) out.push({ ...item, children: kids });
+    } else if (!item.perm || can(item.perm)) {
+      out.push(item);
+    }
+  }
+  return out;
+}
 
 function NavItem({ item, onNavigate }) {
   const loc = useLocation();
@@ -120,7 +137,8 @@ function NavItem({ item, onNavigate }) {
 }
 
 export default function Layout({ children }) {
-  const { store, user, logout } = useApp();
+  const { store, user, logout, can } = useApp();
+  const nav = visibleNav(can);
   const [mobileOpen, setMobileOpen] = useState(false);
   const loc = useLocation();
 
@@ -149,7 +167,7 @@ export default function Layout({ children }) {
 
       <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="Điều hướng chính">
         <ul className="space-y-0.5">
-          {NAV.map((item, i) => <NavItem key={item.to || item.key || i} item={item} />)}
+          {nav.map((item, i) => <NavItem key={item.to || item.key || i} item={item} />)}
         </ul>
       </nav>
 
@@ -205,13 +223,16 @@ export default function Layout({ children }) {
           >
             <Menu size={20} aria-hidden="true" />
           </button>
-          <Link to="/" className="text-white font-display font-bold text-sm truncate flex-1">
+          <Link to={can('report.view') ? '/' : '/pos'}
+                className="text-white font-display font-bold text-sm truncate flex-1">
             {store.name || 'CỬA HÀNG'}
           </Link>
-          <Link to="/pos" className="btn btn-primary btn-sm btn-touch">
-            <ShoppingCart size={15} aria-hidden="true" />
-            Bán hàng
-          </Link>
+          {can('sale.pos') && (
+            <Link to="/pos" className="btn btn-primary btn-sm btn-touch">
+              <ShoppingCart size={15} aria-hidden="true" />
+              Bán hàng
+            </Link>
+          )}
         </header>
 
         <main className="flex-1 min-w-0">{children}</main>

@@ -8,11 +8,11 @@ import {
   TrendingUp, TrendingDown, Banknote,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/store';
 import { money, n, short, datetime, date, range, RANGES, CASH_LABEL, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo,
+  Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 
@@ -29,13 +29,14 @@ export default function Cash() {
   const { data: summary, reload: reloadSummary } = useFetch(
     () => api.cashSummary({ from: r.from, to: r.to }), [r.from, r.to]
   );
-  const { data: txData, busy, error, reload } = useFetch(
-    () => api.cashTransactions({
-      q: dq, from: r.from, to: r.to, account_id: accountId,
-      direction, category, limit: 500,
-    }),
-    [dq, r.from, r.to, accountId, direction, category]
-  );
+  const txFilters = useMemo(() => ({
+    q: dq, from: r.from, to: r.to, account_id: accountId, direction, category,
+  }), [dq, r.from, r.to, accountId, direction, category]);
+
+  const {
+    extra: txData, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged((pg) => api.cashTransactions({ ...txFilters, ...pg }), [txFilters], { key: 'cash' });
   const { data: cats } = useFetch(() => api.cashCategories(), []);
 
   const [creating, setCreating] = useState(null); // 'in' | 'out'
@@ -60,10 +61,11 @@ export default function Cash() {
     }
   };
 
-  const exportCsv = () => {
-    if (!txData?.rows?.length) return;
+  const exportCsv = async () => {
+    if (!rowCount) return;
+    const allRows = await fetchAllPages((pg) => api.cashTransactions({ ...txFilters, ...pg }));
     const head = ['Mã phiếu', 'Ngày', 'Quỹ', 'Loại', 'Nội dung', 'Đối tượng', 'Thu', 'Chi', 'Chứng từ', 'Diễn giải'];
-    const csv = '﻿' + [head, ...txData.rows.map((t) => [
+    const csv = '﻿' + [head, ...allRows.map((t) => [
       t.code, datetime(t.ts), t.account_name,
       t.direction === 'in' ? 'Thu' : 'Chi',
       CASH_LABEL[t.category] || t.category,
@@ -193,9 +195,9 @@ export default function Cash() {
         <div className="flex items-center justify-between">
           <h2 className="text-[13px] font-bold">
             Sổ quỹ
-            {txData && <span className="text-muted-ink font-normal ml-1.5">({n(txData.rows.length)} phiếu)</span>}
+            {txData?.rows && <span className="text-muted-ink font-normal ml-1.5">({n(rowCount)} phiếu)</span>}
           </h2>
-          <Button size="sm" icon={Download} onClick={exportCsv} disabled={!txData?.rows?.length}>Xuất Excel</Button>
+          <Button size="sm" icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
         </div>
 
         {busy && !txData ? <Spinner />
@@ -207,7 +209,8 @@ export default function Cash() {
                 message="Thử đổi khoảng thời gian hoặc bỏ bớt bộ lọc."
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -260,6 +263,14 @@ export default function Cash() {
                     </tr>
                   </tfoot>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>

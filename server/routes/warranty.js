@@ -4,8 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   all, get, run, tx, nextCode, moveStock, costOf,
-  addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings,
-} from '../db.js';
+  addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings, pageParams } from '../db.js';
 
 const r = Router();
 
@@ -66,7 +65,7 @@ r.get('/warranty/photo/:file', (req, res) => {
 /* ==================================================================== */
 
 r.get('/warranty', (req, res) => {
-  const { q = '', status, resolution, from, to, open_only, limit = 300 } = req.query;
+  const { q = '', status, resolution, from, to, open_only } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
@@ -82,7 +81,18 @@ r.get('/warranty', (req, res) => {
   // Đang còn ở tiệm hoặc đang ở hãng — cái cần theo dõi hằng ngày
   if (open_only === '1') where.push("t.status NOT IN ('delivered','cancelled')");
 
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM warranty_tickets t
+    LEFT JOIN customers c ON c.id = t.customer_id
+    LEFT JOIN suppliers s ON s.id = t.supplier_id
+    LEFT JOIN users u ON u.id = t.received_by
+    LEFT JOIN sales sa ON sa.id = t.sale_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT t.*,
            COALESCE(c.name, t.customer_name) AS customer_display,
            COALESCE(c.phone, t.customer_phone) AS phone_display,
@@ -95,8 +105,9 @@ r.get('/warranty', (req, res) => {
     LEFT JOIN suppliers s ON s.id = t.supplier_id
     LEFT JOIN users u ON u.id = t.received_by
     LEFT JOIN sales sa ON sa.id = t.sale_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY t.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY t.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  res.json({ rows, total, page, page_size: size });
 });
 
 /* Đặt trước /warranty/:id, nếu không Express hiểu "photo-usage" là mã phiếu. */

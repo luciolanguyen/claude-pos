@@ -518,3 +518,80 @@ CREATE TABLE IF NOT EXISTS warranty_parts (
   unit_cost  INTEGER NOT NULL DEFAULT 0,
   amount     INTEGER NOT NULL DEFAULT 0
 );
+
+-- ================= DAT HANG CUA KHACH =================
+-- Khach dat truoc, tiem giao sau. Mot don co the giao nhieu dot,
+-- moi dot sinh ra mot hoa don ban hang rieng.
+CREATE TABLE IF NOT EXISTS sale_orders (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  code          TEXT NOT NULL UNIQUE,
+  ts            TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id   INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name TEXT,                      -- khach vang lai, chua tao ho so
+  customer_phone TEXT,
+  warehouse_id  INTEGER NOT NULL REFERENCES warehouses(id),
+  price_list_id INTEGER REFERENCES price_lists(id) ON DELETE SET NULL,
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  promised_at   TEXT,                      -- ngay hen giao
+  status        TEXT NOT NULL DEFAULT 'open',  -- open | partial | done | cancelled
+  subtotal      INTEGER NOT NULL DEFAULT 0,
+  discount      INTEGER NOT NULL DEFAULT 0,
+  discount_type TEXT NOT NULL DEFAULT 'amount',
+  discount_percent REAL NOT NULL DEFAULT 0,
+  total         INTEGER NOT NULL DEFAULT 0,
+  deposit       INTEGER NOT NULL DEFAULT 0,  -- tong da coc, cong don qua cac lan
+  deposit_used  INTEGER NOT NULL DEFAULT 0,  -- da tru vao hoa don giao hang
+  delivery_name TEXT,
+  delivery_phone TEXT,
+  delivery_address TEXT,
+  carrier_id    INTEGER REFERENCES carriers(id) ON DELETE SET NULL,
+  note          TEXT,
+  closed_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_so_ts ON sale_orders(ts);
+CREATE INDEX IF NOT EXISTS idx_so_customer ON sale_orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_so_status ON sale_orders(status);
+
+CREATE TABLE IF NOT EXISTS sale_order_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id      INTEGER NOT NULL REFERENCES sale_orders(id) ON DELETE CASCADE,
+  product_id    INTEGER NOT NULL REFERENCES products(id),
+  name_snapshot TEXT NOT NULL,
+  unit_name     TEXT NOT NULL,
+  factor        REAL NOT NULL DEFAULT 1,
+  qty           REAL NOT NULL,             -- so luong dat, theo don vi tren
+  delivered_qty REAL NOT NULL DEFAULT 0,   -- da giao bao nhieu, cung don vi
+  price         INTEGER NOT NULL,
+  discount      INTEGER NOT NULL DEFAULT 0,
+  discount_type TEXT NOT NULL DEFAULT 'amount',
+  discount_percent REAL NOT NULL DEFAULT 0,
+  amount        INTEGER NOT NULL DEFAULT 0,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_soi_order ON sale_order_items(order_id);
+CREATE INDEX IF NOT EXISTS idx_soi_product ON sale_order_items(product_id);
+
+-- Moi dot giao: noi don dat voi hoa don da xuat
+CREATE TABLE IF NOT EXISTS sale_order_deliveries (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id  INTEGER NOT NULL REFERENCES sale_orders(id) ON DELETE CASCADE,
+  sale_id   INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+  ts        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  deposit_applied INTEGER NOT NULL DEFAULT 0,
+  note      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sod_order ON sale_order_deliveries(order_id);
+
+-- Cac lan khach dua tien coc
+CREATE TABLE IF NOT EXISTS sale_order_deposits (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id  INTEGER NOT NULL REFERENCES sale_orders(id) ON DELETE CASCADE,
+  ts        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  amount    INTEGER NOT NULL,              -- am = hoan coc khi huy don
+  account_id INTEGER REFERENCES cash_accounts(id) ON DELETE SET NULL,
+  cash_tx_id INTEGER,
+  user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sodep_order ON sale_order_deposits(order_id);

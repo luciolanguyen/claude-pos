@@ -1,15 +1,14 @@
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, updateAvgCost,
-  addCashTx, defaultCashAccount, supplierDebt, costOf,
-} from '../db.js';
+  all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost,
+  addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams } from '../db.js';
 
 const r = Router();
 
 /* =========================== PHIẾU NHẬP HÀNG ======================== */
 
 r.get('/purchases', (req, res) => {
-  const { q = '', supplier_id, from, to, status, unpaid, limit = 200 } = req.query;
+  const { q = '', supplier_id, from, to, status, unpaid } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
@@ -23,7 +22,17 @@ r.get('/purchases', (req, res) => {
   if (status) { where.push('p.status = ?'); params.push(status); }
   if (unpaid === '1') where.push('p.total > p.paid');
 
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM purchases p
+    LEFT JOIN suppliers s ON s.id = p.supplier_id
+    LEFT JOIN warehouses w ON w.id = p.warehouse_id
+    LEFT JOIN users u ON u.id = p.user_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT p.*, s.name AS supplier_name, s.code AS supplier_code,
            w.name AS warehouse_name, u.full_name AS user_name,
            (p.total - p.paid) AS remaining,
@@ -32,8 +41,18 @@ r.get('/purchases', (req, res) => {
     LEFT JOIN suppliers s ON s.id = p.supplier_id
     LEFT JOIN warehouses w ON w.id = p.warehouse_id
     LEFT JOIN users u ON u.id = p.user_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY p.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY p.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  /* Tổng của cả bộ lọc, chỉ tính phiếu còn hiệu lực (bỏ phiếu đã huỷ) */
+  const sums = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(p.total), 0) AS total,
+           COALESCE(SUM(p.paid), 0) AS paid,
+           COALESCE(SUM(MAX(p.total - p.paid, 0)), 0) AS unpaid
+    FROM purchases p
+    LEFT JOIN suppliers s ON s.id = p.supplier_id
+    ${w ? w + " AND p.status = 'done'" : "WHERE p.status = 'done'"}`, params);
+  res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
 r.get('/purchases/:id', (req, res) => {
@@ -214,20 +233,38 @@ r.post('/purchases/:id/cancel', (req, res) => {
 /* ======================= TRẢ HÀNG NHÀ CUNG CẤP ====================== */
 
 r.get('/purchase-returns', (req, res) => {
-  const { from, to, supplier_id, limit = 200 } = req.query;
+  const { from, to, supplier_id } = req.query;
   const where = [];
   const params = [];
   if (supplier_id) { where.push('pr.supplier_id = ?'); params.push(supplier_id); }
   if (from) { where.push('date(pr.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(pr.ts) <= date(?)'); params.push(to); }
-  res.json(all(`
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const { page, size, offset } = pageParams(req.query);
+  const total = get(`
+    SELECT COUNT(*) AS n
+    FROM purchase_returns pr
+    LEFT JOIN suppliers s ON s.id = pr.supplier_id
+    LEFT JOIN purchases p ON p.id = pr.purchase_id
+    LEFT JOIN warehouses w ON w.id = pr.warehouse_id
+    ${w}`, params).n;
+
+  const rows = all(`
     SELECT pr.*, s.name AS supplier_name, p.code AS purchase_code, w.name AS warehouse_name
     FROM purchase_returns pr
     LEFT JOIN suppliers s ON s.id = pr.supplier_id
     LEFT JOIN purchases p ON p.id = pr.purchase_id
     LEFT JOIN warehouses w ON w.id = pr.warehouse_id
-    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY pr.id DESC LIMIT ${Number(limit)}`, params));
+    ${w}
+    ORDER BY pr.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+  const sums = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(pr.total), 0) AS total,
+           COALESCE(SUM(pr.refunded), 0) AS refunded
+    FROM purchase_returns pr
+    LEFT JOIN suppliers s ON s.id = pr.supplier_id
+    ${w}`, params);
+  res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
 r.get('/purchase-returns/:id', (req, res) => {
@@ -285,15 +322,20 @@ r.post('/purchase-returns', (req, res) => {
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
+        const qtyBase = Number(it.qty) * factor;
         run(`INSERT INTO purchase_return_items(return_id, product_id, unit_name, factor, qty, price, amount)
              VALUES(?, ?, ?, ?, ?, ?, ?)`,
           [returnId, it.product_id, it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._amount]);
         moveStock({
-          productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
+          productId: it.product_id, warehouseId, qtyChange: -qtyBase,
           unitCost: costOf(it.product_id), refType: 'purchase_return', refId: returnId,
           refCode: code, note: `Trả NCC ${it.qty} ${it.unit_name}`, ts: b.ts || null,
         });
+        /* Rút lô hàng trả lại ra khỏi bình quân gia quyền. Trả theo đúng giá
+           đã nhập (giá ghi trên phiếu trả), chứ không theo giá vốn hiện tại —
+           nếu không, trả một lô hàng đắt sẽ kéo giá vốn đi sai hướng. */
+        reverseAvgCost(it.product_id, qtyBase, Math.round(Number(it.price) || 0) / factor);
       }
 
       if (refunded > 0) {

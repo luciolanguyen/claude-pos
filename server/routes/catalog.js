@@ -1,7 +1,11 @@
 import { Router } from 'express';
-import { all, get, run, tx, moveStock, costOf } from '../db.js';
+import { all, get, run, tx, moveStock, costOf, costMethodOf } from '../db.js';
 
 const r = Router();
+
+/** Chỉ nhận 'average' hoặc 'fixed'; còn lại là theo thiết lập chung của tiệm. */
+const normCostMethod = (v) => (v === 'average' || v === 'fixed' ? v : null);
+
 
 /* ----------------------------- Nhóm hàng ----------------------------- */
 
@@ -241,12 +245,16 @@ r.post('/products', (req, res) => {
     const id = tx(() => {
       const info = run(`
         INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
-                             track_stock, min_stock, max_stock, brand, location, note, active)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             track_stock, min_stock, max_stock, brand, location, note, active,
+                             cost_method, cost_fixed)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
-          b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1]);
+          b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
+          normCostMethod(b.cost_method),
+          // Khai báo sẵn giá vốn lúc tạo hàng thì coi như đã chốt luôn
+          Math.round(b.cost_price || 0) > 0 ? 1 : 0]);
       const pid = Number(info.lastInsertRowid);
       saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái');
 
@@ -279,12 +287,13 @@ r.put('/products/:id', (req, res) => {
     tx(() => {
       run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
              vat_rate = ?, track_stock = ?, min_stock = ?, max_stock = ?,
-             brand = ?, location = ?, note = ?, active = ?
+             brand = ?, location = ?, note = ?, active = ?, cost_method = ?
            WHERE id = ?`,
         [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
-          b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1, id]);
+          b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
+          normCostMethod(b.cost_method), id]);
       saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái');
     });
     res.json(hydrate(get('SELECT * FROM products WHERE id = ?', [id])));
@@ -307,10 +316,16 @@ r.delete('/products/:id', (req, res) => {
 });
 
 /** Điều chỉnh giá vốn thủ công. */
+/* Sửa giá vốn bằng tay. Với hàng dùng giá vốn cố định thì đây là cách duy
+   nhất để đổi con số đó, nên đánh dấu đã chốt luôn — lần nhập sau không
+   được ghi đè lên con số chủ tiệm vừa gõ. */
 r.put('/products/:id/cost', (req, res) => {
-  run('UPDATE products SET cost_price = ? WHERE id = ?',
-    [Math.round(Number(req.body.cost_price) || 0), req.params.id]);
-  res.json({ ok: true, cost_price: costOf(Number(req.params.id)) });
+  const id = Number(req.params.id);
+  const p = get('SELECT id, cost_method FROM products WHERE id = ?', [id]);
+  if (!p) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+  run('UPDATE products SET cost_price = ?, cost_fixed = 1 WHERE id = ?',
+    [Math.round(Number(req.body.cost_price) || 0), id]);
+  res.json({ ok: true, cost_price: costOf(id), method: costMethodOf(p) });
 });
 
 /* -------------------------------------------------------------------- */

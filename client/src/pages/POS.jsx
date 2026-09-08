@@ -4,6 +4,7 @@ import {
   Search, Plus, Minus, Trash2, X, UserPlus, Printer, Percent, Package,
   ShoppingCart, ArrowLeft, Wallet, CreditCard, HandCoins, FileText, Tag, Grid3x3,
   Truck, Save, History, StickyNote, Eye, EyeOff, ChevronDown, FolderOpen, AlertTriangle,
+  ClipboardList, RefreshCcw,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal } from '../lib/store';
@@ -14,6 +15,9 @@ import {
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
 import CustomerForm from '../components/CustomerForm';
+import {
+  OrderBell, SaveAsOrderModal, PickOrderModal, ExchangeModal,
+} from '../components/PosOrders';
 
 /* Chỉ chủ và quản lý mới được xem giá vốn khi bán. */
 const canSeeCost = (user) => user?.role === 'owner' || user?.role === 'manager';
@@ -95,6 +99,10 @@ export default function POS() {
   const [custOpen, setCustOpen] = useState(false);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [draftsOpen, setDraftsOpen] = useState(false);
+  /* Ba việc mới làm ngay tại quầy: đặt hàng, giao đơn đã đặt, đổi trả */
+  const [orderOpen, setOrderOpen] = useState(false);       // giỏ hàng -> đơn đặt
+  const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn để giao
+  const [exchangeOpen, setExchangeOpen] = useState(false);   // đổi trả hàng
   const [quickOpen, setQuickOpen] = useState(false);
   const [priceHistOf, setPriceHistOf] = useState(null);
   const [noteOf, setNoteOf] = useState(null);
@@ -518,6 +526,8 @@ export default function POS() {
           </div>
         </div>
 
+        <OrderBell onOpen={() => setPickOrderOpen(true)} />
+
         {maySeeCost && (
           <button
             onClick={() => setShowCost((v) => !v)}
@@ -604,6 +614,22 @@ export default function POS() {
           <span className="kbd !bg-white/15 !text-slate-300 !border-white/20 hidden sm:inline">F7</span>
         </button>
         <div className="flex-1" />
+        <button
+          onClick={() => setExchangeOpen(true)}
+          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
+                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
+        >
+          <RefreshCcw size={14} aria-hidden="true" />
+          <span className="hidden sm:inline">Đổi trả hàng</span>
+        </button>
+        <button
+          onClick={() => setPickOrderOpen(true)}
+          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
+                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
+        >
+          <Truck size={14} aria-hidden="true" />
+          <span className="hidden sm:inline">Giao đơn đặt</span>
+        </button>
         <button
           onClick={() => setDraftsOpen(true)}
           className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
@@ -959,7 +985,13 @@ export default function POS() {
             </div>
 
             {/* Hàng nút phụ */}
-            <div className="grid grid-cols-4 gap-1.5 mb-2">
+            <div className="grid grid-cols-5 gap-1.5 mb-2">
+              <button onClick={() => setOrderOpen(true)} disabled={!tab.cart.length}
+                className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs"
+                title="Khách hỏi món hết hàng: biến giỏ này thành đơn đặt, nhận cọc luôn">
+                <ClipboardList size={14} aria-hidden="true" />
+                Đặt hàng
+              </button>
               <button onClick={() => setDeliveryOpen(true)}
                 className={`btn btn-sm flex-col !gap-0.5 !py-1.5 text-2xs ${tab.delivery ? 'btn-soft' : 'btn-outline'}`}>
                 <Truck size={14} aria-hidden="true" />
@@ -1021,6 +1053,30 @@ export default function POS() {
         onClose={() => setDraftsOpen(false)}
         onOpen={openDraft}
         openIds={tabs.map((t) => t.draftId).filter(Boolean)}
+      />
+
+      {/* --- Đặt hàng và đổi trả ngay tại quầy --- */}
+
+      <SaveAsOrderModal
+        open={orderOpen}
+        onClose={() => setOrderOpen(false)}
+        tab={tab}
+        customer={customer}
+        totals={totals}
+        onSaved={clearTab}
+      />
+
+      <PickOrderModal
+        open={pickOrderOpen}
+        onClose={() => setPickOrderOpen(false)}
+        onDelivered={reload}
+      />
+
+      <ExchangeModal
+        open={exchangeOpen}
+        onClose={() => setExchangeOpen(false)}
+        products={products || []}
+        onDone={reload}
       />
 
       <PriceHistoryModal

@@ -2,10 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
+  ShieldCheck,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
-import { money, n, date, datetime, ROLE_LABEL } from '../lib/format';
+import { money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Textarea, Field, Modal, Spinner, Empty,
   Badge, Confirm, Tabs, MoneyInput,
@@ -280,17 +281,19 @@ function PosSettings() {
   const { settings, saveSettings, meta, toast } = useApp();
   const [form, setForm] = useState(settings?.pos || {});
   const [allowNeg, setAllowNeg] = useState(settings?.allow_negative_stock === true);
+  const [costMethod, setCostMethod] = useState(settings?.cost_method || 'average');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setForm(settings?.pos || {});
     setAllowNeg(settings?.allow_negative_stock === true);
+    setCostMethod(settings?.cost_method || 'average');
   }, [settings]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await saveSettings({ pos: form, allow_negative_stock: allowNeg });
+      await saveSettings({ pos: form, allow_negative_stock: allowNeg, cost_method: costMethod });
       toast('Đã lưu thiết lập bán hàng', 'ok');
     } catch (e) {
       toast(e.message, 'bad');
@@ -340,6 +343,44 @@ function PosSettings() {
             </span>
           </div>
         )}
+      </div>
+
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Cách tính giá vốn</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Áp dụng cho mọi mặt hàng. Món nào cần khác thì vào thẻ hàng hoá đổi riêng.
+        </p>
+        <div className="space-y-2">
+          {['average', 'fixed'].map((m) => (
+            <label
+              key={m}
+              className={`flex items-start gap-2.5 p-2.5 rounded border cursor-pointer transition-colors duration-150
+                          ${costMethod === m ? 'border-accent bg-accent/5' : 'border-line hover:bg-muted/50'}`}
+            >
+              <input
+                type="radio"
+                name="cost-method"
+                className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+                checked={costMethod === m}
+                onChange={() => setCostMethod(m)}
+              />
+              <span className="text-[13px]">
+                <b>{COST_METHOD_LABEL[m]}</b>
+                <span className="block text-2xs text-muted-ink leading-relaxed mt-0.5">
+                  {COST_METHOD_HINT[m]}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="mt-2.5 p-2.5 bg-muted/60 border border-line rounded text-[13px] flex gap-2">
+          <AlertTriangle size={15} className="text-muted-ink shrink-0 mt-0.5" aria-hidden="true" />
+          <span className="text-muted-ink">
+            Đổi cách tính <b>không tính lại lịch sử</b>. Giá vốn đang có của từng món giữ nguyên,
+            cách mới chỉ ăn từ lần nhập hàng kế tiếp. Nhờ vậy lãi lỗ của hoá đơn đã xuất
+            không bị đổi số sau lưng.
+          </span>
+        </div>
       </div>
 
       <div className="card p-4">
@@ -798,8 +839,9 @@ function Carriers() {
 /* ==================================================================== */
 
 function UsersTab() {
-  const { toast, user: me } = useApp();
+  const { toast, user: me, access } = useApp();
   const { data, busy, reload } = useFetch(() => api.users(), []);
+  const [showPerms, setShowPerms] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
 
@@ -824,7 +866,8 @@ function UsersTab() {
         </p>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <Button icon={ShieldCheck} onClick={() => setShowPerms(true)}>Ai làm được gì</Button>
         <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm người dùng</Button>
       </div>
 
@@ -866,6 +909,12 @@ function UsersTab() {
             </div>
           )}
 
+      <PermissionMatrix
+        open={showPerms}
+        onClose={() => setShowPerms(false)}
+        permissions={access?.permissions || {}}
+      />
+
       <UserForm
         open={!!editing}
         user={editing === 'new' ? null : editing}
@@ -885,6 +934,81 @@ function UsersTab() {
         )}
       />
     </div>
+  );
+}
+
+/* ==================================================================== */
+/* Bảng ai làm được gì                                                   */
+/*                                                                      */
+/* Chủ tiệm hay hỏi "thu ngân có xem được lãi không". Thay vì giải thích */
+/* bằng lời, cho nhìn thẳng vào bảng.                                    */
+/* ==================================================================== */
+
+const ROLE_PERMS = {
+  owner: 'all',
+  manager: 'all',
+  cashier: [
+    'sale.pos', 'sale.view', 'sale.return',
+    'order.manage', 'customer.manage', 'warranty.manage', 'product.view',
+  ],
+  stock: ['product.view', 'product.manage', 'stock.manage', 'purchase.manage'],
+};
+
+function PermissionMatrix({ open, onClose, permissions }) {
+  const roles = ['owner', 'manager', 'cashier', 'stock'];
+  const keys = Object.keys(permissions);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Ai làm được gì"
+      subtitle="Chủ cửa hàng và quản lý toàn quyền. Thu ngân chỉ lo phần bán hàng."
+      size="lg"
+      footer={<Button variant="primary" onClick={onClose}>Đóng</Button>}
+    >
+      {keys.length === 0 ? (
+        <p className="text-[13px] text-muted-ink">
+          Không đọc được bảng quyền từ máy chủ. Thử tải lại trang.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Việc</th>
+                  {roles.map((r2) => <th key={r2} className="text-center">{ROLE_LABEL[r2]}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {keys.map((k) => (
+                  <tr key={k}>
+                    <td>{permissions[k]}</td>
+                    {roles.map((r2) => {
+                      const list = ROLE_PERMS[r2];
+                      const yes = list === 'all' || list.includes(k);
+                      return (
+                        <td key={r2} className="text-center">
+                          {yes
+                            ? <Check size={15} className="text-emerald-700 inline" aria-label="Được" />
+                            : <span className="text-muted-ink" aria-label="Không được">—</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-2xs text-muted-ink leading-relaxed">
+            Mục nào không được vào thì <b>ẩn hẳn khỏi menu</b> của người đó. Máy chủ cũng chặn,
+            nên gõ thẳng địa chỉ cũng không vào được. Muốn đổi quyền cho ai thì đổi vai trò
+            của họ ở bảng trên.
+          </p>
+        </div>
+      )}
+    </Modal>
   );
 }
 
