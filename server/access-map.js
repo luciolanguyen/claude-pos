@@ -36,6 +36,9 @@ export const ACCESS_RULES = [
   ['*',    /^\/warranty/,                 'warranty.manage'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */
+  /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
+     khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */
+  ['GET',  /^\/products\/\d+\/purchase-history$/, 'cost.view'],
   ['GET',  /^\/products/,                 'product.view'],
   ['PUT',  /^\/products\/\d+\/cost$/,     'cost.view'],
   ['*',    /^\/products/,                 'product.manage'],

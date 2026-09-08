@@ -752,6 +752,11 @@ r.get('/customer-debts', (req, res) => {
       oldest_unpaid: get(
         "SELECT MIN(ts) AS ts FROM sales WHERE customer_id = ? AND status = 'done' AND total > paid",
         [c.id]).ts,
+      // Nợ lâu nhất bao nhiêu ngày — để màn hình bán hàng tô đỏ khoản nợ dai
+      oldest_days: get(
+        `SELECT CAST(julianday('now','localtime') - julianday(MIN(ts)) AS INTEGER) AS d
+         FROM sales WHERE customer_id = ? AND status = 'done' AND total > paid`,
+        [c.id]).d || 0,
     });
   }
   res.json(out);

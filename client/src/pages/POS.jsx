@@ -18,6 +18,9 @@ import CustomerForm from '../components/CustomerForm';
 import {
   OrderBell, SaveAsOrderModal, PickOrderModal, ExchangeModal,
 } from '../components/PosOrders';
+import {
+  DebtButton, DebtCollectModal, CustomerDebtBanner, CollectDebtRow,
+} from '../components/PosDebt';
 
 /* Chỉ chủ và quản lý mới được xem giá vốn khi bán. */
 const canSeeCost = (user) => user?.role === 'owner' || user?.role === 'manager';
@@ -103,6 +106,8 @@ export default function POS() {
   const [orderOpen, setOrderOpen] = useState(false);       // giỏ hàng -> đơn đặt
   const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn để giao
   const [exchangeOpen, setExchangeOpen] = useState(false);   // đổi trả hàng
+  const [debtOpen, setDebtOpen] = useState(false);           // thu nợ khách
+  const [debtOf, setDebtOf] = useState(null);                // thu nợ đúng khách đang chọn
   const [quickOpen, setQuickOpen] = useState(false);
   const [priceHistOf, setPriceHistOf] = useState(null);
   const [noteOf, setNoteOf] = useState(null);
@@ -443,7 +448,27 @@ export default function POS() {
   });
 
   const submit = async (payload) => {
-    const res = await api.post('/sales', buildBody(payload));
+    const { collect_debt: collectDebt = 0, ...rest } = payload;
+    const res = await api.post('/sales', buildBody(rest));
+
+    /* Nợ cũ thu thành phiếu thu riêng, chạy SAU khi hoá đơn đã lưu chắc.
+       Nếu bước này hỏng thì hoá đơn vẫn còn — báo cho thu ngân biết để thu
+       lại bằng nút Thu nợ, chứ không huỷ luôn hoá đơn vừa bán. */
+    if (collectDebt > 0 && tab.customerId) {
+      try {
+        await api.post(`/customers/${tab.customerId}/pay`, {
+          amount: collectDebt,
+          user_id: user?.id || null,
+          account_id: payload.cash_account_id || null,
+          note: `Trả nợ cũ khi mua hàng ${res.code}`,
+        });
+        toast(`Đã thu thêm ${money(collectDebt)} tiền nợ cũ`, 'ok', 6000);
+      } catch (e) {
+        toast(`Hoá đơn ${res.code} đã lưu, nhưng chưa thu được nợ cũ: ${e.message}. `
+          + 'Dùng nút Thu nợ để thu lại.', 'bad', 12000);
+      }
+    }
+
     const full = await api.sale(res.id);
     setLastSale(full);
     if (tab.draftId) { try { await api.del(`/drafts/${tab.draftId}`); } catch { /* đã xoá */ } }
@@ -458,6 +483,7 @@ export default function POS() {
     });
     setPayOpen(false);
     reload();
+    reloadCustomers();          // để dòng cảnh báo nợ cập nhật ngay
     toast(`Đã lưu hoá đơn ${res.code}`, 'ok');
     return res;
   };
@@ -527,6 +553,7 @@ export default function POS() {
         </div>
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
+        <DebtButton onOpen={() => { setDebtOf(null); setDebtOpen(true); }} />
 
         {maySeeCost && (
           <button
@@ -708,12 +735,14 @@ export default function POS() {
             {customer && (
               <div className="flex items-center gap-2 mt-1.5 text-2xs flex-wrap">
                 {customer.phone && <span className="text-muted-ink">{customer.phone}</span>}
-                {customer.debt > 0 && (
-                  <Badge tone={customer.over_limit ? 'bad' : 'warn'}>Nợ cũ {money(customer.debt)}</Badge>
-                )}
                 {priceListName && <Badge tone="info">{priceListName}</Badge>}
               </div>
             )}
+            {/* Nhắc đòi nợ ngay lúc còn gặp mặt khách, không đợi tới lúc thanh toán */}
+            <CustomerDebtBanner
+              customer={customer}
+              onCollect={() => { setDebtOf(customer.id); setDebtOpen(true); }}
+            />
           </div>
 
           {/* Các dòng hàng */}
@@ -1070,6 +1099,13 @@ export default function POS() {
         open={pickOrderOpen}
         onClose={() => setPickOrderOpen(false)}
         onDelivered={reload}
+      />
+
+      <DebtCollectModal
+        open={debtOpen}
+        customerId={debtOf}
+        onClose={() => { setDebtOpen(false); setDebtOf(null); }}
+        onDone={reloadCustomers}
       />
 
       <ExchangeModal
@@ -1579,6 +1615,7 @@ function PaymentModal({ open, onClose, totals, customer, note, setNote, onSubmit
   const [received, setReceived] = useState(0);
   const [transferAmount, setTransferAmount] = useState(0);
   const [debtAmount, setDebtAmount] = useState(0);
+  const [collectDebt, setCollectDebt] = useState(0);   // thu luôn nợ cũ của khách
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -1588,6 +1625,7 @@ function PaymentModal({ open, onClose, totals, customer, note, setNote, onSubmit
     setReceived(totals.total);
     setTransferAmount(0);
     setDebtAmount(0);
+    setCollectDebt(0);
     setErr('');
   }, [open, totals.total]);
 
@@ -1615,6 +1653,7 @@ function PaymentModal({ open, onClose, totals, customer, note, setNote, onSubmit
     setBusy(true);
     try {
       await onSubmit({
+        collect_debt: collectDebt,
         payment_method: remaining > 0 ? 'debt' : method === 'mixed' ? 'mixed' : method,
         paid,
         received: method === 'cash' ? received : paid,
@@ -1750,6 +1789,23 @@ function PaymentModal({ open, onClose, totals, customer, note, setNote, onSubmit
           <p className="text-2xs text-warn font-semibold">
             Nợ hiện tại của khách: {money(customer.debt)} / hạn mức {money(customer.debt_limit)}
           </p>
+        )}
+
+        {/* Khách vừa mua vừa trả nợ cũ — gộp hai việc vào một lần đứng quầy */}
+        <CollectDebtRow customer={customer} value={collectDebt} onChange={setCollectDebt} />
+
+        {collectDebt > 0 && (
+          <div className="card p-2.5 bg-accent-soft/25 border-accent">
+            <div className="flex items-baseline justify-between">
+              <span className="text-[13px] font-semibold">Tổng khách đưa</span>
+              <span className="text-lg font-display font-bold tabular">
+                {money(paid + collectDebt)}
+              </span>
+            </div>
+            <div className="text-2xs text-muted-ink tabular mt-0.5">
+              {money(paid)} tiền hàng + {money(collectDebt)} nợ cũ
+            </div>
+          </div>
         )}
 
         <Field label="Ghi chú hoá đơn" htmlFor="pay-note">

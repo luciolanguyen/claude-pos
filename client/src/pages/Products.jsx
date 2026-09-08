@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Boxes, Plus, Pencil, Trash2, Download, Package, History, Tag, Layers, Upload,
-  Wrench, CheckSquare, Square, ChevronDown,
+  Wrench, CheckSquare, Square, ChevronDown, FileText, AlertTriangle,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
-import { money, n, short, qty as fq, datetime, MOVE_LABEL, COST_METHOD_LABEL } from '../lib/format';
+import { money, n, short, qty as fq, datetime, date, MOVE_LABEL, COST_METHOD_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
   Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs,
@@ -13,7 +13,8 @@ import {
 import { PageHeader, Page } from '../components/Layout';
 import ImportProducts from '../components/ImportProducts';
 import PrintLabels from '../components/PrintLabels';
-import { ProductPicker } from './Purchases';
+import { ProductPicker } from '../components/ProductPicker';
+import { ProductForm } from '../components/ProductForm';
 
 export default function Products() {
   const { toast, meta, loadMeta } = useApp();
@@ -59,20 +60,31 @@ export default function Products() {
     }
   };
 
-  const exportCsv = () => {
-    if (!data?.length) return;
-    const head = ['Mã hàng', 'Mã vạch', 'Tên hàng', 'Nhóm', 'ĐVT', 'Giá vốn', 'Tồn kho', 'Tồn tối thiểu', 'Giá trị tồn', 'Hãng', 'Vị trí'];
-    const rows = data.map((p) => [
-      p.sku, p.barcode || '', p.name, p.category_name || '', p.base_unit,
-      p.cost_price, p.total_stock, p.min_stock,
-      Math.round(p.total_stock * p.cost_price), p.brand || '', p.location || '',
+  /**
+   * Xuất danh sách hàng hoá ra file mở được bằng Excel.
+   * Truyền onlySelected để chỉ xuất những dòng đã tích; không truyền thì
+   * xuất toàn bộ danh sách đang lọc.
+   */
+  const exportCsv = (onlySelected = false) => {
+    const list = onlySelected ? (data || []).filter((p) => selected.has(p.id)) : (data || []);
+    if (!list.length) return;
+    const head = ['Mã hàng', 'Mã vạch', 'Tên hàng', 'Tên phụ', 'Nhóm', 'ĐVT', 'Giá vốn',
+      'Tồn kho', 'Tồn tối thiểu', 'Giá trị tồn', 'Hãng', 'Vị trí'];
+    const rows = list.map((p) => [
+      p.sku, p.barcode || '', p.name, p.alias || '', p.category_name || '', p.base_unit,
+      p.cost_price ?? '', p.total_stock, p.min_stock,
+      Math.round(p.total_stock * (p.cost_price || 0)), p.brand || '', p.location || '',
     ]);
+    // Dấu BOM ở đầu để Excel nhận ra UTF-8, không thì tiếng Việt ra ký tự lạ
     const csv = '﻿' + [head, ...rows]
       .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
-    a.href = url; a.download = 'hanghoa.csv'; a.click();
+    a.href = url;
+    a.download = onlySelected ? `hanghoa-da-chon-${list.length}.csv` : 'hanghoa.csv';
+    a.click();
     URL.revokeObjectURL(url);
+    toast(`Đã tải file ${n(list.length)} mặt hàng`, 'ok');
   };
 
   return (
@@ -83,15 +95,9 @@ export default function Products() {
         actions={<>
           <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
           <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
-          <Button
-            icon={Tag}
-            onClick={() => setLabelOpen(true)}
-            disabled={selected.size === 0}
-            title={selected.size === 0 ? 'Tích chọn hàng ở danh sách bên dưới trước' : ''}
-          >
-            In tem{selected.size > 0 ? ` (${selected.size})` : ''}
+          <Button icon={Download} onClick={() => exportCsv(false)} disabled={!data?.length}>
+            Xuất Excel
           </Button>
-          <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
         </>}
       >
@@ -110,6 +116,25 @@ export default function Products() {
       </PageHeader>
 
       <Page className="space-y-3">
+        {/* Thanh thao tác: chỉ hiện khi có dòng được tích, để lúc bình thường
+            màn hình không bị thêm một hàng nút không dùng tới */}
+        {selected.size > 0 && (
+          <div className="card p-2.5 flex flex-wrap items-center gap-2 border-accent bg-accent-soft/25"
+            role="region" aria-label="Thao tác với hàng đã chọn">
+            <span className="text-[13px] font-semibold">
+              Đã chọn {n(selected.size)} mặt hàng
+            </span>
+            <div className="flex-1" />
+            <Button size="sm" icon={Tag} onClick={() => setLabelOpen(true)}>
+              In tem ({n(selected.size)})
+            </Button>
+            <Button size="sm" icon={Download} onClick={() => exportCsv(true)}>
+              Xuất Excel ({n(selected.size)})
+            </Button>
+            <Button size="sm" onClick={() => setSelected(new Set())}>Bỏ chọn</Button>
+          </div>
+        )}
+
         {totals && (
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
             <Stat label="Số mặt hàng" value={n(totals.count)} icon={Boxes} />
@@ -279,483 +304,54 @@ export default function Products() {
 }
 
 /* ==================================================================== */
-/* Form thêm / sửa hàng hoá — gồm đơn vị quy đổi và 3 bảng giá           */
-/* ==================================================================== */
-
-const EMPTY = {
-  sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
-  cost_price: 0, vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
-  brand: '', location: '', note: '', active: 1,
-  opening_qty: 0, opening_warehouse_id: '',
-  cost_method: '',        // rỗng = theo thiết lập chung của tiệm
-};
-
-function ProductForm({ open, product, onClose, onSaved }) {
-  const { meta, defaultWarehouse, settings } = useApp();
-  const shopCostMethod = settings?.cost_method === 'fixed' ? 'fixed' : 'average';
-  const [form, setForm] = useState(EMPTY);
-  const [units, setUnits] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  /* Cách tính thật sự áp cho món này: đặt riêng thì theo riêng, không thì theo tiệm */
-  const effectiveCostMethod = form.cost_method || shopCostMethod;
-
-  useEffect(() => {
-    if (!open) return;
-    setErr('');
-    if (product) {
-      setForm({
-        ...EMPTY, ...product,
-        category_id: product.category_id || '',
-        cost_method: product.cost_method || '',
-      });
-      // Dựng lại danh sách đơn vị kèm giá của từng bảng giá
-      const list = (product.units || []).map((u) => {
-        const prices = {};
-        for (const pr of product.prices || []) {
-          if (pr.unit_id === u.id) prices[pr.price_list_id] = pr.price;
-        }
-        return { unit_name: u.unit_name, factor: u.factor, barcode: u.barcode || '', prices };
-      });
-      setUnits(list.length ? list : [{ unit_name: product.base_unit, factor: 1, prices: {} }]);
-    } else {
-      setForm({ ...EMPTY, opening_warehouse_id: defaultWarehouse || '' });
-      setUnits([{ unit_name: 'Cái', factor: 1, prices: {} }]);
-    }
-  }, [open, product, defaultWarehouse]);
-
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e }));
-
-  /* Đơn vị cơ bản luôn là dòng có hệ số 1 */
-  const setUnit = (i, patch) => setUnits((prev) => prev.map((u, j) => j === i ? { ...u, ...patch } : u));
-  const setUnitPrice = (i, plId, price) => setUnits((prev) =>
-    prev.map((u, j) => j === i ? { ...u, prices: { ...u.prices, [plId]: price } } : u));
-  const addUnit = () => setUnits((prev) => [...prev, { unit_name: '', factor: 10, prices: {} }]);
-  const removeUnit = (i) => setUnits((prev) => prev.filter((_, j) => j !== i));
-
-  /* Đổi tên đơn vị cơ bản ở phần thông tin chung -> đồng bộ xuống bảng đơn vị */
-  useEffect(() => {
-    setUnits((prev) => prev.map((u) => u.factor === 1 ? { ...u, unit_name: form.base_unit } : u));
-  }, [form.base_unit]);
-
-  const save = async () => {
-    if (!form.name.trim()) { setErr('Bắt buộc nhập tên hàng hoá.'); return; }
-    if (units.some((u) => !u.unit_name.trim())) { setErr('Mỗi đơn vị tính phải có tên.'); return; }
-    if (!units.some((u) => Number(u.factor) === 1)) { setErr('Phải có một đơn vị cơ bản với hệ số quy đổi bằng 1.'); return; }
-
-    setBusy(true);
-    setErr('');
-    try {
-      const body = {
-        ...form,
-        category_id: form.category_id ? Number(form.category_id) : null,
-        units: units.map((u) => ({ ...u, factor: Number(u.factor) || 1 })),
-      };
-      if (product) await api.put(`/products/${product.id}`, body);
-      else await api.post('/products', body);
-      onSaved?.();
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={product ? `Sửa hàng hoá: ${product.name}` : 'Thêm hàng hoá mới'}
-      size="xl"
-      footer={<>
-        <Button onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" onClick={save} loading={busy}>
-          {product ? 'Lưu thay đổi' : 'Thêm hàng hoá'}
-        </Button>
-      </>}
-    >
-      <div className="space-y-4">
-        {/* Thông tin chung */}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Tên hàng hoá" required className="sm:col-span-2" htmlFor="pf-name">
-            <Input id="pf-name" value={form.name} onChange={set('name')}
-              placeholder="Ví dụ: Dây điện Cadivi VCm 1x2.5" />
-          </Field>
-
-          <Field
-            label="Tên phụ / tên thường gọi"
-            className="sm:col-span-4"
-            hint="Cách gọi quen ở tiệm, gõ không dấu cũng được. Tìm được ở kho và màn hình bán hàng, KHÔNG in lên hoá đơn của khách."
-            htmlFor="pf-alias"
-          >
-            <Input id="pf-alias" value={form.alias || ''} onChange={set('alias')}
-              placeholder="Ví dụ: day do 2.5, day cadivi do, day 2 ly ruoi" />
-          </Field>
-          <Field label="Mã hàng" hint={product ? 'Không đổi được' : 'Bỏ trống để tự đặt'} htmlFor="pf-sku">
-            <Input id="pf-sku" value={form.sku} onChange={set('sku')} disabled={!!product} />
-          </Field>
-          <Field label="Mã vạch" htmlFor="pf-barcode">
-            <Input id="pf-barcode" value={form.barcode || ''} onChange={set('barcode')}
-              placeholder="Quét mã vạch vào đây" />
-          </Field>
-
-          <Field label="Nhóm hàng" htmlFor="pf-cat">
-            <Select id="pf-cat" value={form.category_id} onChange={set('category_id')}>
-              <option value="">— Chưa phân nhóm —</option>
-              {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-          </Field>
-          <Field label="Đơn vị cơ bản" required hint="Đơn vị nhỏ nhất khi bán" htmlFor="pf-unit">
-            <Input id="pf-unit" value={form.base_unit} onChange={set('base_unit')} placeholder="Cái, Mét, Cuộn..." />
-          </Field>
-          <Field label="Hãng sản xuất" htmlFor="pf-brand">
-            <Input id="pf-brand" value={form.brand || ''} onChange={set('brand')} placeholder="CADIVI, Panasonic..." />
-          </Field>
-          <Field label="Vị trí trên kệ" htmlFor="pf-loc">
-            <Input id="pf-loc" value={form.location || ''} onChange={set('location')} placeholder="Kệ A1" />
-          </Field>
-        </div>
-
-        {/* Đơn vị quy đổi + giá bán */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <span className="label !mb-0">Đơn vị tính &amp; giá bán</span>
-              <p className="text-2xs text-muted-ink">
-                Thêm đơn vị lớn để bán nguyên cuộn/thùng. Ví dụ: 1 Cuộn 100m = hệ số 100.
-              </p>
-            </div>
-            <Button size="sm" icon={Plus} onClick={addUnit}>Thêm đơn vị</Button>
-          </div>
-
-          <div className="table-wrap">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th style={{ width: 150 }}>Tên đơn vị</th>
-                  <th style={{ width: 110 }} className="text-right">Hệ số quy đổi</th>
-                  {meta.priceLists.map((pl) => (
-                    <th key={pl.id} className="text-right">{pl.name}</th>
-                  ))}
-                  <th style={{ width: 40 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {units.map((u, i) => {
-                  const isBase = Number(u.factor) === 1;
-                  return (
-                    <tr key={i} className={isBase ? 'bg-accent-soft/25' : ''}>
-                      <td>
-                        <Input
-                          size="sm"
-                          value={u.unit_name}
-                          onChange={(e) => setUnit(i, { unit_name: e.target.value })}
-                          disabled={isBase}
-                          aria-label={`Tên đơn vị dòng ${i + 1}`}
-                        />
-                        {isBase && <span className="text-2xs text-emerald-800 font-semibold">Đơn vị cơ bản</span>}
-                      </td>
-                      <td>
-                        <QtyInput
-                          value={u.factor}
-                          onChange={(v) => setUnit(i, { factor: v })}
-                          disabled={isBase}
-                          min={1}
-                          aria-label={`Hệ số quy đổi dòng ${i + 1}`}
-                        />
-                        {!isBase && u.factor > 1 && (
-                          <div className="text-2xs text-muted-ink text-right">
-                            = {fq(u.factor)} {form.base_unit}
-                          </div>
-                        )}
-                      </td>
-                      {meta.priceLists.map((pl) => (
-                        <td key={pl.id}>
-                          <MoneyInput
-                            size="sm"
-                            value={u.prices?.[pl.id] || 0}
-                            onChange={(v) => setUnitPrice(i, pl.id, v)}
-                            aria-label={`${pl.name} cho ${u.unit_name || 'đơn vị'}`}
-                          />
-                        </td>
-                      ))}
-                      <td>
-                        {!isBase && (
-                          <IconButton icon={Trash2} label={`Xoá đơn vị ${u.unit_name}`} size={14}
-                            className="!text-danger hover:!bg-red-50" onClick={() => removeUnit(i)} />
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Kho & thuế */}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field
-            label="Giá vốn / đơn vị cơ bản"
-            hint={product
-              ? (effectiveCostMethod === 'fixed'
-                ? 'Cố định — sửa ở nút "Sửa giá vốn"'
-                : 'Tự tính lại mỗi lần nhập hàng')
-              : 'Giá nhập ban đầu'}
-            htmlFor="pf-cost"
-          >
-            <MoneyInput id="pf-cost" value={form.cost_price} onChange={(v) => setForm((f) => ({ ...f, cost_price: v }))} disabled={!!product} />
-          </Field>
-          <Field
-            label="Cách tính giá vốn"
-            hint={form.cost_method ? 'Riêng cho món này' : 'Theo thiết lập chung'}
-            htmlFor="pf-costmethod"
-          >
-            <Select
-              id="pf-costmethod"
-              value={form.cost_method || ''}
-              onChange={(e) => setForm((f) => ({ ...f, cost_method: e.target.value }))}
-            >
-              <option value="">
-                Theo tiệm — {COST_METHOD_LABEL[shopCostMethod]}
-              </option>
-              <option value="average">{COST_METHOD_LABEL.average}</option>
-              <option value="fixed">{COST_METHOD_LABEL.fixed}</option>
-            </Select>
-          </Field>
-          <Field label="Thuế GTGT (%)" htmlFor="pf-vat">
-            <Select id="pf-vat" value={form.vat_rate} onChange={(e) => setForm((f) => ({ ...f, vat_rate: Number(e.target.value) }))}>
-              <option value={0}>0% — không chịu thuế</option>
-              <option value={5}>5%</option>
-              <option value={8}>8%</option>
-              <option value={10}>10%</option>
-            </Select>
-          </Field>
-          <Field label="Tồn tối thiểu" hint="Dưới mức này sẽ cảnh báo" htmlFor="pf-min">
-            <QtyInput size="md" value={form.min_stock} onChange={(v) => setForm((f) => ({ ...f, min_stock: v }))} />
-          </Field>
-          <Field label="Tồn tối đa" hint="0 = không giới hạn" htmlFor="pf-max">
-            <QtyInput size="md" value={form.max_stock} onChange={(v) => setForm((f) => ({ ...f, max_stock: v }))} />
-          </Field>
-        </div>
-
-        {!product && (
-          <div className="grid gap-3 sm:grid-cols-2 card p-3 bg-muted/40">
-            <Field label="Tồn kho hiện có" hint="Số lượng đang có sẵn tại tiệm (theo đơn vị cơ bản)" htmlFor="pf-open">
-              <QtyInput size="md" value={form.opening_qty} onChange={(v) => setForm((f) => ({ ...f, opening_qty: v }))} />
-            </Field>
-            <Field label="Nhập vào kho" htmlFor="pf-openwh">
-              <Select id="pf-openwh" value={form.opening_warehouse_id}
-                onChange={(e) => setForm((f) => ({ ...f, opening_warehouse_id: Number(e.target.value) }))}>
-                {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </Select>
-            </Field>
-          </div>
-        )}
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Ghi chú" htmlFor="pf-note">
-            <Textarea id="pf-note" rows={2} value={form.note || ''} onChange={set('note')} />
-          </Field>
-          <div className="space-y-2 pt-6">
-            <label className="flex items-center gap-2 text-[13px] cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
-                checked={form.track_stock !== 0}
-                onChange={(e) => setForm((f) => ({ ...f, track_stock: e.target.checked ? 1 : 0 }))} />
-              Quản lý tồn kho
-              <span className="text-2xs text-muted-ink">(bỏ chọn nếu là dịch vụ, tiền công)</span>
-            </label>
-            <label className="flex items-center gap-2 text-[13px] cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
-                checked={form.active !== 0}
-                onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked ? 1 : 0 }))} />
-              Đang kinh doanh
-            </label>
-          </div>
-        </div>
-
-        {/* Định mức nguyên vật liệu — chỉ hiện khi sửa mặt hàng đã có */}
-        {product && <BomEditor product={product} />}
-
-        {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
-      </div>
-    </Modal>
-  );
-}
-
-/* ==================================================================== */
-/* Khai định mức nguyên vật liệu cho hàng tự lắp ráp                     */
-/* ==================================================================== */
-
-function BomEditor({ product }) {
-  const { toast, defaultWarehouse } = useApp();
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  const { data: allProducts } = useFetch(
-    () => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse], { skip: !open }
-  );
-
-  useEffect(() => {
-    if (!open || loaded) return;
-    api.get(`/products/${product.id}/bom`)
-      .then((d) => { setRows(d.rows); setLoaded(true); })
-      .catch(() => setLoaded(true));
-  }, [open, loaded, product.id]);
-
-  const materialCost = rows.reduce((a, x) => a + Math.round(x.qty * x.cost_price), 0);
-
-  const add = (p) => {
-    if (p.id === product.id) {
-      toast('Không thể lấy chính mặt hàng này làm linh kiện.', 'warn');
-      return;
-    }
-    setRows((prev) => prev.some((x) => x.component_id === p.id)
-      ? prev
-      : [...prev, {
-          component_id: p.id, component_name: p.name, sku: p.sku,
-          base_unit: p.base_unit, cost_price: p.cost_price, stock: p.stock, qty: 1,
-        }]);
-  };
-
-  const save = async () => {
-    setBusy(true);
-    try {
-      await api.put(`/products/${product.id}/bom`, {
-        items: rows.map((r) => ({ component_id: r.component_id, qty: Number(r.qty) || 0 })),
-      });
-      toast(rows.length ? `Đã lưu định mức ${rows.length} linh kiện` : 'Đã xoá định mức', 'ok');
-    } catch (e) {
-      toast(e.message, 'bad', 6000);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="sm:col-span-4 card p-3">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="w-full flex items-center gap-2 text-left cursor-pointer"
-      >
-        <Wrench size={15} className="text-muted-ink shrink-0" aria-hidden="true" />
-        <div className="flex-1 min-w-0">
-          <div className="font-semibold text-[13px]">Định mức nguyên vật liệu</div>
-          <div className="text-2xs text-muted-ink">
-            Khai nếu mặt hàng này do tiệm tự lắp ráp. Khi lập phiếu sản xuất, hệ thống
-            tự trừ kho linh kiện và tính giá vốn thành phẩm.
-          </div>
-        </div>
-        {product.is_manufactured === 1 && <Badge tone="info">Đã khai</Badge>}
-        <ChevronDown
-          size={15}
-          aria-hidden="true"
-          className={`shrink-0 text-muted-ink transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
-
-      {open && (
-        <div className="mt-3 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-2xs text-muted-ink">
-              Khai số lượng cần cho <b>1 {product.base_unit}</b> thành phẩm
-            </span>
-            <Button size="sm" icon={Plus} onClick={() => setPickerOpen(true)}>Thêm linh kiện</Button>
-          </div>
-
-          {rows.length === 0 ? (
-            <p className="text-[13px] text-muted-ink py-3 text-center">Chưa khai linh kiện nào.</p>
-          ) : (
-            <div className="table-wrap">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Linh kiện</th>
-                    <th className="text-right">Tồn kho</th>
-                    <th style={{ width: 100 }} className="text-right">Cần dùng</th>
-                    <th className="text-right">Giá vốn</th>
-                    <th className="text-right">Thành tiền</th>
-                    <th style={{ width: 36 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.component_id}>
-                      <td>
-                        <div className="font-semibold">{r.component_name}</div>
-                        <div className="text-2xs text-muted-ink font-mono">{r.sku}</div>
-                      </td>
-                      <td className="num text-muted-ink">{fq(r.stock ?? 0)} {r.base_unit}</td>
-                      <td>
-                        <QtyInput
-                          value={r.qty}
-                          onChange={(v) => setRows((prev) => prev.map((x) =>
-                            x.component_id === r.component_id ? { ...x, qty: v } : x))}
-                          aria-label={`Số lượng ${r.component_name}`}
-                        />
-                      </td>
-                      <td className="num">{money(r.cost_price)}</td>
-                      <td className="num font-semibold">{money(Math.round(r.qty * r.cost_price))}</td>
-                      <td>
-                        <IconButton
-                          icon={Trash2}
-                          label={`Bỏ ${r.component_name}`}
-                          size={13}
-                          className="!text-danger hover:!bg-red-50"
-                          onClick={() => setRows((prev) => prev.filter((x) => x.component_id !== r.component_id))}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={4} className="text-right">GIÁ VỐN NVL CHO 1 THÀNH PHẨM</td>
-                    <td className="num">{money(materialCost)}</td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
-
-          <Button variant="primary" size="sm" onClick={save} loading={busy}>Lưu định mức</Button>
-        </div>
-      )}
-
-      <ProductPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        products={(allProducts || []).filter((p) => p.id !== product.id)}
-        onPick={add}
-        title="Chọn linh kiện"
-      />
-    </div>
-  );
-}
-
-/* ==================================================================== */
 /* Thẻ kho của một mặt hàng                                              */
 /* ==================================================================== */
 
 export function StockHistory({ product, onClose }) {
-  const { data, busy } = useFetch(
-    () => api.productMoves(product.id), [product?.id], { skip: !product }
-  );
+  const { can } = useApp();
+  const [tab, setTab] = useState('moves');
+
+  // Người không được xem giá vốn thì không có tab lịch sử nhập, vì bảng đó
+  // hiện giá nhập của từng mối — máy chủ cũng chặn, đây chỉ là cho gọn mắt.
+  const maySeeCost = can('cost.view');
+
+  useEffect(() => { if (product) setTab('moves'); }, [product]);
 
   return (
     <Modal
       open={!!product}
       onClose={onClose}
-      title={product ? `Thẻ kho: ${product.name}` : ''}
-      subtitle="Toàn bộ biến động nhập xuất theo thời gian"
+      title={product ? product.name : ''}
+      subtitle={product ? `${product.sku} · ${product.base_unit}` : ''}
       size="lg"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
+      {maySeeCost && (
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          className="mb-3"
+          tabs={[
+            { key: 'moves', label: 'Thẻ kho' },
+            { key: 'purchases', label: 'Lịch sử nhập hàng' },
+          ]}
+        />
+      )}
+      {tab === 'purchases' && maySeeCost
+        ? <PurchaseHistoryTab product={product} />
+        : <StockMovesTab product={product} />}
+    </Modal>
+  );
+}
+
+/* Thẻ kho — toàn bộ biến động nhập xuất theo thời gian. */
+function StockMovesTab({ product }) {
+  const { data, busy } = useFetch(
+    () => api.productMoves(product.id), [product?.id], { skip: !product }
+  );
+
+  return (
+    <>
       {busy ? <Spinner />
         : !data?.length ? <Empty icon={History} title="Chưa có biến động nào" />
           : (
@@ -787,7 +383,111 @@ export function StockHistory({ product, onClose }) {
               </table>
             </div>
           )}
-    </Modal>
+    </>
+  );
+}
+
+/* ==================================================================== *
+ * Lịch sử nhập hàng của mặt hàng
+ *
+ * Trả lời câu chủ tiệm hay hỏi: "lần trước lấy của ai, bao nhiêu một cái".
+ * Giá quy về đơn vị cơ bản để so được giữa lần lấy nguyên thùng và lần
+ * lấy lẻ từng cái.
+ * ==================================================================== */
+
+function PurchaseHistoryTab({ product }) {
+  const { data, busy, error, reload } = useFetch(
+    () => api.productPurchaseHistory(product.id), [product?.id], { skip: !product }
+  );
+
+  if (busy) return <Spinner />;
+  if (error) return <ErrorBox error={error} onRetry={reload} />;
+  if (!data?.rows?.length) {
+    return (
+      <Empty
+        icon={FileText}
+        title="Chưa nhập món này lần nào"
+        message="Khi có phiếu nhập hàng cho mặt hàng này, lịch sử sẽ hiện ở đây."
+      />
+    );
+  }
+
+  const sm = data.summary;
+  const unit = data.product?.base_unit || '';
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        <Stat label={`Giá thấp nhất / ${unit}`} value={money(sm.min)} tone="good" />
+        <Stat label={`Giá cao nhất / ${unit}`} value={money(sm.max)} tone={sm.max > sm.min ? 'warn' : 'default'} />
+        <Stat label={`Bình quân / ${unit}`} value={money(sm.avg)} sub="theo số lượng đã nhập" />
+        <Stat
+          label={`Lần cuối / ${unit}`}
+          value={money(sm.last)}
+          sub={sm.last_supplier ? `${sm.last_supplier} · ${date(sm.last_ts)}` : null}
+          tone={sm.last > sm.avg ? 'bad' : 'default'}
+        />
+      </div>
+
+      {sm.max > sm.min && sm.last >= sm.max && sm.count > 1 && (
+        <div className="card-pad bg-amber-50 border-warn/30 text-[13px] flex gap-2.5">
+          <AlertTriangle size={15} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+          <span className="text-amber-900">
+            Lần nhập gần nhất là <b>giá cao nhất từ trước tới giờ</b>. Cân nhắc hỏi lại mối
+            hoặc tìm mối khác trước khi lấy tiếp.
+          </span>
+        </div>
+      )}
+
+      <div className="table-wrap max-h-[45vh]">
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Phiếu nhập</th>
+              <th>Ngày nhập</th>
+              <th>Nhà cung cấp</th>
+              <th className="text-right">Số lượng</th>
+              <th>ĐVT</th>
+              <th className="text-right">Đơn giá</th>
+              <th className="text-right">Quy về {unit}</th>
+              <th className="text-right">Thành tiền</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((x, i) => (
+              <tr key={`${x.purchase_id}-${i}`}
+                className={`hoverable ${x.status !== 'done' ? 'opacity-55' : ''}`}>
+                <td className="font-mono font-semibold">
+                  {x.code}
+                  {x.status !== 'done' && <Badge tone="mute" className="ml-1">Đã huỷ</Badge>}
+                </td>
+                <td className="whitespace-nowrap text-muted-ink">{datetime(x.ts)}</td>
+                <td>
+                  <div className="truncate max-w-[12rem]">{x.supplier_name || '—'}</div>
+                  {x.supplier_phone && (
+                    <div className="text-2xs text-muted-ink tabular">{x.supplier_phone}</div>
+                  )}
+                </td>
+                <td className="num">{fq(x.qty)}</td>
+                <td className="text-muted-ink">{x.unit_name}</td>
+                <td className="num">{money(x.price)}</td>
+                <td className={`num font-semibold ${
+                  x.status === 'done' && x.unit_price_base === sm.max && sm.max > sm.min ? 'text-danger'
+                    : x.status === 'done' && x.unit_price_base === sm.min && sm.max > sm.min ? 'text-emerald-700'
+                      : ''}`}>
+                  {money(x.unit_price_base)}
+                </td>
+                <td className="num">{money(x.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-2xs text-muted-ink">
+        Cột <b>Quy về {unit}</b> chia đơn giá cho hệ số đơn vị, để so sánh được giữa lần lấy
+        nguyên thùng và lần lấy lẻ. Phiếu đã huỷ vẫn hiện nhưng mờ đi và không tính vào số tổng.
+      </p>
+    </div>
   );
 }
 

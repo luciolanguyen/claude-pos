@@ -8,7 +8,7 @@ import {
   Field, MoneyInput, Textarea, Combo, QtyInput, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
-import { ProductPicker } from './Purchases';
+import { ProductPicker } from '../components/ProductPicker';
 
 /* ==================================================================== */
 /* Khách trả hàng — danh sách                                            */

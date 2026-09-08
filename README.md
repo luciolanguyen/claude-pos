@@ -78,7 +78,17 @@ Ba việc hay gặp giữa lúc đông khách làm được ngay tại quầy, k
 - **Đổi trả hàng** — khách đem hàng lại: tìm hoá đơn cũ, chọn món trả, chọn món đổi
   lấy. Phần mềm bù trừ tiền hai chiều.
 
-Chuông trên thanh đầu đếm số đơn đặt đang chờ, đỏ lên khi có đơn quá hẹn giao.
+- **Thu nợ** — khách ghé trả nợ: tìm khách, xem còn nợ bao nhiêu và những hoá đơn nào
+  chưa trả hết, rồi thu. Khách vừa mua vừa trả nợ cũ thì tích thẳng trong hộp thanh toán.
+
+Chuông trên thanh đầu đếm số đơn đặt đang chờ, đỏ lên khi có đơn quá hẹn giao. Nút
+*Thu nợ* đếm số khách còn nợ, vàng lên khi có khách nợ quá hạn mức hoặc quá 60 ngày.
+Chọn khách có nợ vào giỏ thì hiện ngay một dòng cảnh báo, để thu ngân nhớ đòi lúc còn
+gặp mặt chứ không đợi tới lúc thanh toán.
+
+> Tiền nợ cũ ghi thành **phiếu thu riêng**, không cộng vào tiền hàng — nếu gộp chung
+> thì doanh thu hôm nay bị thổi lên bằng cả khoản nợ của tháng trước. Mỗi phiếu thu ghi
+> rõ tên người thu để cuối ngày chủ tiệm đối chiếu với người đứng quầy.
 
 **Nhiều tab hoá đơn cùng lúc.** Khách này đang chọn hàng thì mở tab mới bán cho khách
 khác, không phải huỷ giỏ. Mỗi tab giữ riêng giỏ hàng, khách, bảng giá và giảm giá.
@@ -123,6 +133,9 @@ trả hay tiệm chịu) và tiền thu hộ COD. Thông tin in kèm trên hoá 
 - **Bảo hành** — nhận hàng khách mang tới sửa và tra hạn bảo hành hàng đã bán (xem mục dưới).
 
 ### Mua hàng
+*Gặp món chưa có trong danh mục ngay lúc đang gõ phiếu nhập? Bấm **Thêm hàng mới** ngay
+trong hộp chọn hàng — khai đầy đủ như ở màn hình Hàng hoá, lưu xong là món đó vào thẳng
+phiếu nhập đang làm dở.*
 - **Phiếu nhập hàng** — nhập theo đơn vị lớn (cuộn, thùng), tự quy đổi tồn kho và
   tính lại giá vốn bình quân gia quyền. Chi phí vận chuyển phân bổ vào giá vốn theo
   tỉ trọng giá trị từng dòng.
@@ -379,6 +392,25 @@ In ra được thành danh sách đi lấy hàng, có sẵn cột trống để 
 
 ---
 
+## Lịch sử nhập hàng của một mặt hàng
+
+**Hàng hoá → bấm vào biểu tượng thẻ kho của một dòng → tab *Lịch sử nhập hàng***.
+
+Trả lời câu chủ tiệm hay hỏi: *lần trước lấy của ai, bao nhiêu một cái*. Bảng liệt kê
+phiếu nhập, ngày tháng, nhà cung cấp kèm số điện thoại, số lượng, đơn giá và thành tiền.
+
+Bốn con số phía trên: giá nhập **thấp nhất / cao nhất / bình quân / lần cuối**, kèm tên
+mối của lần cuối. Nếu lần nhập gần nhất đúng bằng mức cao nhất từ trước tới giờ, phần
+mềm hiện cảnh báo để cân nhắc hỏi lại mối hoặc tìm mối khác.
+
+> Cột **Quy về đơn vị cơ bản** chia đơn giá cho hệ số đơn vị. Không có cột này thì nhìn
+> vào bảng sẽ tưởng mối tăng giá gấp mười, chỉ vì lần trước lấy nguyên thùng còn lần này
+> lấy lẻ từng cái.
+
+Tab này **chỉ chủ cửa hàng và quản lý xem được**, vì giá nhập chính là giá vốn.
+
+---
+
 ## Cách tính giá vốn
 
 **Thiết lập → Bán hàng → Cách tính giá vốn.** Hai lựa chọn:
@@ -435,6 +467,20 @@ Xem bảng này ngay trong phần mềm: **Thiết lập → Người dùng → 
 
 Bật **Thiết lập → Bán hàng → Bỏ qua đăng nhập** thì không phân quyền được nữa — cả
 tiệm dùng chung một tài khoản chủ. Chỉ nên bật ở tiệm một người.
+
+---
+
+## Xuất ra Excel
+
+Ở đâu có danh sách thì ở đó xuất được. File là CSV có dấu BOM nên mở bằng Excel là ra
+tiếng Việt đúng, không phải chỉnh gì.
+
+| Xuất từ đâu | Được gì |
+|---|---|
+| **Hàng hoá** → *Xuất Excel* | Toàn bộ danh sách đang lọc |
+| **Hàng hoá** → tích chọn vài dòng | Chỉ những dòng đã tích. Thanh thao tác hiện lên khi có dòng được chọn, kèm cả nút *In tem* |
+| **Phiếu nhập hàng** → mở phiếu → *Xuất Excel* | Một phiếu đầy đủ: mối, kho, ngày, từng dòng hàng kèm hệ số quy đổi, rồi tiền hàng / chi phí / thuế / đã trả / còn nợ |
+| **Hoá đơn**, **Quỹ tiền** | Toàn bộ kết quả lọc, không phải mỗi trang đang xem |
 
 ---
 

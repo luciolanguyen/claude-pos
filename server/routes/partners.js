@@ -105,7 +105,9 @@ r.post('/suppliers/:id/pay', (req, res) => {
   const t = addCashTx({
     accountId, direction: 'out', amount, category: 'debt_out',
     partnerType: 'supplier', partnerId: s.id, partnerName: s.name,
+    userId: req.body.user_id || req.user?.id || null,
     note: req.body.note || `Trả nợ NCC ${s.name}`,
+    ts: req.body.ts || null,
   });
   res.json({ ok: true, transaction: t, debt: supplierDebt(s.id) });
 });
@@ -216,10 +218,14 @@ r.post('/customers/:id/pay', (req, res) => {
   if (amount <= 0) return res.status(400).json({ error: 'Số tiền phải lớn hơn 0' });
   const accountId = Number(req.body.account_id) || defaultCashAccount();
   if (!accountId) return res.status(400).json({ error: 'Chưa thiết lập quỹ tiền' });
+  /* Ghi rõ ai thu, để cuối ngày chủ tiệm đối chiếu được phiếu thu với
+     người đứng quầy — nhất là khi thu ngân cũng được phép thu nợ. */
   const t = addCashTx({
     accountId, direction: 'in', amount, category: 'debt_in',
     partnerType: 'customer', partnerId: c.id, partnerName: c.name,
+    userId: req.body.user_id || req.user?.id || null,
     note: req.body.note || `Khách ${c.name} trả nợ`,
+    ts: req.body.ts || null,
   });
   res.json({ ok: true, transaction: t, debt: customerDebt(c.id) });
 });

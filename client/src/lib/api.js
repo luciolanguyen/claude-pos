@@ -55,6 +55,7 @@ export const api = {
   posProducts: (params) => request('GET', '/products/pos' + qs(params)),
   product: (id) => request('GET', `/products/${id}`),
   productMoves: (id) => request('GET', `/products/${id}/moves`),
+  productPurchaseHistory: (id) => request('GET', `/products/${id}/purchase-history`),
   categories: () => request('GET', '/categories'),
   priceLists: () => request('GET', '/price-lists'),
   warehouses: () => request('GET', '/warehouses'),

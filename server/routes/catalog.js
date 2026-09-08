@@ -189,6 +189,59 @@ r.get('/products/:id/moves', (req, res) => {
     WHERE m.product_id = ? ORDER BY m.id DESC LIMIT 300`, [req.params.id]));
 });
 
+/* ==================================================================== *
+ * LỊCH SỬ NHẬP HÀNG CỦA MỘT MẶT HÀNG
+ *
+ * Chủ tiệm hay hỏi "lần trước lấy của ai, bao nhiêu một cái". Bảng này
+ * trả lời thẳng: phiếu nhập nào, ngày nào, mối nào, giá bao nhiêu.
+ *
+ * Giá quy về đơn vị cơ bản (price / factor) để so sánh được giữa lần lấy
+ * nguyên thùng và lần lấy lẻ từng cái — nếu không thì nhìn cột giá sẽ
+ * tưởng mối tăng giá gấp mười.
+ * ==================================================================== */
+
+r.get('/products/:id/purchase-history', (req, res) => {
+  const id = Number(req.params.id);
+  const p = get('SELECT id, name, base_unit FROM products WHERE id = ?', [id]);
+  if (!p) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+
+  const rows = all(`
+    SELECT pu.id AS purchase_id, pu.code, pu.ts, pu.status,
+           s.id AS supplier_id, s.name AS supplier_name, s.phone AS supplier_phone,
+           pi.unit_name, pi.factor, pi.qty, pi.price, pi.amount,
+           (pi.qty * pi.factor) AS qty_base,
+           CAST(ROUND(pi.price / pi.factor) AS INTEGER) AS unit_price_base
+    FROM purchase_items pi
+    JOIN purchases pu ON pu.id = pi.purchase_id
+    LEFT JOIN suppliers s ON s.id = pu.supplier_id
+    WHERE pi.product_id = ?
+    ORDER BY pu.ts DESC, pu.id DESC
+    LIMIT 200`, [id]);
+
+  const done = rows.filter((x) => x.status === 'done');
+  const prices = done.map((x) => x.unit_price_base).filter((v) => v > 0);
+  const totalQty = done.reduce((a, x) => a + x.qty_base, 0);
+  const totalAmount = done.reduce((a, x) => a + x.amount, 0);
+
+  res.json({
+    product: p,
+    rows,
+    summary: {
+      count: done.length,
+      qty: totalQty,
+      amount: totalAmount,
+      min: prices.length ? Math.min(...prices) : 0,
+      max: prices.length ? Math.max(...prices) : 0,
+      // Bình quân theo số lượng, không phải bình quân cộng các mức giá —
+      // lấy 1000 cái giá rẻ và 1 cái giá đắt thì giá bình quân phải gần giá rẻ
+      avg: totalQty > 0 ? Math.round(totalAmount / totalQty) : 0,
+      last: done[0]?.unit_price_base || 0,
+      last_ts: done[0]?.ts || null,
+      last_supplier: done[0]?.supplier_name || null,
+    },
+  });
+});
+
 function saveUnitsAndPrices(productId, units = [], baseUnit) {
   const keepIds = [];
   let hasBase = false;

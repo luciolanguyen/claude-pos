@@ -12,7 +12,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import PhotoPicker, { PhotoGallery } from '../components/PhotoPicker';
-import { ProductPicker } from './Purchases';
+import { ProductPicker } from '../components/ProductPicker';
 
 /* Trạng thái theo đúng thứ tự việc thật, kèm màu để liếc là biết. */
 const STATUS = {

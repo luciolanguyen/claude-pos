@@ -13,7 +13,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { StockHistory } from './Products';
-import { ProductPicker } from './Purchases';
+import { ProductPicker } from '../components/ProductPicker';
 
 /* ==================================================================== */
 /* Tồn kho                                                               */

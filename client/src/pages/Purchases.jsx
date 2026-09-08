@@ -11,6 +11,8 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { ProductPicker } from '../components/ProductPicker';
+import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
 
@@ -40,6 +42,56 @@ export default function Purchases() {
 
   /* Số tổng do máy chủ tính trên cả bộ lọc, không phải trang đang xem */
   const totals = extra?.totals || null;
+
+  /**
+   * Xuất một phiếu nhập ra file mở được bằng Excel.
+   * Ghi kèm phần đầu phiếu (mối, kho, ngày) rồi tới từng dòng hàng, để
+   * gửi cho kế toán hay đối chiếu với mối là đủ thông tin, không phải mở
+   * lại phần mềm.
+   */
+  const exportPurchase = (p) => {
+    if (!p?.items?.length) return;
+    const esc = (x) => `"${String(x ?? '').replace(/"/g, '""')}"`;
+    const line = (arr) => arr.map(esc).join(',');
+
+    const head = [
+      line([`PHIẾU NHẬP HÀNG ${p.code}`]),
+      line(['Ngày nhập', datetime(p.ts)]),
+      line(['Nhà cung cấp', p.supplier_name || '']),
+      line(['Điện thoại', p.supplier_phone || '']),
+      line(['Số hoá đơn của NCC', p.supplier_invoice || '']),
+      line(['Kho nhận', p.warehouse_name || '']),
+      line(['Người lập', p.user_name || '']),
+      line(['Trạng thái', p.status === 'done' ? 'Hoàn tất' : 'Đã huỷ']),
+      '',
+    ];
+    const cols = ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lượng', 'Hệ số',
+      'Quy về đơn vị cơ bản', 'Đơn giá', 'Thành tiền'];
+    const rows = p.items.map((it) => line([
+      it.sku || '', it.product_name, it.unit_name, it.qty, it.factor,
+      Math.round(it.qty * it.factor * 1000) / 1000, it.price, it.amount,
+    ]));
+    const tail = [
+      '',
+      line(['', '', '', '', '', '', 'Tiền hàng', p.subtotal]),
+      ...(p.other_cost > 0 ? [line(['', '', '', '', '', '', 'Chi phí vận chuyển', p.other_cost])] : []),
+      ...(p.discount > 0 ? [line(['', '', '', '', '', '', 'Giảm giá', -p.discount])] : []),
+      ...(p.vat_amount > 0 ? [line(['', '', '', '', '', '', 'Thuế GTGT', p.vat_amount])] : []),
+      line(['', '', '', '', '', '', 'Tổng cộng', p.total]),
+      line(['', '', '', '', '', '', 'Đã trả', p.paid]),
+      line(['', '', '', '', '', '', 'Còn nợ', p.total - p.paid]),
+    ];
+
+    // Dấu BOM ở đầu để Excel nhận ra UTF-8, không thì tiếng Việt ra ký tự lạ
+    const csv = '﻿' + [...head, line(cols), ...rows, ...tail].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `phieunhap-${p.code}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Đã tải file phiếu nhập ${p.code}`, 'ok');
+  };
 
   const doCancel = async () => {
     setBusyAction(true);
@@ -188,6 +240,7 @@ export default function Purchases() {
             <Button variant="danger" icon={XCircle} onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
           )}
           <div className="flex-1" />
+          <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
           <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
           <Button onClick={() => setDetail(null)}>Đóng</Button>
         </>}
@@ -327,7 +380,9 @@ export function PurchaseForm({ open, onClose, onSaved }) {
   const [err, setErr] = useState('');
 
   const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open });
-  const { data: products } = useFetch(() => api.posProducts({ warehouse_id: warehouseId }), [warehouseId], { skip: !open });
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const { data: products, reload: reloadProducts } = useFetch(
+    () => api.posProducts({ warehouse_id: warehouseId }), [warehouseId], { skip: !open });
 
   useEffect(() => {
     if (!open) return;
@@ -626,87 +681,37 @@ export function PurchaseForm({ open, onClose, onSaved }) {
         onClose={() => setPickerOpen(false)}
         products={products || []}
         onPick={addProduct}
+        onCreateRequest={() => setCreatingProduct(true)}
+      />
+
+      {/* Gặp món chưa có trong danh mục thì khai ngay tại đây, khai xong là
+          vào thẳng phiếu nhập — không phải bỏ dở phiếu để đi tạo hàng. */}
+      <ProductForm
+        open={creatingProduct}
+        product={null}
+        onClose={() => setCreatingProduct(false)}
+        onSaved={async (p) => {
+          setCreatingProduct(false);
+          reloadProducts();          // để lần chọn sau đã thấy món mới
+          if (!p?.id) return;
+          /* Bản ghi vừa lưu có dạng khác dạng dùng ở màn hình bán hàng
+             (tồn kho là mảng theo từng kho). Lấy lại đúng dạng đó rồi mới
+             thêm vào phiếu, nếu không cột "tồn hiện tại" sẽ hiện sai. */
+          try {
+            const list = await api.posProducts({ warehouse_id: warehouseId });
+            const fresh = list.find((x) => x.id === p.id);
+            if (fresh) {
+              addProduct(fresh);
+              toast(`Đã thêm "${p.name}" vào danh mục và vào phiếu nhập`, 'ok', 5000);
+            } else {
+              toast(`Đã thêm "${p.name}" vào danh mục. Bấm "Thêm hàng" để chọn.`, 'ok', 5000);
+            }
+          } catch {
+            toast(`Đã thêm "${p.name}" vào danh mục. Bấm "Thêm hàng" để chọn.`, 'ok', 5000);
+          }
+        }}
       />
     </>
-  );
-}
-
-/* ==================================================================== */
-/* Hộp chọn sản phẩm dùng chung cho nhập hàng / kiểm kê / chuyển kho     */
-/* ==================================================================== */
-
-export function ProductPicker({ open, onClose, products, onPick, title = 'Chọn hàng hoá' }) {
-  const [q, setQ] = useState('');
-  const [cat, setCat] = useState('');
-  const { meta } = useApp();
-
-  useEffect(() => { if (open) setQ(''); }, [open]);
-
-  const list = useMemo(() => {
-    let l = products;
-    if (cat) l = l.filter((p) => p.category_id === Number(cat));
-    if (q.trim()) l = l.filter((p) => match(p.name, q) || match(p.sku, q) || (p.barcode || '').includes(q.trim()));
-    return l.slice(0, 300);
-  }, [products, q, cat]);
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={title}
-      subtitle="Bấm vào dòng để thêm. Có thể chọn nhiều mặt hàng liên tiếp."
-      size="lg"
-      footer={<Button variant="primary" onClick={onClose}>Xong</Button>}
-    >
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng hoặc quét mã vạch..." className="flex-1" autoFocus />
-          <Select value={cat} onChange={(e) => setCat(e.target.value)} className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-        </div>
-
-        {list.length === 0 ? (
-          <Empty icon={Search} title="Không tìm thấy hàng nào" message={`Không có mặt hàng khớp "${q}".`} />
-        ) : (
-          <div className="table-wrap max-h-[50vh] overflow-y-auto">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th>
-                  <th className="text-right">Tồn kho</th>
-                  <th className="text-right">Giá vốn</th>
-                  <th style={{ width: 60 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((p) => (
-                  <tr key={p.id} className="hoverable clickable" onClick={() => onPick(p)}>
-                    <td className="font-mono text-muted-ink">{p.sku}</td>
-                    <td className="font-semibold">{p.name}</td>
-                    <td className="text-muted-ink">{p.category_name || '—'}</td>
-                    <td className="num">
-                      {p.track_stock
-                        ? <span className={p.stock <= 0 ? 'text-danger font-semibold' : ''}>
-                            {fq(p.stock)} {p.base_unit}
-                          </span>
-                        : <span className="text-muted-ink">Dịch vụ</span>}
-                    </td>
-                    <td className="num">{money(p.cost_price)}</td>
-                    <td>
-                      <Button size="sm" variant="soft" onClick={(e) => { e.stopPropagation(); onPick(p); }}>
-                        Thêm
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </Modal>
   );
 }
 
