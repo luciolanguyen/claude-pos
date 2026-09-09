@@ -11,7 +11,7 @@ import { useApp, useFetch, useLocal } from '../lib/store';
 import { money, n, qty as fq, match, datetime, date, smartTime, PAYMENT_LABEL } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty,
-  Spinner, Badge, Combo, Textarea, QtyInput,
+  Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
 import CustomerForm from '../components/CustomerForm';
@@ -45,25 +45,47 @@ const EMPTY_DELIVERY = {
 };
 
 /* Ô hiển thị 1 sản phẩm trong lưới chọn hàng. */
-function ProductTile({ p, priceListId, showCost, onPick }) {
+/**
+ * Một ô hàng hoá trên lưới chọn.
+ * inCart là tổng số lượng món này đang nằm trong giỏ (cộng cả các dòng có
+ * đơn vị khác nhau). Có số thì ô đổi màu và hiện icon giỏ — nhìn lướt là
+ * biết đã thêm chưa, khỏi bấm trùng lúc đông khách.
+ */
+function ProductTile({ p, priceListId, showCost, onPick, inCart = 0 }) {
   const baseUnit = p.units.find((u) => u.factor === 1) || p.units[0];
   const price = baseUnit?.prices?.[priceListId] ?? 0;
   const out = p.track_stock && p.stock <= 0;
   const low = p.track_stock && p.min_stock > 0 && p.stock > 0 && p.stock <= p.min_stock;
+  const added = inCart > 0;
 
   return (
     <button
       onClick={() => onPick(p)}
       disabled={out}
-      className="card p-2 text-left transition-colors duration-150 cursor-pointer
+      aria-label={added
+        ? `${p.name} — đang có ${fq(inCart)} trong giỏ, bấm để thêm nữa`
+        : `Thêm ${p.name} vào giỏ`}
+      className={`card p-2 text-left transition-colors duration-150 cursor-pointer relative
                  hover:border-accent hover:bg-accent-soft/40 disabled:opacity-45
                  disabled:cursor-not-allowed disabled:hover:border-line disabled:hover:bg-card
-                 flex flex-col gap-1 min-h-[92px]"
+                 flex flex-col gap-1 min-h-[92px]
+                 ${added ? 'border-accent bg-accent-soft/30' : ''}`}
     >
       <div className="flex items-start justify-between gap-1">
         <span className="text-2xs font-mono text-muted-ink">{p.sku}</span>
         {out ? <Badge tone="bad">Hết</Badge> : low ? <Badge tone="warn">Sắp hết</Badge> : null}
       </div>
+
+      {added && (
+        <span
+          className="absolute -top-1.5 -right-1.5 flex items-center gap-0.5 rounded-full
+                     bg-accent text-white text-2xs font-bold px-1.5 py-0.5 shadow-sm"
+          aria-hidden="true"
+        >
+          <ShoppingCart size={11} />
+          {fq(inCart)}
+        </span>
+      )}
       <div className="text-[13px] font-semibold leading-snug line-clamp-2 flex-1">{p.name}</div>
       {p.alias && (
         <div className="text-2xs text-muted-ink italic truncate leading-tight">{p.alias}</div>
@@ -169,6 +191,16 @@ export default function POS() {
   }, [tab?.customerId, customers]);
 
   const customer = customers?.find((c) => c.id === tab?.customerId) || null;
+
+  /* Mỗi mặt hàng đang có bao nhiêu trong giỏ. Cộng gộp các dòng khác đơn vị
+     và quy về đơn vị cơ bản, để số trên ô khớp với con số tồn kho bên dưới. */
+  const inCartQty = useMemo(() => {
+    const m = new Map();
+    for (const l of tab?.cart || []) {
+      m.set(l.product_id, (m.get(l.product_id) || 0) + l.qty * (l.factor || 1));
+    }
+    return m;
+  }, [tab?.cart]);
 
   /* ------------------------------ Giỏ hàng ------------------------------ */
 
@@ -385,15 +417,31 @@ export default function POS() {
     }
   };
 
-  const openDraft = (d) => {
-    const p = d.payload || {};
+  /**
+   * Mở tiếp một hoá đơn tạm.
+   * Danh sách hoá đơn tạm KHÔNG kèm giỏ hàng (payload) cho nhẹ, nên phải
+   * gọi riêng lấy chi tiết. Đọc thẳng d.payload thì mở ra giỏ rỗng.
+   */
+  const openDraft = async (d) => {
+    let full = d;
+    try {
+      full = await api.draft(d.id);
+    } catch (e) {
+      toast('Không mở được hoá đơn tạm: ' + e.message, 'bad', 6000);
+      return;
+    }
+    const p = full.payload || {};
+    if (!p.cart?.length) {
+      toast('Hoá đơn tạm này không còn dòng hàng nào.', 'bad', 6000);
+      return;
+    }
     const t = {
       id: 'tab' + Date.now(),
-      title: d.title || `Hoá đơn tạm ${d.code}`,
-      draftId: d.id,
+      title: full.title || `Hoá đơn tạm ${full.code}`,
+      draftId: full.id,
       cart: p.cart || [],
-      customerId: d.customer_id,
-      priceListId: d.price_list_id || defaultPriceList,
+      customerId: full.customer_id,
+      priceListId: full.price_list_id || defaultPriceList,
       discountType: p.discountType || 'amount',
       discountValue: p.discountValue || 0,
       note: p.note || '',
@@ -698,7 +746,8 @@ export default function POS() {
                 <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {filtered.map((p) => (
                     <ProductTile key={p.id} p={p} priceListId={tab.priceListId}
-                      showCost={maySeeCost && showCost} onPick={addToCart} />
+                      showCost={maySeeCost && showCost} onPick={addToCart}
+                      inCart={inCartQty.get(p.id) || 0} />
                   ))}
                 </div>
               )}
@@ -1446,15 +1495,22 @@ function CustomerQuickModal({ open, customerId, onClose }) {
 function DraftsModal({ open, onClose, onOpen, openIds }) {
   const { toast } = useApp();
   const { data, busy, reload } = useFetch(() => api.get('/drafts'), [], { skip: !open });
+  const [deleting, setDeleting] = useState(null);
+  const [busyDel, setBusyDel] = useState(false);
 
-  const remove = async (d) => {
-    if (!window.confirm(`Xoá hoá đơn tạm "${d.title || d.code}"?`)) return;
+  /* Dùng hộp xác nhận của phần mềm, không dùng window.confirm — trình duyệt
+     nhúng trong ứng dụng chặn hộp đó, bấm xoá xong không có gì xảy ra. */
+  const remove = async () => {
+    setBusyDel(true);
     try {
-      await api.del(`/drafts/${d.id}`);
+      await api.del(`/drafts/${deleting.id}`);
+      setDeleting(null);
       reload();
       toast('Đã xoá hoá đơn tạm', 'ok');
     } catch (e) {
-      toast(e.message, 'bad');
+      toast(e.message, 'bad', 6000);
+    } finally {
+      setBusyDel(false);
     }
   };
 
@@ -1504,7 +1560,7 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
                             ? <Badge tone="info">Đang mở</Badge>
                             : <Button size="sm" variant="soft" onClick={() => onOpen(d)}>Mở tiếp</Button>}
                           <IconButton icon={Trash2} label={`Xoá ${d.title || d.code}`} size={14}
-                            className="!text-danger hover:!bg-red-50" onClick={() => remove(d)} />
+                            className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(d)} />
                         </div>
                       </td>
                     </tr>
@@ -1514,6 +1570,20 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
             </table>
           </div>
         )}
+
+      <Confirm
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={remove}
+        busy={busyDel}
+        title="Xoá hoá đơn tạm?"
+        confirmText="Xoá"
+        message={deleting && (
+          <>Xoá hoá đơn tạm <b>{deleting.title || deleting.code}</b>?
+            {deleting.item_count > 0 && <> Đang có {deleting.item_count} mặt hàng trong giỏ.</>}
+            {' '}Không lấy lại được.</>
+        )}
+      />
     </Modal>
   );
 }

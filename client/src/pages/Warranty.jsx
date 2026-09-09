@@ -12,6 +12,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import PhotoPicker, { PhotoGallery } from '../components/PhotoPicker';
+import WarrantyReturnPrint from '../components/WarrantyReturnPrint';
 import { ProductPicker } from '../components/ProductPicker';
 
 /* Trạng thái theo đúng thứ tự việc thật, kèm màu để liếc là biết. */
@@ -88,7 +89,8 @@ function Tickets() {
 
   const [creating, setCreating] = useState(false);
   const [detailId, setDetailId] = useState(null);
-  const [printing, setPrinting] = useState(null);
+  const [printing, setPrinting] = useState(null);          // biên nhận lúc nhận máy
+  const [returnPrint, setReturnPrint] = useState(null);    // phiếu trả hàng lúc trả máy
 
   const refresh = () => { reload(); reloadSummary(); };
 
@@ -282,10 +284,14 @@ function Tickets() {
         onClose={() => setDetailId(null)}
         onChanged={refresh}
         onPrint={setPrinting}
+        onPrintReturn={setReturnPrint}
       />
 
       {printing && (
         <ReceiptPrint ticket={printing} store={store} onClose={() => setPrinting(null)} />
+      )}
+      {returnPrint && (
+        <WarrantyReturnPrint ticket={returnPrint} store={store} onClose={() => setReturnPrint(null)} />
       )}
     </div>
   );
@@ -553,8 +559,8 @@ function TicketForm({ open, onClose, onSaved }) {
 /* Chi tiết phiếu — chuyển trạng thái, thay linh kiện, trả khách          */
 /* ==================================================================== */
 
-function TicketDetail({ id, onClose, onChanged, onPrint }) {
-  const { toast, meta, user } = useApp();
+function TicketDetail({ id, onClose, onChanged, onPrint, onPrintReturn }) {
+  const { toast, meta, user, can } = useApp();
   const { data: t, busy, reload } = useFetch(
     () => api.warrantyTicket(id), [id], { skip: !id }
   );
@@ -592,6 +598,23 @@ function TicketDetail({ id, onClose, onChanged, onPrint }) {
   };
 
   const closed = t && ['delivered', 'cancelled'].includes(t.status);
+  const maySeeCost = can('cost.view');
+
+  /* Giá bán đang gõ dở của từng dòng. Lưu khi rời ô, không lưu mỗi lần gõ
+     một chữ số — đỡ gọi máy chủ liên tục. */
+  const [partPrice, setPartPrice] = useState({});
+  const savePartPrice = async (p) => {
+    const v = partPrice[p.id];
+    if (v === undefined || v === p.price) return;
+    try {
+      await api.put(`/warranty/${t.id}/parts/${p.id}`, { price: v });
+      onChanged?.();
+      reload();
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+      setPartPrice((m) => ({ ...m, [p.id]: p.price }));   // trả về số cũ
+    }
+  };
 
   return (
     <>
@@ -607,6 +630,11 @@ function TicketDetail({ id, onClose, onChanged, onPrint }) {
           )}
           <div className="flex-1" />
           <Button icon={Printer} onClick={() => { onPrint(t); onClose(); }}>In biên nhận</Button>
+          {t.status === 'delivered' && (
+            <Button icon={Printer} onClick={() => { onPrintReturn(t); onClose(); }}>
+              In phiếu trả hàng
+            </Button>
+          )}
           {!closed && (
             <Button variant="primary" icon={PackageCheck} onClick={() => setDeliverOpen(true)}>
               Trả khách
@@ -718,7 +746,8 @@ function TicketDetail({ id, onClose, onChanged, onPrint }) {
                       <tr>
                         <th>Linh kiện</th>
                         <th className="text-right">Số lượng</th>
-                        <th className="text-right">Giá vốn</th>
+                        {maySeeCost && <th className="text-right">Giá vốn</th>}
+                        <th style={{ width: 150 }} className="text-right">Giá bán</th>
                         <th className="text-right">Thành tiền</th>
                         <th style={{ width: 40 }} />
                       </tr>
@@ -731,8 +760,23 @@ function TicketDetail({ id, onClose, onChanged, onPrint }) {
                             <div className="text-2xs text-muted-ink font-mono">{p.sku}</div>
                           </td>
                           <td className="num">{fq(p.qty)} {p.base_unit}</td>
-                          <td className="num">{money(p.unit_cost)}</td>
-                          <td className="num font-semibold">{money(p.amount)}</td>
+                          {maySeeCost && <td className="num text-muted-ink">{money(p.unit_cost)}</td>}
+                          <td>
+                            {closed ? (
+                              <div className="num">{money(p.price)}</div>
+                            ) : (
+                              <MoneyInput
+                                size="sm"
+                                value={partPrice[p.id] ?? p.price}
+                                onChange={(v) => setPartPrice((m) => ({ ...m, [p.id]: v }))}
+                                onBlur={() => savePartPrice(p)}
+                                aria-label={`Giá bán ${p.product_name}`}
+                              />
+                            )}
+                          </td>
+                          <td className="num font-semibold">
+                            {money(Math.round(p.qty * (partPrice[p.id] ?? p.price)))}
+                          </td>
                           <td>
                             {!closed && (
                               <IconButton icon={Trash2} label={`Bỏ ${p.product_name}`} size={13}
@@ -744,10 +788,19 @@ function TicketDetail({ id, onClose, onChanged, onPrint }) {
                     </tbody>
                     <tfoot>
                       <tr>
-                        <td colSpan={3} className="text-right">TỔNG GIÁ VỐN LINH KIỆN</td>
-                        <td className="num">{money(t.parts_cost)}</td>
+                        <td colSpan={maySeeCost ? 4 : 3} className="text-right font-semibold">
+                          TIỀN LINH KIỆN TÍNH KHÁCH
+                        </td>
+                        <td className="num font-bold">{money(t.parts_price)}</td>
                         <td />
                       </tr>
+                      {maySeeCost && (
+                        <tr className="text-muted-ink">
+                          <td colSpan={4} className="text-right">Vốn tiệm bỏ ra</td>
+                          <td className="num">{money(t.parts_cost)}</td>
+                          <td />
+                        </tr>
+                      )}
                     </tfoot>
                   </table>
                 </div>
@@ -952,7 +1005,7 @@ function StatusModal({ open, ticket, onClose, onDone }) {
 /* ==================================================================== */
 
 function PartsModal({ open, ticket, onClose, onDone }) {
-  const { toast, meta, user, defaultWarehouse } = useApp();
+  const { toast, meta, user, defaultWarehouse, defaultPriceList } = useApp();
   const [lines, setLines] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -964,12 +1017,19 @@ function PartsModal({ open, ticket, onClose, onDone }) {
 
   useEffect(() => { if (open) { setLines([]); setErr(''); } }, [open]);
 
+  /** Giá bán lẻ của đơn vị cơ bản — đây mới là giá báo cho khách. */
+  const retailOf = (p) => {
+    const u = p.units?.find((x) => x.is_base) || p.units?.[0];
+    if (!u?.prices) return 0;
+    return Number(u.prices[defaultPriceList] ?? Object.values(u.prices)[0]) || 0;
+  };
+
   const add = (p) => setLines((prev) => prev.some((x) => x.product_id === p.id)
     ? prev
     : [...prev, { product_id: p.id, name: p.name, sku: p.sku, base_unit: p.base_unit,
-        cost_price: p.cost_price, stock: p.stock, qty: 1 }]);
+        price: retailOf(p), stock: p.stock, qty: 1 }]);
 
-  const total = lines.reduce((a, l) => a + Math.round(l.qty * l.cost_price), 0);
+  const total = lines.reduce((a, l) => a + Math.round(l.qty * l.price), 0);
 
   const submit = async () => {
     if (!lines.length) { setErr('Chưa chọn linh kiện nào.'); return; }
@@ -978,7 +1038,9 @@ function PartsModal({ open, ticket, onClose, onDone }) {
     try {
       await api.post(`/warranty/${ticket.id}/parts`, {
         warehouse_id: defaultWarehouse, user_id: user?.id,
-        items: lines.map((l) => ({ product_id: l.product_id, qty: Number(l.qty) })),
+        items: lines.map((l) => ({
+          product_id: l.product_id, qty: Number(l.qty), price: Math.round(Number(l.price) || 0),
+        })),
       });
       toast('Đã thay linh kiện và trừ kho', 'ok');
       onDone();
@@ -1020,7 +1082,7 @@ function PartsModal({ open, ticket, onClose, onDone }) {
                     <th>Linh kiện</th>
                     <th className="text-right">Tồn kho</th>
                     <th style={{ width: 100 }} className="text-right">Số lượng</th>
-                    <th className="text-right">Giá vốn</th>
+                    <th style={{ width: 140 }} className="text-right">Giá bán</th>
                     <th className="text-right">Thành tiền</th>
                     <th style={{ width: 40 }} />
                   </tr>
@@ -1043,8 +1105,13 @@ function PartsModal({ open, ticket, onClose, onDone }) {
                               x.product_id === l.product_id ? { ...x, qty: v } : x))}
                             aria-label={`Số lượng ${l.name}`} />
                         </td>
-                        <td className="num">{money(l.cost_price)}</td>
-                        <td className="num font-semibold">{money(Math.round(l.qty * l.cost_price))}</td>
+                        <td>
+                          <MoneyInput size="sm" value={l.price}
+                            onChange={(v) => setLines((prev) => prev.map((x) =>
+                              x.product_id === l.product_id ? { ...x, price: v } : x))}
+                            aria-label={`Giá bán ${l.name}`} />
+                        </td>
+                        <td className="num font-semibold">{money(Math.round(l.qty * l.price))}</td>
                         <td>
                           <IconButton icon={Trash2} label={`Bỏ ${l.name}`} size={13}
                             className="!text-danger hover:!bg-red-50"
@@ -1056,7 +1123,7 @@ function PartsModal({ open, ticket, onClose, onDone }) {
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td colSpan={4} className="text-right">TỔNG GIÁ VỐN</td>
+                    <td colSpan={4} className="text-right">TIỀN LINH KIỆN THU KHÁCH</td>
                     <td className="num">{money(total)}</td>
                     <td />
                   </tr>
@@ -1161,6 +1228,9 @@ function DeliverModal({ open, ticket, onClose, onDone }) {
   const [resolution, setResolution] = useState('repair');
   const [laborFee, setLaborFee] = useState(0);
   const [charge, setCharge] = useState(0);
+  /* Đã sửa tay chưa. Chưa sửa thì tiền thu bám theo linh kiện + công;
+     sửa rồi thì thôi, không tự ghi đè con số thợ vừa gõ. */
+  const [chargeEdited, setChargeEdited] = useState(false);
   const [paid, setPaid] = useState(0);
   const [refund, setRefund] = useState(0);
   const [accountId, setAccountId] = useState('');
@@ -1169,10 +1239,18 @@ function DeliverModal({ open, ticket, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  /* Số phần mềm tự tính. Thợ chưa sửa tay thì tiền thu bám theo số này. */
+  const suggested = Math.round((ticket?.parts_price || 0) + (Number(laborFee) || 0));
+  useEffect(() => {
+    if (!chargeEdited) setCharge(suggested);
+  }, [suggested, chargeEdited]);
+
   useEffect(() => {
     if (!open || !ticket) return;
     setResolution(ticket.resolution || 'repair');
-    setLaborFee(0); setCharge(0); setPaid(0); setRefund(0);
+    setLaborFee(0); setPaid(0); setRefund(0);
+    setCharge(ticket.parts_price || 0);   // linh kiện đã thay, tính theo giá bán
+    setChargeEdited(false);
     setNote(''); setPhotos([]); setErr('');
     setAccountId(meta.accounts?.[0]?.id || '');
   }, [open, ticket, meta.accounts]);
@@ -1230,8 +1308,25 @@ function DeliverModal({ open, ticket, onClose, onDone }) {
             <Field label="Tiền công sửa" htmlFor="wd-labor">
               <MoneyInput id="wd-labor" value={laborFee} onChange={setLaborFee} />
             </Field>
-            <Field label="Thu của khách" hint="Gồm cả công lẫn linh kiện" htmlFor="wd-charge">
-              <MoneyInput id="wd-charge" value={charge} onChange={setCharge} />
+            <Field
+              label="Thu của khách"
+              hint={chargeEdited ? 'Đã sửa tay' : 'Tự cộng: linh kiện + tiền công'}
+              htmlFor="wd-charge"
+            >
+              <MoneyInput
+                id="wd-charge"
+                value={charge}
+                onChange={(v) => { setCharge(v); setChargeEdited(true); }}
+              />
+              {chargeEdited && suggested !== charge && (
+                <button
+                  type="button"
+                  className="text-2xs text-accent font-semibold hover:underline mt-1 cursor-pointer"
+                  onClick={() => { setCharge(suggested); setChargeEdited(false); }}
+                >
+                  Quay lại số tự tính ({money(suggested)})
+                </button>
+              )}
             </Field>
             <Field label="Khách trả ngay" htmlFor="wd-paid">
               <MoneyInput id="wd-paid" value={paid} onChange={setPaid} />
@@ -1256,7 +1351,11 @@ function DeliverModal({ open, ticket, onClose, onDone }) {
 
           <div className="card p-2.5 text-[13px] space-y-0.5">
             <div className="flex justify-between">
-              <span className="text-muted-ink">Giá vốn linh kiện đã thay</span>
+              <span className="text-muted-ink">Linh kiện — tính khách (giá bán)</span>
+              <span className="tabular font-mono">{money(ticket.parts_price)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-ink">Linh kiện — vốn tiệm bỏ ra</span>
               <span className="tabular font-mono">{money(ticket.parts_cost)}</span>
             </div>
             <div className="flex justify-between">

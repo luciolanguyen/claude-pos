@@ -120,6 +120,11 @@
   /* Bảng dài: lăn chuột cuộn ngay trong khung, dòng tiêu đề dính lại trên
      cùng nên xem tới dòng thứ 90 vẫn biết cột nào là cột nào. */
   .table-scroll { @apply max-h-[min(62vh,44rem)]; }
+  /* Hàng ô lọc nằm ngay dưới dòng tiêu đề, dính lại cùng tiêu đề khi cuộn */
+  table.data thead tr.filter-row th {
+    @apply sticky bg-card border-b border-line px-1.5 py-1 normal-case tracking-normal;
+    top: 2.05rem;
+  }
   table.data { @apply w-full text-[13px] border-collapse; }
   table.data thead th {
     @apply sticky top-0 z-10 bg-muted text-muted-ink font-bold text-left

@@ -30,14 +30,38 @@ const EMPTY = {
  * phiếu, không phải bỏ dở phiếu nhập để đi tạo hàng.
  */
 export function ProductForm({ open, product, onClose, onSaved }) {
-  const { meta, defaultWarehouse, settings } = useApp();
+  const { meta, defaultWarehouse, settings, can, toast } = useApp();
   const shopCostMethod = settings?.cost_method === 'fixed' ? 'fixed' : 'average';
+  const canSeeCost = can('cost.view');
   const [form, setForm] = useState(EMPTY);
   const [units, setUnits] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [costOpen, setCostOpen] = useState(false);
+  const [costInput, setCostInput] = useState(0);
+  const [costBusy, setCostBusy] = useState(false);
   /* Cách tính thật sự áp cho món này: đặt riêng thì theo riêng, không thì theo tiệm */
   const effectiveCostMethod = form.cost_method || shopCostMethod;
+
+  /**
+   * Gõ tay giá vốn.
+   * Với hàng dùng giá vốn cố định, đây là cách duy nhất đổi con số đó.
+   * Với hàng bình quân gia quyền thì con số này chỉ đứng tới lần nhập kế
+   * tiếp — nói rõ để chủ tiệm khỏi tưởng đã chốt cứng.
+   */
+  const saveCost = async () => {
+    setCostBusy(true);
+    try {
+      const res = await api.put(`/products/${product.id}/cost`, { cost_price: Number(costInput) || 0 });
+      setForm((f2) => ({ ...f2, cost_price: res.cost_price }));
+      setCostOpen(false);
+      toast(`Đã đổi giá vốn thành ${money(res.cost_price)}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    } finally {
+      setCostBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -104,6 +128,7 @@ export function ProductForm({ open, product, onClose, onSaved }) {
   };
 
   return (
+    <>
     <Modal
       open={open}
       onClose={onClose}
@@ -241,12 +266,21 @@ export function ProductForm({ open, product, onClose, onSaved }) {
             label="Giá vốn / đơn vị cơ bản"
             hint={product
               ? (effectiveCostMethod === 'fixed'
-                ? 'Cố định — sửa ở nút "Sửa giá vốn"'
+                ? 'Cố định — chốt từ lần nhập đầu'
                 : 'Tự tính lại mỗi lần nhập hàng')
               : 'Giá nhập ban đầu'}
             htmlFor="pf-cost"
           >
             <MoneyInput id="pf-cost" value={form.cost_price} onChange={(v) => setForm((f) => ({ ...f, cost_price: v }))} disabled={!!product} />
+            {product && canSeeCost && (
+              <button
+                type="button"
+                className="text-2xs text-accent font-semibold hover:underline mt-1 cursor-pointer"
+                onClick={() => { setCostInput(form.cost_price); setCostOpen(true); }}
+              >
+                Sửa giá vốn
+              </button>
+            )}
           </Field>
           <Field
             label="Cách tính giá vốn"
@@ -322,6 +356,40 @@ export function ProductForm({ open, product, onClose, onSaved }) {
         {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>
+
+      <Modal
+        open={costOpen}
+        onClose={() => setCostOpen(false)}
+        title={`Sửa giá vốn: ${product?.name || ''}`}
+        size="sm"
+        footer={
+          <>
+            <Button onClick={() => setCostOpen(false)}>Huỷ</Button>
+            <Button variant="primary" onClick={saveCost} loading={costBusy}>Lưu giá vốn</Button>
+          </>
+        }
+      >
+        <div className="space-y-2.5">
+          <Field label="Giá vốn mới / đơn vị cơ bản" htmlFor="pf-newcost">
+            <MoneyInput id="pf-newcost" size="lg" value={costInput} onChange={setCostInput} autoFocus />
+          </Field>
+          <div className="card p-2.5 bg-muted/50 text-[13px] leading-relaxed">
+            Đang là <b>{money(form.cost_price)}</b>.
+            {effectiveCostMethod === 'fixed' ? (
+              <> Món này dùng <b>giá vốn cố định</b>, nên con số gõ ở đây đứng luôn —
+                lần nhập hàng sau không ghi đè.</>
+            ) : (
+              <> Món này dùng <b>bình quân gia quyền</b>, nên con số gõ ở đây chỉ đứng tới
+                lần nhập hàng kế tiếp. Muốn chốt cứng thì đổi cách tính sang <b>Cố định</b>.</>
+            )}
+          </div>
+          <p className="text-2xs text-muted-ink">
+            Đổi giá vốn không tính lại lãi lỗ của hoá đơn đã xuất — những hoá đơn đó
+            đã ghi giá vốn tại thời điểm bán.
+          </p>
+        </div>
+      </Modal>
+    </>
   );
 }
 

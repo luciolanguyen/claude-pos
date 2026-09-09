@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, tx, moveStock, costOf, costMethodOf } from '../db.js';
+import { all, get, run, tx, moveStock, costOf, costMethodOf, pageParams } from '../db.js';
 
 const r = Router();
 
@@ -123,28 +123,78 @@ function hydrate(p) {
   return p;
 }
 
+/* ==================================================================== *
+ * DANH SÁCH HÀNG HOÁ
+ *
+ * Phân trang phía máy chủ, không còn chặn cứng 500 dòng như trước — tiệm
+ * nhập cả nghìn mã hàng thì 500 dòng là mất hàng mà không ai biết.
+ *
+ * Bộ lọc theo từng cột: gõ tên/mã, chọn nhóm - hãng - vị trí, lọc theo
+ * tình trạng tồn. Số tổng tính trên CẢ bộ lọc chứ không phải trang đang
+ * xem, để thẻ "giá trị tồn kho" không đổi theo số trang.
+ * ==================================================================== */
+
 r.get('/products', (req, res) => {
-  const { q = '', category_id, active, low_stock, limit = 500 } = req.query;
+  const {
+    q = '', category_id, active, low_stock,
+    name = '', sku = '', barcode = '', brand = '', location = '', stock_status = '',
+  } = req.query;
   const where = [];
   const params = [];
+  const like = (v) => `%${String(v).trim()}%`;
+
   if (q.trim()) {
     where.push('(p.name LIKE ? OR p.alias LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?)');
-    const like = `%${q.trim()}%`;
-    params.push(like, like, like, like, like);
+    params.push(like(q), like(q), like(q), like(q), like(q));
   }
+  /* Lọc riêng từng cột — gõ ở ô ngay dưới tên cột */
+  if (name.trim()) { where.push('(p.name LIKE ? OR p.alias LIKE ?)'); params.push(like(name), like(name)); }
+  if (sku.trim()) { where.push('p.sku LIKE ?'); params.push(like(sku)); }
+  if (barcode.trim()) { where.push('p.barcode LIKE ?'); params.push(like(barcode)); }
+  if (brand.trim()) { where.push('p.brand = ?'); params.push(brand.trim()); }
+  if (location.trim()) { where.push('p.location = ?'); params.push(location.trim()); }
   if (category_id) { where.push('p.category_id = ?'); params.push(category_id); }
   if (active !== undefined && active !== '') { where.push('p.active = ?'); params.push(Number(active)); }
+  const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-  let sql = `
+  /* Tồn kho là tổng của nhiều kho nên phải lọc ở lớp ngoài, sau khi cộng */
+  const base = `
     SELECT p.*, c.name AS category_name,
            COALESCE((SELECT SUM(qty) FROM stock s WHERE s.product_id = p.id), 0) AS total_stock
-    FROM products p LEFT JOIN categories c ON c.id = p.category_id`;
-  if (where.length) sql += ' WHERE ' + where.join(' AND ');
-  if (low_stock === '1') {
-    sql = `SELECT * FROM (${sql}) t WHERE t.track_stock = 1 AND t.total_stock <= t.min_stock`;
+    FROM products p LEFT JOIN categories c ON c.id = p.category_id
+    ${w}`;
+
+  const outer = [];
+  if (low_stock === '1' || stock_status === 'low') {
+    outer.push('t.track_stock = 1 AND t.total_stock <= t.min_stock');
   }
-  sql += ` ORDER BY p.name LIMIT ${Number(limit)}`;
-  res.json(all(sql, params));
+  if (stock_status === 'out') outer.push('t.track_stock = 1 AND t.total_stock <= 0');
+  if (stock_status === 'in') outer.push('t.track_stock = 1 AND t.total_stock > 0');
+  const ow = outer.length ? 'WHERE ' + outer.join(' AND ') : '';
+  const wrapped = `SELECT * FROM (${base}) t ${ow}`;
+
+  const { page, size, offset } = pageParams(req.query, 20);
+  const agg = get(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(t.total_stock * t.cost_price), 0) AS value,
+           COALESCE(SUM(CASE WHEN t.track_stock = 1 AND t.total_stock <= t.min_stock
+                              AND t.total_stock > 0 THEN 1 ELSE 0 END), 0) AS low,
+           COALESCE(SUM(CASE WHEN t.track_stock = 1 AND t.total_stock <= 0
+                             THEN 1 ELSE 0 END), 0) AS out
+    FROM (${wrapped}) t`, params);
+
+  const rows = all(`${wrapped} ORDER BY t.name LIMIT ${size} OFFSET ${offset}`, params);
+  res.json({ rows, total: agg.count, page, page_size: size, totals: agg });
+});
+
+/** Các giá trị có thật của hãng và vị trí, để đổ vào ô lọc. */
+r.get('/products/filters', (req, res) => {
+  res.json({
+    brands: all("SELECT DISTINCT brand AS v FROM products WHERE brand IS NOT NULL AND brand <> '' ORDER BY brand")
+      .map((x) => x.v),
+    locations: all("SELECT DISTINCT location AS v FROM products WHERE location IS NOT NULL AND location <> '' ORDER BY location")
+      .map((x) => x.v),
+  });
 });
 
 /** Danh mục rút gọn cho màn hình POS: kèm đơn vị + giá theo mọi bảng giá. */

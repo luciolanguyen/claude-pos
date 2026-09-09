@@ -10,8 +10,16 @@ const DB_PATH = process.env.POS_DB || path.join(DATA_DIR, 'pos.db');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-/** Ảnh chụp hàng bảo hành — để ngoài CSDL cho file pos.db khỏi phình to. */
-export const WARRANTY_DIR = path.join(DATA_DIR, 'warranty');
+/**
+ * Ảnh chụp hàng bảo hành — để ngoài CSDL cho file pos.db khỏi phình to.
+ *
+ * Thư mục ảnh bám theo TÊN FILE CƠ SỞ DỮ LIỆU, không dùng chung một chỗ.
+ * Chạy trên cơ sở dữ liệu thử (POS_DB=test.db) thì ảnh nằm ở warranty-test,
+ * nên thao tác xoá sạch lúc kiểm thử không đụng tới ảnh của tiệm.
+ */
+const DB_NAME = path.basename(DB_PATH, path.extname(DB_PATH));
+export const WARRANTY_DIR = path.join(
+  DATA_DIR, DB_NAME === 'pos' ? 'warranty' : `warranty-${DB_NAME}`);
 if (!fs.existsSync(WARRANTY_DIR)) fs.mkdirSync(WARRANTY_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
@@ -59,6 +67,26 @@ addColumns('sale_items', {
   warranty_months: 'INTEGER NOT NULL DEFAULT 0',
   warranty_until: 'TEXT',
   serial: 'TEXT',
+});
+
+/* Phiếu nhập: giá niêm yết của mối và % chiết khấu, để mở lại phiếu vẫn
+   thấy được mối báo giá bao nhiêu và bớt mấy phần trăm. Cột price vẫn là
+   giá sau chiết khấu — tức giá nhập sau cùng đi vào giá vốn. */
+addColumns('purchase_items', {
+  list_price: 'INTEGER NOT NULL DEFAULT 0',
+  discount_percent: 'REAL NOT NULL DEFAULT 0',
+});
+
+/* Linh kiện bảo hành: giá bán cho khách, bên cạnh giá vốn đã có.
+   Giá vốn để tính lãi ca sửa, giá bán để in phiếu và thu tiền khách. */
+addColumns('warranty_tickets', {
+  // Tổng tiền linh kiện tính theo GIÁ BÁN — để in phiếu và tự điền tiền thu
+  parts_price: 'INTEGER NOT NULL DEFAULT 0',
+});
+
+addColumns('warranty_parts', {
+  price: 'INTEGER NOT NULL DEFAULT 0',
+  amount_sale: 'INTEGER NOT NULL DEFAULT 0',
 });
 
 /* Đổi hàng: nối phiếu trả hàng với hoá đơn hàng mới */

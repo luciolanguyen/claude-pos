@@ -78,7 +78,13 @@ export function Textarea({ className = '', rows = 3, ...rest }) {
  * Ô nhập tiền: hiển thị có dấu chấm ngăn nghìn, trả ra số nguyên.
  * Người dùng gõ "50000" thấy ngay "50.000" nên đỡ nhầm số 0.
  */
-export function MoneyInput({ value, onChange, size = 'md', className = '', ...rest }) {
+/**
+ * Ô nhập tiền.
+ * Nhận thêm onBlur từ bên ngoài và gọi NỐI TIẾP sau phần xử lý nội bộ —
+ * nếu để {...rest} đè lên thì onBlur riêng sẽ nuốt mất việc đặt lại cờ
+ * focused, và ô sẽ thôi đồng bộ với giá trị truyền vào.
+ */
+export function MoneyInput({ value, onChange, size = 'md', className = '', onBlur, ...rest }) {
   const [text, setText] = useState(() => (value ? n(value) : ''));
   const focused = useRef(false);
 
@@ -101,7 +107,11 @@ export function MoneyInput({ value, onChange, size = 'md', className = '', ...re
       value={text}
       onChange={handle}
       onFocus={(e) => { focused.current = true; e.target.select(); }}
-      onBlur={() => { focused.current = false; setText(value ? n(value) : ''); }}
+      onBlur={(e) => {
+        focused.current = false;
+        setText(value ? n(value) : '');
+        onBlur?.(e);
+      }}
       {...rest}
     />
   );

@@ -66,20 +66,21 @@ export default function Purchases() {
       '',
     ];
     const cols = ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lượng', 'Hệ số',
-      'Quy về đơn vị cơ bản', 'Đơn giá', 'Thành tiền'];
+      'Quy về đơn vị cơ bản', 'Đơn giá mối báo', 'Chiết khấu %', 'Giá sau CK', 'Thành tiền'];
     const rows = p.items.map((it) => line([
       it.sku || '', it.product_name, it.unit_name, it.qty, it.factor,
-      Math.round(it.qty * it.factor * 1000) / 1000, it.price, it.amount,
+      Math.round(it.qty * it.factor * 1000) / 1000,
+      it.list_price || it.price, it.discount_percent || 0, it.price, it.amount,
     ]));
     const tail = [
       '',
-      line(['', '', '', '', '', '', 'Tiền hàng', p.subtotal]),
-      ...(p.other_cost > 0 ? [line(['', '', '', '', '', '', 'Chi phí vận chuyển', p.other_cost])] : []),
-      ...(p.discount > 0 ? [line(['', '', '', '', '', '', 'Giảm giá', -p.discount])] : []),
-      ...(p.vat_amount > 0 ? [line(['', '', '', '', '', '', 'Thuế GTGT', p.vat_amount])] : []),
-      line(['', '', '', '', '', '', 'Tổng cộng', p.total]),
-      line(['', '', '', '', '', '', 'Đã trả', p.paid]),
-      line(['', '', '', '', '', '', 'Còn nợ', p.total - p.paid]),
+      line(['', '', '', '', '', '', '', '', 'Tiền hàng', p.subtotal]),
+      ...(p.other_cost > 0 ? [line(['', '', '', '', '', '', '', '', 'Chi phí vận chuyển', p.other_cost])] : []),
+      ...(p.discount > 0 ? [line(['', '', '', '', '', '', '', '', 'Giảm giá', -p.discount])] : []),
+      ...(p.vat_amount > 0 ? [line(['', '', '', '', '', '', '', '', 'Thuế GTGT', p.vat_amount])] : []),
+      line(['', '', '', '', '', '', '', '', 'Tổng cộng', p.total]),
+      line(['', '', '', '', '', '', '', '', 'Đã trả', p.paid]),
+      line(['', '', '', '', '', '', '', '', 'Còn nợ', p.total - p.paid]),
     ];
 
     // Dấu BOM ở đầu để Excel nhận ra UTF-8, không thì tiếng Việt ra ký tự lạ
@@ -271,6 +272,8 @@ export default function Purchases() {
                     <th className="text-right">SL</th>
                     <th className="text-right">Quy đổi</th>
                     <th className="text-right">Đơn giá</th>
+                    <th className="text-right">CK %</th>
+                    <th className="text-right">Giá sau CK</th>
                     <th className="text-right">Thành tiền</th>
                   </tr>
                 </thead>
@@ -286,7 +289,15 @@ export default function Purchases() {
                       <td className="num text-muted-ink">
                         {it.factor > 1 ? `${fq(it.qty * it.factor)} ${it.base_unit}` : '—'}
                       </td>
-                      <td className="num">{money(it.price)}</td>
+                      {/* list_price là giá mối báo, price là giá sau chiết khấu.
+                          Phiếu cũ chưa có list_price thì hai cột bằng nhau. */}
+                      <td className="num text-muted-ink">{money(it.list_price || it.price)}</td>
+                      <td className="num">
+                        {it.discount_percent > 0
+                          ? <b className="text-accent">{it.discount_percent}%</b>
+                          : <span className="text-muted-ink">—</span>}
+                      </td>
+                      <td className="num font-semibold">{money(it.price)}</td>
                       <td className="num font-semibold">{money(it.amount)}</td>
                     </tr>
                   ))}
@@ -441,14 +452,23 @@ export function PurchaseForm({ open, onClose, onSaved }) {
     });
   };
 
+  /**
+   * Giá nhập sau cùng của một dòng = đơn giá trừ chiết khấu %.
+   * Đây là con số đi vào giá vốn và vào tiền phải trả cho mối. Nếu lấy giá
+   * gốc thì giá vốn bị thổi lên, lãi báo về thấp hơn thật.
+   */
+  const netPrice = (l) => Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
+
   const totals = useMemo(() => {
-    let subtotal = 0, vat = 0;
+    let subtotal = 0, vat = 0, saved = 0;
     for (const l of lines) {
-      const amt = Math.round(l.qty * l.price - (l.discount || 0));
+      const net = Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
+      saved += Math.round(l.qty * (l.price - net));
+      const amt = Math.round(l.qty * net - (l.discount || 0));
       subtotal += amt;
       if (applyVat) vat += Math.round(amt * (l.vat_rate || 0) / 100);
     }
-    return { subtotal, vat, total: subtotal - discount + vat + otherCost };
+    return { subtotal, vat, saved, total: subtotal - discount + vat + otherCost };
   }, [lines, discount, otherCost, applyVat]);
 
   useEffect(() => { setPaid(totals.total); }, [totals.total]);
@@ -469,7 +489,12 @@ export function PurchaseForm({ open, onClose, onSaved }) {
         note,
         items: lines.map((l) => ({
           product_id: l.product_id, unit_name: l.unit_name, factor: l.factor,
-          qty: l.qty, price: l.price, discount: l.discount || 0,
+          qty: l.qty,
+          // GIÁ SAU CHIẾT KHẤU là đơn giá nhập chính thức — nó đi vào giá vốn
+          price: netPrice(l),
+          list_price: l.price,
+          discount_percent: Number(l.discount_percent) || 0,
+          discount: l.discount || 0,
           vat_rate: applyVat ? l.vat_rate : 0,
         })),
       });
@@ -544,6 +569,8 @@ export function PurchaseForm({ open, onClose, onSaved }) {
                     <th style={{ width: 130 }}>Đơn vị nhập</th>
                     <th style={{ width: 90 }} className="text-right">Số lượng</th>
                     <th style={{ width: 130 }} className="text-right">Đơn giá nhập</th>
+                    <th style={{ width: 84 }} className="text-right">Chiết khấu %</th>
+                    <th style={{ width: 130 }} className="text-right">Giá sau CK</th>
                     <th className="text-right">Quy đổi</th>
                     <th className="text-right">Thành tiền</th>
                     <th style={{ width: 40 }} />
@@ -578,13 +605,31 @@ export function PurchaseForm({ open, onClose, onSaved }) {
                         <MoneyInput size="sm" value={l.price} onChange={(v) => updateLine(l.key, { price: v })}
                           aria-label={`Đơn giá nhập ${l.name}`} />
                       </td>
+                      <td>
+                        <QtyInput
+                          value={l.discount_percent || 0}
+                          max={100}
+                          onChange={(v) => updateLine(l.key, { discount_percent: Math.min(100, Math.max(0, v)) })}
+                          aria-label={`Chiết khấu phần trăm ${l.name}`}
+                        />
+                      </td>
+                      <td className="num">
+                        {/* Giá sau chiết khấu — đây mới là giá nhập sau cùng,
+                            và cũng chính là con số đi vào giá vốn */}
+                        <span className={l.discount_percent > 0 ? 'font-bold text-accent' : 'text-muted-ink'}>
+                          {money(netPrice(l))}
+                        </span>
+                        {l.discount_percent > 0 && (
+                          <div className="text-2xs text-muted-ink line-through">{money(l.price)}</div>
+                        )}
+                      </td>
                       <td className="num text-muted-ink">
                         {l.factor > 1
                           ? <>{fq(l.qty * l.factor)} {l.base_unit}<br />
-                              <span className="text-2xs">{money(Math.round(l.price / l.factor))}/{l.base_unit}</span></>
+                              <span className="text-2xs">{money(Math.round(netPrice(l) / l.factor))}/{l.base_unit}</span></>
                           : '—'}
                       </td>
-                      <td className="num font-semibold">{money(Math.round(l.qty * l.price - (l.discount || 0)))}</td>
+                      <td className="num font-semibold">{money(Math.round(l.qty * netPrice(l)))}</td>
                       <td>
                         <IconButton icon={Trash2} label={`Bỏ ${l.name}`} size={14}
                           className="!text-danger hover:!bg-red-50" onClick={() => removeLine(l.key)} />

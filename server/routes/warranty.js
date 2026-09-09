@@ -8,6 +8,24 @@ import {
 
 const r = Router();
 
+/**
+ * Giá bán lẻ của một mặt hàng theo đơn vị cơ bản.
+ * Dùng khi thay linh kiện bảo hành mà thợ không gõ giá — lấy đúng giá
+ * niêm yết đang bán, chứ không lấy giá vốn.
+ */
+function retailPriceOf(productId) {
+  const row = get(`
+    SELECT pp.price
+    FROM product_prices pp
+    JOIN product_units pu ON pu.id = pp.unit_id
+    JOIN price_lists pl ON pl.id = pp.price_list_id
+    WHERE pp.product_id = ? AND pu.is_base = 1
+    ORDER BY pl.is_default DESC, pl.id
+    LIMIT 1`, [productId]);
+  return row?.price ?? 0;
+}
+
+
 /* Các trạng thái theo đúng thứ tự việc thật ở tiệm. */
 export const WARRANTY_STATUS = [
   { key: 'received', label: 'Mới nhận' },
@@ -338,24 +356,56 @@ r.post('/warranty/:id/parts', (req, res) => {
       for (const it of items) {
         const cost = costOf(it.product_id);
         const qty = Number(it.qty);
-        run('INSERT INTO warranty_parts(ticket_id, product_id, qty, unit_cost, amount) VALUES(?, ?, ?, ?, ?)',
-          [t.id, it.product_id, qty, cost, Math.round(qty * cost)]);
+        /* Giá bán do người lập phiếu nhập; không nhập thì lấy giá bán lẻ
+           của mặt hàng, không lấy giá vốn — báo giá vốn cho khách là bán lỗ. */
+        const price = it.price === undefined || it.price === null || it.price === ''
+          ? retailPriceOf(it.product_id)
+          : Math.round(Number(it.price) || 0);
+        run(`INSERT INTO warranty_parts(ticket_id, product_id, qty, unit_cost, amount, price, amount_sale)
+             VALUES(?, ?, ?, ?, ?, ?, ?)`,
+          [t.id, it.product_id, qty, cost, Math.round(qty * cost), price, Math.round(qty * price)]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -qty, unitCost: cost,
           refType: 'warranty', refId: t.id, refCode: t.code,
           note: `Thay linh kiện bảo hành ${t.code}`,
         });
       }
-      const total = get('SELECT COALESCE(SUM(amount), 0) AS s FROM warranty_parts WHERE ticket_id = ?', [t.id]).s;
-      run('UPDATE warranty_tickets SET parts_cost = ? WHERE id = ?', [total, t.id]);
+      const agg = get(`SELECT COALESCE(SUM(amount), 0) AS cost, COALESCE(SUM(amount_sale), 0) AS sale
+                       FROM warranty_parts WHERE ticket_id = ?`, [t.id]);
+      run('UPDATE warranty_tickets SET parts_cost = ?, parts_price = ? WHERE id = ?',
+        [agg.cost, agg.sale, t.id]);
       run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
         [t.id, t.status, req.body.user_id || null,
-          `Thay ${items.length} loại linh kiện, giá vốn ${total.toLocaleString('vi-VN')} đ`]);
+          `Thay ${items.length} loại linh kiện, tiền linh kiện ${agg.sale.toLocaleString('vi-VN')} đ`]);
     });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+/**
+ * Sửa giá bán của một dòng linh kiện đã ghi.
+ * Chỉ đổi con số tính cho khách; giá vốn và số đã trừ kho giữ nguyên, vì
+ * hàng đã xuất khỏi kho rồi — sửa giá không làm hàng quay về.
+ */
+r.put('/warranty/:id/parts/:partId', (req, res) => {
+  const part = get('SELECT * FROM warranty_parts WHERE id = ? AND ticket_id = ?',
+    [req.params.partId, req.params.id]);
+  if (!part) return res.status(404).json({ error: 'Không tìm thấy dòng linh kiện' });
+
+  const price = Math.round(Number(req.body.price) || 0);
+  if (price < 0) return res.status(400).json({ error: 'Giá bán không được âm' });
+
+  tx(() => {
+    run('UPDATE warranty_parts SET price = ?, amount_sale = ? WHERE id = ?',
+      [price, Math.round(part.qty * price), part.id]);
+    const sale = get('SELECT COALESCE(SUM(amount_sale), 0) AS s FROM warranty_parts WHERE ticket_id = ?',
+      [req.params.id]).s;
+    run('UPDATE warranty_tickets SET parts_price = ? WHERE id = ?', [sale, req.params.id]);
+  });
+  res.json({ ok: true, parts_price: get('SELECT parts_price AS p FROM warranty_tickets WHERE id = ?',
+    [req.params.id]).p });
 });
 
 r.delete('/warranty/:id/parts/:partId', (req, res) => {
@@ -371,8 +421,10 @@ r.delete('/warranty/:id/parts/:partId', (req, res) => {
       refType: 'warranty', refId: t.id, refCode: t.code, note: `Bỏ linh kiện khỏi phiếu ${t.code}`,
     });
     run('DELETE FROM warranty_parts WHERE id = ?', [part.id]);
-    const total = get('SELECT COALESCE(SUM(amount), 0) AS s FROM warranty_parts WHERE ticket_id = ?', [t.id]).s;
-    run('UPDATE warranty_tickets SET parts_cost = ? WHERE id = ?', [total, t.id]);
+    const agg = get(`SELECT COALESCE(SUM(amount), 0) AS cost, COALESCE(SUM(amount_sale), 0) AS sale
+                     FROM warranty_parts WHERE ticket_id = ?`, [t.id]);
+    run('UPDATE warranty_tickets SET parts_cost = ?, parts_price = ? WHERE id = ?',
+      [agg.cost, agg.sale, t.id]);
   });
   res.json({ ok: true });
 });

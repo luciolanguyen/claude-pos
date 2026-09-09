@@ -1081,16 +1081,40 @@ function UserForm({ open, user, onClose, onSaved }) {
 /* ==================================================================== */
 
 function DataTab() {
-  const { toast } = useApp();
+  const { toast, user } = useApp();
   const { data: info, reload } = useFetch(() => api.systemInfo(), []);
   const [restoring, setRestoring] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const fileRef = useRef(null);
 
+  /**
+   * Tải file sao lưu.
+   * Chuyển trang bằng window.location KHÔNG gửi được header x-user-id, nên
+   * máy chủ chặn 401 và file tải về chỉ là một dòng báo lỗi. Gắn id người
+   * dùng vào đường dẫn để máy chủ nhận ra.
+   */
   const backup = () => {
-    window.location.href = '/api/backup';
+    const uid = user?.id;
+    window.location.href = '/api/backup' + (uid ? `?uid=${uid}` : '');
     toast('Đang tải file sao lưu...', 'ok');
+  };
+
+  /** Xoá sạch toàn bộ. Bắt tải sao lưu trước rồi mới cho gõ xác nhận. */
+  const doResetAll = async () => {
+    setResetting2(true);
+    try {
+      const res = await api.post('/reset-all', { confirm: resetText });
+      toast(res.message, 'ok', 10000);
+      setResetOpen(false);
+      setResetText('');
+      setBackedUp(false);
+      setTimeout(() => window.location.reload(), 1800);
+    } catch (e) {
+      toast(e.message, 'bad', 8000);
+    } finally {
+      setResetting2(false);
+    }
   };
 
   const onFile = async (e) => {
@@ -1110,6 +1134,11 @@ function DataTab() {
       e.target.value = '';
     }
   };
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetText, setResetText] = useState('');
+  const [backedUp, setBackedUp] = useState(false);   // đã tải sao lưu chưa
+  const [resetting2, setResetting2] = useState(false);
 
   const doClear = async () => {
     try {
@@ -1192,6 +1221,88 @@ function DataTab() {
           Xoá dữ liệu giao dịch
         </Button>
       </div>
+
+      <div className="card p-4 border-danger/50 bg-red-50/40">
+        <h2 className="font-bold text-sm text-danger mb-1">Xoá sạch tất cả — về như máy mới cài</h2>
+        <p className="text-[13px] text-muted-ink mb-3 leading-relaxed">
+          Xoá <b>toàn bộ</b>: hàng hoá, khách hàng, nhà cung cấp, mọi chứng từ, ảnh bảo hành.
+          Chỉ giữ lại tài khoản đăng nhập và thông tin cửa hàng để còn vào được phần mềm.
+          <br />
+          Dùng khi giao phần mềm cho tiệm khác, hoặc muốn nhập lại danh mục từ đầu.
+        </p>
+        <Button variant="danger" icon={AlertTriangle} onClick={() => setResetOpen(true)}>
+          Xoá sạch tất cả
+        </Button>
+      </div>
+
+      <Modal
+        open={resetOpen}
+        onClose={() => { setResetOpen(false); setResetText(''); setBackedUp(false); }}
+        title="Xoá sạch toàn bộ dữ liệu?"
+        size="md"
+        footer={<>
+          <Button onClick={() => { setResetOpen(false); setResetText(''); setBackedUp(false); }}>
+            Huỷ bỏ
+          </Button>
+          <Button
+            variant="danger"
+            onClick={doResetAll}
+            loading={resetting2}
+            disabled={!backedUp || resetText !== 'XOA-TAT-CA'}
+          >
+            Xoá sạch vĩnh viễn
+          </Button>
+        </>}
+      >
+        <div className="space-y-3">
+          <div className="flex gap-2.5">
+            <AlertTriangle size={20} className="text-danger shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="text-[13px] leading-relaxed">
+              Sẽ xoá vĩnh viễn <b>mọi thứ</b>: hàng hoá, bảng giá, khách hàng, nhà cung cấp,
+              nhà xe, hoá đơn, phiếu nhập, đơn đặt hàng, phiếu bảo hành kèm ảnh, sổ quỹ, tồn kho.
+              <br /><br />
+              Giữ lại: <b>tài khoản đăng nhập</b> và <b>thông tin cửa hàng</b>. Phần mềm sẽ dựng
+              lại kho mặc định, bảng giá lẻ và quỹ tiền mặt để chạy được ngay.
+              <br /><br />
+              <span className="font-semibold text-danger">Không có cách nào lấy lại.</span>
+            </div>
+          </div>
+
+          {/* Bước 1: bắt tải sao lưu. Không cho bỏ qua — mất dữ liệu vì quên
+              sao lưu là mất thật, không sửa được bằng bất cứ cách nào. */}
+          <div className={`card p-2.5 ${backedUp ? 'border-accent bg-accent-soft/25' : 'border-warn/40 bg-amber-50'}`}>
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] flex-1">
+                <b>Bước 1.</b> Tải file sao lưu về máy trước đã.
+                {backedUp && <span className="block text-2xs text-muted-ink">Đã tải. Nếu chưa thấy file, bấm lại.</span>}
+              </span>
+              <Button
+                size="sm"
+                icon={Download}
+                variant={backedUp ? 'outline' : 'primary'}
+                onClick={() => { backup(); setBackedUp(true); }}
+              >
+                {backedUp ? 'Tải lại' : 'Tải sao lưu'}
+              </Button>
+            </div>
+          </div>
+
+          <Field
+            label="Bước 2. Gõ chính xác XOA-TAT-CA để xác nhận"
+            hint={backedUp ? null : 'Tải sao lưu xong mới gõ được'}
+            htmlFor="reset-confirm"
+          >
+            <Input
+              id="reset-confirm"
+              value={resetText}
+              onChange={(e) => setResetText(e.target.value.toUpperCase())}
+              placeholder="XOA-TAT-CA"
+              autoComplete="off"
+              disabled={!backedUp}
+            />
+          </Field>
+        </div>
+      </Modal>
 
       <Modal
         open={clearing}

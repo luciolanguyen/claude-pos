@@ -14,7 +14,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   ClipboardList, Bell, Truck, Search, RefreshCcw, Plus, Trash2,
-  AlertTriangle, CheckCircle2, Package, X,
+  AlertTriangle, CheckCircle2, Package, X, Printer,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -23,6 +23,7 @@ import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty,
   Spinner, Badge, Combo, Textarea, QtyInput, SearchInput, TotalRow, ErrorBox,
 } from './ui';
+import InvoicePrint from './InvoicePrint';
 
 /* ==================== CHUÔNG ĐƠN TỚI HẸN ========================== */
 
@@ -221,8 +222,10 @@ export function SaveAsOrderModal({ open, onClose, tab, customer, totals, onSaved
 /* ============ MỞ ĐƠN ĐÃ ĐẶT ĐỂ GIAO HÀNG TẠI QUẦY ================== */
 
 export function PickOrderModal({ open, onClose, onDelivered }) {
+  const { store, settings } = useApp();
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState(null);
+  const [printing, setPrinting] = useState(null);   // hoá đơn vừa xuất, chờ in
   const dq = useDebounced(q, 300);
 
   const { data, busy, error, reload } = useFetch(
@@ -235,12 +238,30 @@ export function PickOrderModal({ open, onClose, onDelivered }) {
 
   const rows = (data?.rows || []).filter((o) => o.status === 'open' || o.status === 'partial');
 
-  if (picked) {
+  /* Hoá đơn vừa xuất — hiện mẫu in đè lên, đóng lại thì thoát luôn */
+  if (printing) {
+    return (
+      <InvoicePrint
+        sale={printing}
+        store={store}
+        invoice={settings?.invoice || {}}
+        onClose={() => { setPrinting(null); onClose(); }}
+      />
+    );
+  }
+
+  if (open && picked) {
     return (
       <DeliverAtCounter
         orderId={picked}
         onClose={() => setPicked(null)}
-        onDone={(res) => { setPicked(null); reload(); onDelivered?.(res); onClose(); }}
+        onDone={(res, sale) => {
+          setPicked(null);
+          reload();
+          onDelivered?.(res);
+          if (sale) setPrinting(sale);      // in ngay, khách còn đứng đó
+          else onClose();
+        }}
       />
     );
   }
@@ -351,7 +372,8 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
 
   useEffect(() => { setPaid(Math.max(0, saleTotal - useDeposit)); }, [saleTotal, useDeposit]);
 
-  const submit = async () => {
+  /** thenPrint: xuất hoá đơn xong thì mở luôn mẫu in cho khách cầm về. */
+  const submit = async (thenPrint = false) => {
     if (!chosen.length) return toast('Chưa chọn món nào để giao', 'bad');
     setBusy(true);
     try {
@@ -366,7 +388,15 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
       toast(
         `Đã xuất hoá đơn ${res.sale_code}${res.status === 'done' ? ' — đơn đã giao xong' : ' — đơn còn hàng chưa giao'}`,
         'ok', 7000);
-      onDone?.(res);
+
+      /* Lấy hoá đơn đầy đủ để in. Lấy không được thì vẫn coi như giao xong —
+         hoá đơn đã lưu chắc rồi, chỉ là không in được ngay. */
+      let sale = null;
+      if (thenPrint) {
+        try { sale = await api.sale(res.sale_id); }
+        catch { toast('Đã xuất hoá đơn nhưng chưa mở được bản in. Vào mục Hoá đơn để in.', 'bad', 8000); }
+      }
+      onDone?.(res, sale);
     } catch (e) {
       toast(e.message, 'bad', 7000);
     } finally {
@@ -384,8 +414,12 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
       footer={
         <>
           <Button onClick={onClose}>Quay lại</Button>
-          <Button variant="primary" icon={Truck} onClick={submit} loading={busy} disabled={!chosen.length}>
+          <Button icon={Truck} onClick={() => submit(false)} loading={busy} disabled={!chosen.length}>
             Xuất hoá đơn giao hàng
+          </Button>
+          <Button variant="primary" icon={Printer} onClick={() => submit(true)} loading={busy}
+            disabled={!chosen.length}>
+            Xuất hoá đơn giao hàng và in
           </Button>
         </>
       }

@@ -71,9 +71,15 @@ export function roleCan(role, perm) {
  * chỉ API là qua mặt được.
  * ------------------------------------------------------------------ */
 
-/** Ai đang gọi. Máy khách gửi kèm id người dùng ở header x-user-id. */
+/**
+ * Ai đang gọi. Máy khách gửi kèm id người dùng ở header x-user-id.
+ *
+ * Riêng ảnh thì nhận thêm ở dạng ?uid= trên đường dẫn: thẻ <img src="..."/>
+ * của trình duyệt KHÔNG gửi được header tự đặt, nên ảnh bảo hành sẽ bị chặn
+ * 401 và hiện ra ô trống — trông y như phần mềm quên lưu ảnh.
+ */
 export function currentUser(req, getUserById) {
-  const id = Number(req.get('x-user-id'));
+  const id = Number(req.get('x-user-id')) || Number(req.query?.uid);
   if (!id) return null;
   return getUserById(id) || null;
 }

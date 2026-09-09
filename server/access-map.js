@@ -30,6 +30,7 @@ export const ACCESS_RULES = [
   ['*',    /^\/drafts/,                   'sale.pos'],
   ['*',    /^\/price-history/,            'sale.pos'],
   ['*',    /^\/sale-returns/,             'sale.return'],
+  ['POST', /^\/sale-exchanges$/,           'sale.return'],
   ['*',    /^\/orders/,                   'order.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
@@ -68,7 +69,21 @@ export const ACCESS_RULES = [
   ['GET',  /^\/backup/,                   'settings.manage'],
   ['POST', /^\/restore/,                  'settings.manage'],
   ['POST', /^\/clear-transactions/,       'settings.manage'],
+  ['POST', /^\/reset-all/,                'settings.manage'],
+
+  /* Đăng nhập phải mở, vì lúc đó chưa có ai để kiểm quyền */
+  ['POST', /^\/login$/,                   null],
 ];
+
+/**
+ * Route GHI mà quên khai trong bảng trên thì đòi quyền cao nhất.
+ *
+ * Trước đây quên khai là mặc định MỞ — và đúng là đã lọt: /reset-all cho
+ * xoá sạch cơ sở dữ liệu, /sale-exchanges cho đổi trả hàng, ai gọi cũng
+ * được. Giờ quên khai thì bị khoá chặt, người viết route mới sẽ thấy ngay
+ * và phải khai tử tế. Thà chặn nhầm còn hơn mở nhầm.
+ */
+export const DEFAULT_WRITE_PERM = 'settings.manage';
 
 /** Quyền cần có cho một lời gọi, hoặc null nếu ai đăng nhập cũng gọi được. */
 export function permFor(method, urlPath) {
@@ -76,5 +91,6 @@ export function permFor(method, urlPath) {
   for (const [m, re, perm] of ACCESS_RULES) {
     if ((m === '*' || m === method) && re.test(p)) return perm;
   }
-  return null;
+  // Đọc thì cho qua; ghi mà quên khai thì khoá lại
+  return method === 'GET' ? null : DEFAULT_WRITE_PERM;
 }

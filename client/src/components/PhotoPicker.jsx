@@ -148,6 +148,19 @@ export default function PhotoPicker({ photos, onChange, max = 8, label = 'Ảnh 
 }
 
 /** Xem ảnh đã lưu trên máy chủ, bấm vào để phóng to. */
+/**
+ * Đường dẫn ảnh bảo hành, kèm id người dùng ở dạng ?uid=.
+ *
+ * Thẻ <img> của trình duyệt không gửi được header tự đặt, nên nếu chỉ dựa
+ * vào x-user-id thì máy chủ chặn 401 và ảnh hiện ra ô trống — trông hệt
+ * như phần mềm quên lưu ảnh, dù ảnh vẫn nằm nguyên trong ổ cứng.
+ */
+export function photoUrl(file) {
+  let uid = null;
+  try { uid = JSON.parse(localStorage.getItem('thpos.user') || 'null')?.id || null; } catch { /* chưa đăng nhập */ }
+  return `/api/warranty/photo/${file}` + (uid ? `?uid=${uid}` : '');
+}
+
 export function PhotoGallery({ photos, onDelete, emptyText = 'Chưa có ảnh' }) {
   const [zoom, setZoom] = useState(null);
 
@@ -166,11 +179,20 @@ export function PhotoGallery({ photos, onDelete, emptyText = 'Chưa có ảnh' }
               aria-label={`Phóng to ảnh${p.caption ? ': ' + p.caption : ''}`}
             >
               <img
-                src={`/api/warranty/photo/${p.file}`}
+                src={photoUrl(p.file)}
                 alt={p.caption || 'Ảnh hàng bảo hành'}
                 className="w-full h-full object-cover"
                 loading="lazy"
+                /* File ảnh không còn trên ổ cứng thì nói thẳng, đừng để ô
+                   vỡ — người dùng phải biết là ảnh mất chứ không phải mạng
+                   chậm hay phần mềm đang tải. */
+                onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.hidden = false; }}
               />
+              <span hidden className="absolute inset-0 flex flex-col items-center justify-center
+                                      gap-1 p-1.5 text-center text-2xs text-muted-ink">
+                <ImageOff size={18} aria-hidden="true" />
+                Ảnh không còn trên ổ cứng
+              </span>
             </button>
             <div className="flex items-center gap-1 px-1.5 py-1 border-t border-line">
               <span className="text-2xs text-muted-ink truncate flex-1">
@@ -202,7 +224,7 @@ export function PhotoGallery({ photos, onDelete, emptyText = 'Chưa có ảnh' }
           </button>
           <figure className="max-w-full max-h-full" onClick={(e) => e.stopPropagation()}>
             <img
-              src={`/api/warranty/photo/${zoom.file}`}
+              src={photoUrl(zoom.file)}
               alt={zoom.caption || 'Ảnh hàng bảo hành'}
               className="max-w-full max-h-[80vh] object-contain rounded"
             />

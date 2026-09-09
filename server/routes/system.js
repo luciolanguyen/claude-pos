@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { all, get, run, tx, getSettings, setSetting, DB_FILE, db } from '../db.js';
+import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR } from '../db.js';
 
 const r = Router();
 
@@ -160,6 +160,81 @@ r.post('/clear-transactions', (req, res) => {
     }
   });
   res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC và nhà xe được giữ nguyên.' });
+});
+
+/* ==================================================================== *
+ * XOÁ SẠCH TOÀN BỘ — VỀ NHƯ MÁY MỚI CÀI
+ *
+ * Khác với "xoá dữ liệu giao dịch" ở trên: cái này xoá luôn cả danh mục.
+ * Dùng khi giao phần mềm cho tiệm khác, hoặc khi muốn nhập lại từ đầu.
+ *
+ * Giữ đúng hai thứ để còn đăng nhập vào được:
+ *   - bảng users (tài khoản)
+ *   - thiết lập cửa hàng, in ấn, bán hàng, bảo hành
+ *
+ * KHÔNG lấy lại được. Đòi gõ đúng chuỗi xác nhận, và giao diện bắt tải
+ * file sao lưu trước khi cho bấm.
+ * ==================================================================== */
+
+r.post('/reset-all', (req, res) => {
+  if (req.body?.confirm !== 'XOA-TAT-CA') {
+    return res.status(400).json({ error: 'Cần gõ đúng chuỗi xác nhận để thực hiện.' });
+  }
+
+  /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
+  const ORDER = [
+    'activity_log', 'draft_sales',
+    'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
+    'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
+    'production_items', 'productions', 'product_boms',
+    'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
+    'sale_return_items', 'sale_returns', 'sale_items', 'sales',
+    'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
+    'cash_transactions', 'cash_accounts',
+    'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
+    'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
+  ];
+
+  /* Đếm trước để báo lại cho người dùng biết đã xoá những gì */
+  const before = {};
+  for (const t of ['products', 'customers', 'suppliers', 'sales', 'purchases', 'warranty_tickets']) {
+    before[t] = get(`SELECT COUNT(*) AS n FROM ${t}`).n;
+  }
+
+  let photosDeleted = 0;
+  try {
+    tx(() => {
+      db.exec('PRAGMA foreign_keys = OFF');
+      for (const t of ORDER) run(`DELETE FROM ${t}`);
+      run("DELETE FROM sqlite_sequence WHERE name NOT IN ('users')");
+      db.exec('PRAGMA foreign_keys = ON');
+    });
+  } catch (e) {
+    db.exec('PRAGMA foreign_keys = ON');
+    return res.status(500).json({ error: 'Không xoá được: ' + e.message });
+  }
+
+  /* Ảnh bảo hành nằm ngoài cơ sở dữ liệu, phải xoá riêng */
+  try {
+    for (const name of fs.readdirSync(WARRANTY_DIR)) {
+      fs.unlinkSync(path.join(WARRANTY_DIR, name));
+      photosDeleted++;
+    }
+  } catch { /* thư mục trống hoặc chưa có */ }
+
+  /* Dựng lại những thứ tối thiểu để phần mềm chạy được ngay */
+  run("INSERT INTO warehouses(code, name, is_default, active) VALUES('KHO', 'Kho cửa hàng', 1, 1)");
+  run("INSERT INTO price_lists(code, name, is_default, sort_order) VALUES('LE', 'Giá lẻ', 1, 1)");
+  run(`INSERT INTO cash_accounts(code, name, type, opening_balance, active, sort_order)
+       VALUES('QTM', 'Tiền mặt tại quầy', 'cash', 0, 1, 1)`);
+
+  res.json({
+    ok: true,
+    deleted: before,
+    photos_deleted: photosDeleted,
+    message: 'Đã xoá sạch dữ liệu. Tài khoản đăng nhập và thông tin cửa hàng được giữ lại. '
+      + 'Đã dựng lại kho mặc định, bảng giá lẻ và quỹ tiền mặt để phần mềm chạy được ngay.',
+  });
 });
 
 export default r;

@@ -123,12 +123,16 @@ r.post('/purchases', (req, res) => {
         const share = subtotal > 0 ? (it._amount / subtotal) * otherCost : 0;
         const unitCostBase = qtyBase > 0 ? Math.round((it._amount + share) / qtyBase) : 0;
 
+        /* price là giá SAU chiết khấu — chính nó đi vào giá vốn.
+           list_price giữ giá mối báo, để mở lại phiếu còn đối chiếu được. */
         run(`INSERT INTO purchase_items(purchase_id, product_id, unit_name, factor, qty, price,
-                                        discount, vat_rate, amount)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                        discount, vat_rate, amount, list_price, discount_percent)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [purchaseId, it.product_id, it.unit_name, factor, qty,
             Math.round(Number(it.price) || 0), Math.round(Number(it.discount) || 0),
-            Number(it.vat_rate) || 0, it._amount]);
+            Number(it.vat_rate) || 0, it._amount,
+            Math.round(Number(it.list_price) || Number(it.price) || 0),
+            Number(it.discount_percent) || 0]);
 
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: qtyBase,

@@ -1,20 +1,27 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Boxes, Plus, Pencil, Trash2, Download, Package, History, Tag, Layers, Upload,
-  Wrench, CheckSquare, Square, ChevronDown, FileText, AlertTriangle,
+  Wrench, CheckSquare, Square, ChevronDown, FileText, AlertTriangle, X,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, MOVE_LABEL, COST_METHOD_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs,
+  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import ImportProducts from '../components/ImportProducts';
 import PrintLabels from '../components/PrintLabels';
 import { ProductPicker } from '../components/ProductPicker';
 import { ProductForm } from '../components/ProductForm';
+
+/* Nhãn hiện trên chip bộ lọc */
+const FILTER_LABEL = {
+  name: 'Tên hàng', sku: 'Mã hàng', barcode: 'Mã vạch',
+  brand: 'Hãng', location: 'Vị trí', stock_status: 'Tồn kho',
+};
+const STOCK_LABEL = { in: 'Còn hàng', low: 'Dưới tồn tối thiểu', out: 'Đã hết hàng' };
 
 export default function Products() {
   const { toast, meta, loadMeta } = useApp();
@@ -23,9 +30,24 @@ export default function Products() {
   const [categoryId, setCategoryId] = useState('');
   const [active, setActive] = useState('1');
 
-  const { data, busy, error, reload } = useFetch(
-    () => api.products({ q: dq, category_id: categoryId, active }), [dq, categoryId, active]
-  );
+  /* Bộ lọc gõ ngay dưới tên cột. Gộp thành một đối tượng để truyền cho
+     máy chủ và để đếm xem đang bật mấy điều kiện. */
+  const [col, setCol] = useState({ name: '', sku: '', barcode: '', brand: '', location: '', stock_status: '' });
+  const dcol = useDebounced(JSON.stringify(col), 300);
+  const setColField = (k) => (v) => setCol((c) => ({ ...c, [k]: v }));
+  const clearCols = () => setCol({ name: '', sku: '', barcode: '', brand: '', location: '', stock_status: '' });
+  const activeFilters = Object.entries(col).filter(([, v]) => v);
+
+  const { data: filterOpts } = useFetch(() => api.get('/products/filters'), []);
+
+  const filters = useMemo(
+    () => ({ q: dq, category_id: categoryId, active, ...JSON.parse(dcol) }),
+    [dq, categoryId, active, dcol]);
+
+  const {
+    rows: data, extra, total: rowCount, busy, error, reload,
+    page, setPage, pageSize, setPageSize,
+  } = usePaged((pg) => api.products({ ...filters, ...pg }), [filters], { key: 'products' });
 
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
@@ -36,15 +58,9 @@ export default function Products() {
   const [selected, setSelected] = useState(() => new Set());
   const [busyAction, setBusyAction] = useState(false);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    return {
-      count: data.length,
-      value: data.reduce((a, p) => a + Math.round(p.total_stock * p.cost_price), 0),
-      out: data.filter((p) => p.track_stock && p.total_stock <= 0).length,
-      low: data.filter((p) => p.track_stock && p.min_stock > 0 && p.total_stock > 0 && p.total_stock <= p.min_stock).length,
-    };
-  }, [data]);
+  /* Số tổng do máy chủ tính trên CẢ bộ lọc. Cộng từ data thì phân trang
+     xong thẻ "giá trị tồn kho" chỉ còn cộng 20 dòng, mà sai rất khó thấy. */
+  const totals = extra?.totals || null;
 
   const doDelete = async () => {
     setBusyAction(true);
@@ -65,8 +81,12 @@ export default function Products() {
    * Truyền onlySelected để chỉ xuất những dòng đã tích; không truyền thì
    * xuất toàn bộ danh sách đang lọc.
    */
-  const exportCsv = (onlySelected = false) => {
-    const list = onlySelected ? (data || []).filter((p) => selected.has(p.id)) : (data || []);
+  const exportCsv = async (onlySelected = false) => {
+    /* Chọn dòng nào thì xuất dòng đó; không chọn thì kéo hết mọi trang của
+       bộ lọc hiện tại — chứ không phải chỉ trang đang xem. */
+    const list = onlySelected
+      ? (data || []).filter((p) => selected.has(p.id))
+      : await fetchAllPages((pg) => api.products({ ...filters, ...pg }));
     if (!list.length) return;
     const head = ['Mã hàng', 'Mã vạch', 'Tên hàng', 'Tên phụ', 'Nhóm', 'ĐVT', 'Giá vốn',
       'Tồn kho', 'Tồn tối thiểu', 'Giá trị tồn', 'Hãng', 'Vị trí'];
@@ -95,7 +115,7 @@ export default function Products() {
         actions={<>
           <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
           <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
-          <Button icon={Download} onClick={() => exportCsv(false)} disabled={!data?.length}>
+          <Button icon={Download} onClick={() => exportCsv(false)} disabled={!rowCount}>
             Xuất Excel
           </Button>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
@@ -135,6 +155,33 @@ export default function Products() {
           </div>
         )}
 
+        {/* Chip cho biết đang lọc những gì. Cho xuống dòng chứ không ép
+            vào một hàng rồi cắt cụt — mất nhãn là mất luôn ý nghĩa. */}
+        {activeFilters.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
+            <span className="text-muted-ink">Đang lọc:</span>
+            {activeFilters.map(([k, v]) => (
+              <span key={k}
+                className="inline-flex items-center gap-1 rounded-full border border-accent/40
+                           bg-accent-soft/40 pl-2 pr-1 py-0.5 max-w-full">
+                <span className="truncate">
+                  {FILTER_LABEL[k]}: <b>{STOCK_LABEL[v] || v}</b>
+                </span>
+                <button
+                  onClick={() => setColField(k)('')}
+                  aria-label={`Bỏ lọc ${FILTER_LABEL[k]}`}
+                  className="shrink-0 rounded-full hover:bg-accent/20 p-0.5 cursor-pointer"
+                >
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+            <button onClick={clearCols} className="text-accent font-semibold hover:underline cursor-pointer">
+              Bỏ hết bộ lọc
+            </button>
+          </div>
+        )}
+
         {totals && (
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
             <Stat label="Số mặt hàng" value={n(totals.count)} icon={Boxes} />
@@ -154,7 +201,8 @@ export default function Products() {
                 action={<Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>}
               />
             ) : (
-              <div className="table-wrap">
+              <div className="card">
+              <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
@@ -178,6 +226,57 @@ export default function Products() {
                       <th className="text-right">Giá trị tồn</th>
                       <th>Vị trí</th>
                       <th className="text-right">Thao tác</th>
+                    </tr>
+                    {/* Hàng ô lọc: gõ hoặc chọn ngay dưới tên cột, khỏi phải
+                        nhớ bộ lọc nằm ở đâu trên đầu trang */}
+                    <tr className="filter-row">
+                      <th />
+                      <th>
+                        <Input size="sm" value={col.sku} onChange={(e) => setColField('sku')(e.target.value)}
+                          placeholder="Lọc mã..." aria-label="Lọc theo mã hàng" />
+                      </th>
+                      <th>
+                        <Input size="sm" value={col.name} onChange={(e) => setColField('name')(e.target.value)}
+                          placeholder="Lọc tên hoặc tên phụ..." aria-label="Lọc theo tên hàng" />
+                      </th>
+                      <th>
+                        <Select size="sm" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}
+                          aria-label="Lọc theo nhóm hàng">
+                          <option value="">Mọi nhóm</option>
+                          {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </Select>
+                      </th>
+                      <th>
+                        <Input size="sm" value={col.barcode} onChange={(e) => setColField('barcode')(e.target.value)}
+                          placeholder="Mã vạch..." aria-label="Lọc theo mã vạch" />
+                      </th>
+                      <th />
+                      <th>
+                        <Select size="sm" value={col.stock_status}
+                          onChange={(e) => setColField('stock_status')(e.target.value)}
+                          aria-label="Lọc theo tình trạng tồn kho">
+                          <option value="">Mọi tình trạng</option>
+                          <option value="in">Còn hàng</option>
+                          <option value="low">Dưới tồn tối thiểu</option>
+                          <option value="out">Đã hết hàng</option>
+                        </Select>
+                      </th>
+                      <th />
+                      <th>
+                        <Select size="sm" value={col.brand} onChange={(e) => setColField('brand')(e.target.value)}
+                          aria-label="Lọc theo hãng">
+                          <option value="">Mọi hãng</option>
+                          {(filterOpts?.brands || []).map((b) => <option key={b} value={b}>{b}</option>)}
+                        </Select>
+                      </th>
+                      <th>
+                        <Select size="sm" value={col.location} onChange={(e) => setColField('location')(e.target.value)}
+                          aria-label="Lọc theo vị trí để hàng">
+                          <option value="">Mọi vị trí</option>
+                          {(filterOpts?.locations || []).map((l) => <option key={l} value={l}>{l}</option>)}
+                        </Select>
+                      </th>
+                      <th />
                     </tr>
                   </thead>
                   <tbody>
@@ -250,6 +349,14 @@ export default function Products() {
                     })}
                   </tbody>
                 </table>
+              </div>
+              <Pager
+                page={page}
+                pageSize={pageSize}
+                total={rowCount}
+                onPage={setPage}
+                onPageSize={setPageSize}
+              />
               </div>
             )}
       </Page>
