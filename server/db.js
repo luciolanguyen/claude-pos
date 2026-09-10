@@ -108,6 +108,12 @@ addColumns('sales', {
   cod_amount: 'INTEGER NOT NULL DEFAULT 0',
   delivery_status: 'TEXT',                            // NULL = không giao hàng
   delivery_note: 'TEXT',
+  /* Mốc thời gian từng chặng. Một chữ trạng thái không trả lời được
+     "đơn này đi mấy ngày rồi", nên phải ghi lại lúc chuyển chặng. */
+  shipped_at: 'TEXT',                                 // lúc shipper cầm hàng đi
+  delivered_at: 'TEXT',                               // lúc khách nhận được hàng
+  collected_at: 'TEXT',                               // lúc tiền về tới tiệm
+  shipper_name: 'TEXT',                               // ai cầm hàng đi, ghi tay cũng được
 });
 
 export const DB_FILE = DB_PATH;

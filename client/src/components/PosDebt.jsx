@@ -89,7 +89,7 @@ export function DebtCollectModal({ open, onClose, onDone, customerId = null }) {
         customerId={picked}
         onBack={customerId ? null : () => setPicked(null)}
         onClose={onClose}
-        onDone={() => { reload(); onDone?.(); }}
+        onDone={(res) => { reload(); onDone?.(res); }}
       />
     );
   }
@@ -191,7 +191,7 @@ function CollectForm({ customerId, onBack, onClose, onDone }) {
           ? `Đã thu ${money(amt)}. Khách còn nợ ${money(res.debt)}.`
           : `Đã thu ${money(amt)}. Khách trả hết nợ.`,
         'ok', 7000);
-      onDone?.();
+      onDone?.(res);
       onClose();
     } catch (e) {
       toast(e.message, 'bad', 7000);

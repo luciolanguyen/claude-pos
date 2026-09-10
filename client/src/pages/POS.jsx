@@ -4,7 +4,7 @@ import {
   Search, Plus, Minus, Trash2, X, UserPlus, Printer, Percent, Package,
   ShoppingCart, ArrowLeft, Wallet, CreditCard, HandCoins, FileText, Tag, Grid3x3,
   Truck, Save, History, StickyNote, Eye, EyeOff, ChevronDown, FolderOpen, AlertTriangle,
-  ClipboardList, RefreshCcw,
+  ClipboardList, RefreshCcw, Undo2, MapPin,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal } from '../lib/store';
@@ -14,6 +14,9 @@ import {
   Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
+import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
+import QuickReturnModal from '../components/PosQuickReturn';
+import CashVoucherPrint from '../components/CashVoucherPrint';
 import CustomerForm from '../components/CustomerForm';
 import {
   OrderBell, SaveAsOrderModal, PickOrderModal, ExchangeModal,
@@ -51,7 +54,7 @@ const EMPTY_DELIVERY = {
  * đơn vị khác nhau). Có số thì ô đổi màu và hiện icon giỏ — nhìn lướt là
  * biết đã thêm chưa, khỏi bấm trùng lúc đông khách.
  */
-function ProductTile({ p, priceListId, showCost, onPick, inCart = 0 }) {
+function ProductTile({ p, priceListId, showCost, onPick, inCart = 0, bought = null }) {
   const baseUnit = p.units.find((u) => u.factor === 1) || p.units[0];
   const price = baseUnit?.prices?.[priceListId] ?? 0;
   const out = p.track_stock && p.stock <= 0;
@@ -75,6 +78,15 @@ function ProductTile({ p, priceListId, showCost, onPick, inCart = 0 }) {
         <span className="text-2xs font-mono text-muted-ink">{p.sku}</span>
         {out ? <Badge tone="bad">Hết</Badge> : low ? <Badge tone="warn">Sắp hết</Badge> : null}
       </div>
+
+      {/* Món khách này từng mua: hiện luôn giá lần trước, vì câu hỏi ngay
+          sau đó bao giờ cũng là "lần trước tôi mua bao nhiêu?" */}
+      {bought && (
+        <div className="text-2xs font-semibold text-violet-700 flex items-center gap-0.5 leading-tight">
+          <History size={10} aria-hidden="true" />
+          Lần trước {n(bought.price)}
+        </div>
+      )}
 
       {added && (
         <span
@@ -123,6 +135,20 @@ export default function POS() {
   const [payOpen, setPayOpen] = useState(false);
   const [custOpen, setCustOpen] = useState(false);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [boardOpen, setBoardOpen] = useState(false);        // bảng theo dõi giao hàng
+  const [quickReturn, setQuickReturn] = useState(false);    // đổi trả không hoá đơn
+  const [voucher, setVoucher] = useState(null);             // phiếu thu vừa lập, để in
+
+  /* Lấy tờ phiếu thu vừa lập rồi mở hộp in. Không in được cũng không
+     sao — tiền đã thu và đã ghi sổ rồi, chỉ là thiếu tờ giấy. */
+  const showVoucher = async (id) => {
+    if (!id) return;
+    try {
+      setVoucher(await api.get(`/cash/transactions/${id}`));
+    } catch {
+      toast('Đã thu tiền xong, nhưng chưa lấy được phiếu để in. Vào Sổ quỹ in lại được.', 'warn', 7000);
+    }
+  };
   const [draftsOpen, setDraftsOpen] = useState(false);
   /* Ba việc mới làm ngay tại quầy: đặt hàng, giao đơn đã đặt, đổi trả */
   const [orderOpen, setOrderOpen] = useState(false);       // giỏ hàng -> đơn đặt
@@ -191,6 +217,12 @@ export default function POS() {
   }, [tab?.customerId, customers]);
 
   const customer = customers?.find((c) => c.id === tab?.customerId) || null;
+
+  /* Bao nhiêu món trong danh sách đang xem là món khách này từng mua */
+  const boughtCount = useMemo(() => {
+    if (!priceHist || !products) return 0;
+    return products.reduce((a, p) => a + (priceHist[p.id] ? 1 : 0), 0);
+  }, [priceHist, products]);
 
   /* Mỗi mặt hàng đang có bao nhiêu trong giỏ. Cộng gộp các dòng khác đơn vị
      và quy về đơn vị cơ bản, để số trên ô khớp với con số tồn kho bên dưới. */
@@ -335,8 +367,21 @@ export default function POS() {
         match(p.name, search) || match(p.alias || '', search) || match(p.sku, search) ||
         (p.barcode || '').includes(search.trim()) || match(p.brand || '', search));
     }
+
+    /* Chọn khách rồi thì ĐƯA HÀNG KHÁCH TỪNG MUA LÊN ĐẦU.
+
+       Khách quen của tiệm điện gần như lần nào cũng lấy đúng mấy món đó —
+       thợ điện thì dây với aptomat, nhà thầu thì ống với đèn. Bắt thu ngân
+       cuộn qua cả trăm ô để tìm lại đúng món cũ là bắt làm việc thừa.
+
+       Chỉ đổi THỨ TỰ, không lọc bớt: món chưa mua bao giờ vẫn còn nguyên
+       ở dưới, vì khách hoàn toàn có thể hỏi món mới. */
+    if (priceHist && Object.keys(priceHist).length) {
+      const seen = (p) => (priceHist[p.id] ? 1 : 0);
+      list = [...list].sort((a, b) => seen(b) - seen(a));
+    }
     return list;
-  }, [products, categoryId, search]);
+  }, [products, categoryId, search, priceHist]);
 
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
@@ -601,6 +646,7 @@ export default function POS() {
         </div>
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
+        <DeliveryBell onOpen={() => setBoardOpen(true)} />
         <DebtButton onOpen={() => { setDebtOf(null); setDebtOpen(true); }} />
 
         {maySeeCost && (
@@ -693,9 +739,28 @@ export default function POS() {
           onClick={() => setExchangeOpen(true)}
           className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
                      transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
+          title="Khách đổi hàng, có hoá đơn cũ"
         >
           <RefreshCcw size={14} aria-hidden="true" />
           <span className="hidden sm:inline">Đổi trả hàng</span>
+        </button>
+        <button
+          onClick={() => setQuickReturn(true)}
+          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
+                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
+          title="Khách trả hàng nhưng không giữ hoá đơn"
+        >
+          <Undo2 size={14} aria-hidden="true" />
+          <span className="hidden sm:inline">Trả không hoá đơn</span>
+        </button>
+        <button
+          onClick={() => setBoardOpen(true)}
+          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
+                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
+          title="Xem các đơn đang trên đường giao"
+        >
+          <MapPin size={14} aria-hidden="true" />
+          <span className="hidden sm:inline">Theo dõi giao</span>
         </button>
         <button
           onClick={() => setPickOrderOpen(true)}
@@ -743,13 +808,27 @@ export default function POS() {
                   action={search && <Button onClick={() => setSearch('')}>Xoá từ khoá</Button>}
                 />
               ) : (
+                <>
+                  {/* Đổi thứ tự mà không nói gì thì thu ngân tưởng phần mềm
+                      loạn — nên nói thẳng ra một dòng. */}
+                  {customer && boughtCount > 0 && !search && (
+                    <div className="mb-2 flex items-center gap-1.5 text-xs text-violet-700
+                                    bg-violet-50 border border-violet-200 rounded px-2 py-1.5">
+                      <History size={13} aria-hidden="true" />
+                      <span>
+                        <b>{n(boughtCount)} món {customer.name} từng mua</b> được đưa lên đầu.
+                      </span>
+                    </div>
+                  )}
                 <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {filtered.map((p) => (
                     <ProductTile key={p.id} p={p} priceListId={tab.priceListId}
                       showCost={maySeeCost && showCost} onPick={addToCart}
-                      inCart={inCartQty.get(p.id) || 0} />
+                      inCart={inCartQty.get(p.id) || 0}
+                      bought={priceHist?.[p.id]?.[0] || null} />
                   ))}
                 </div>
+                </>
               )}
           </div>
         </section>
@@ -1154,7 +1233,7 @@ export default function POS() {
         open={debtOpen}
         customerId={debtOf}
         onClose={() => { setDebtOpen(false); setDebtOf(null); }}
-        onDone={reloadCustomers}
+        onDone={(res) => { reloadCustomers(); showVoucher(res?.transaction?.id); }}
       />
 
       <ExchangeModal
@@ -1163,6 +1242,21 @@ export default function POS() {
         products={products || []}
         onDone={reload}
       />
+
+      <DeliveryBoard open={boardOpen} onClose={() => setBoardOpen(false)} />
+
+      <QuickReturnModal
+        open={quickReturn}
+        onClose={() => setQuickReturn(false)}
+        products={products || []}
+        priceListId={tab.priceListId}
+        warehouseId={tab.warehouseId}
+        customerId={tab.customerId}
+        customers={customers || []}
+        onDone={() => { reload(); reloadCustomers(); }}
+      />
+
+      {voucher && <CashVoucherPrint voucher={voucher} onClose={() => setVoucher(null)} />}
 
       <PriceHistoryModal
         line={priceHistOf}

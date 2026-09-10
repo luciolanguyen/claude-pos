@@ -26,6 +26,7 @@ export const ACCESS_RULES = [
   ['POST', /^\/sales$/,                   'sale.pos'],
   ['POST', /^\/sales\/\d+\/pay$/,         'sale.pos'],
   ['PUT',  /^\/sales\/\d+\/delivery$/,    'sale.pos'],
+  ['GET',  /^\/deliveries/,                'sale.view'],
   ['GET',  /^\/sales/,                    'sale.view'],
   ['*',    /^\/drafts/,                   'sale.pos'],
   ['*',    /^\/price-history/,            'sale.pos'],
@@ -55,6 +56,9 @@ export const ACCESS_RULES = [
   ['*',    /^\/supplier-debts/,           'purchase.manage'],
 
   /* --- Tiền và số liệu --- */
+  /* Xem lại MỘT phiếu theo số thì thu ngân cũng được, để in đưa khách.
+     Còn danh sách sổ quỹ vẫn phải là người quản tiền. */
+  ['GET',  /^\/cash\/transactions\/\d+$/, 'cash.voucher'],
   ['*',    /^\/cash/,                     'cash.manage'],
   ['*',    /^\/reports/,                  'report.view'],
   ['GET',  /^\/dashboard/,                'report.view'],

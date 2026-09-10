@@ -3,7 +3,7 @@ import { Download, Package, Truck, Users, Receipt, LayoutList, Table2 } from 'lu
 import { api } from '../lib/api';
 import { useFetch, useDebounced } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, pct, PAYMENT_LABEL } from '../lib/format';
-import { Button, Spinner, Empty, ErrorBox, Stat, SearchInput, Combo, Select, Badge } from '../components/ui';
+import { Button, Spinner, Empty, ErrorBox, Stat, SearchInput, Combo, AsyncCombo, Select, Badge } from '../components/ui';
 
 function downloadCsv(name, head, rows) {
   const csv = '﻿' + [head, ...rows]
@@ -13,6 +13,13 @@ function downloadCsv(name, head, rows) {
   a.href = url; a.download = name; a.click();
   URL.revokeObjectURL(url);
 }
+
+/* Tra hàng hoá trên máy chủ cho ô lọc. Danh mục của tiệm hơn hai nghìn
+   món nên không đổ hết xuống được — gõ tới đâu hỏi tới đó. */
+const searchProducts = (term) =>
+  api.products({ q: term, active: '', page_size: 30 }).then((d) => d.rows || []);
+const loadProduct = (id) => api.product(id);
+const productRender = (p) => ({ label: p.name, sub: [p.sku, p.brand].filter(Boolean).join(" · ") });
 
 /* Chênh lệch giá nhiều thì cảnh báo — dấu hiệu bán/nhập lệch giá. */
 function spread(min, max) {
@@ -32,7 +39,6 @@ export function PurchaseHistory({ r }) {
   const [productId, setProductId] = useState(null);
 
   const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), []);
-  const { data: products } = useFetch(() => api.products({ active: '' }), []);
   const { data, busy, error, reload } = useFetch(
     () => api.get('/reports/purchase-history', {
       from: r.from, to: r.to, q: dq,
@@ -68,14 +74,15 @@ export function PurchaseHistory({ r }) {
           />
         </div>
         <div className="w-full sm:w-56">
-          <Combo
+          <AsyncCombo
             size="md"
-            items={products || []}
+            search={searchProducts}
+            loadOne={loadProduct}
             value={productId}
             onChange={setProductId}
             placeholder="Mọi mặt hàng"
-            filter={(p, x) => p.name.toLowerCase().includes(x.toLowerCase()) || p.sku.toLowerCase().includes(x.toLowerCase())}
-            render={(p) => ({ label: p.name, sub: p.sku })}
+            hint="Gõ tên, mã hàng, mã vạch..."
+            render={productRender}
           />
         </div>
         <div className="flex gap-1">
@@ -207,7 +214,6 @@ export function SaleHistory({ r }) {
   const [productId, setProductId] = useState(null);
 
   const { data: customers } = useFetch(() => api.customers({ active: 1 }), []);
-  const { data: products } = useFetch(() => api.products({ active: '' }), []);
   const { data, busy, error, reload } = useFetch(
     () => api.get('/reports/sale-history', {
       from: r.from, to: r.to, q: dq,
@@ -251,14 +257,15 @@ export function SaleHistory({ r }) {
           />
         </div>
         <div className="w-full sm:w-56">
-          <Combo
+          <AsyncCombo
             size="md"
-            items={products || []}
+            search={searchProducts}
+            loadOne={loadProduct}
             value={productId}
             onChange={setProductId}
             placeholder="Mọi mặt hàng"
-            filter={(p, x) => p.name.toLowerCase().includes(x.toLowerCase()) || p.sku.toLowerCase().includes(x.toLowerCase())}
-            render={(p) => ({ label: p.name, sub: p.sku })}
+            hint="Gõ tên, mã hàng, mã vạch..."
+            render={productRender}
           />
         </div>
         <div className="flex gap-1">

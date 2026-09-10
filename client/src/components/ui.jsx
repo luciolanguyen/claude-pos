@@ -344,14 +344,25 @@ export function Spinner({ label = 'Đang tải dữ liệu...' }) {
   );
 }
 
-export function ErrorBox({ error, onRetry }) {
+/**
+ * Hộp báo lỗi.
+ *
+ * Nhận được cả Error lẫn chuỗi: lỗi gọi máy chủ thì đưa nguyên đối tượng,
+ * còn lời nhắc do kiểm tra biểu mẫu thì đưa thẳng câu chữ.
+ *
+ * Đổi `title` khi đây KHÔNG phải lỗi tải dữ liệu: báo "Không tải được
+ * dữ liệu" cho một biểu mẫu điền thiếu là nói sai chuyện, người dùng đi
+ * kiểm tra mạng trong khi lỗi nằm ở ô họ bỏ trống.
+ */
+export function ErrorBox({ error, onRetry, title = 'Không tải được dữ liệu' }) {
+  const message = typeof error === 'string' ? error : error?.message;
   return (
     <div className="card-pad border-danger/30 bg-red-50">
       <div className="flex gap-3">
         <XCircle size={18} className="text-danger shrink-0 mt-0.5" aria-hidden="true" />
         <div className="flex-1">
-          <p className="font-semibold text-danger text-sm">Không tải được dữ liệu</p>
-          <p className="text-[13px] text-red-900/80 mt-0.5">{error?.message}</p>
+          <p className="font-semibold text-danger text-sm">{title}</p>
+          {message && <p className="text-[13px] text-red-900/80 mt-0.5">{message}</p>}
           {onRetry && <Button size="sm" className="mt-2.5" onClick={onRetry}>Thử lại</Button>}
         </div>
       </div>
@@ -570,6 +581,160 @@ export function Combo({
               <li className="px-2.5 py-3 text-[13px] text-muted-ink text-center">{emptyText}</li>
             )}
             {list.slice(0, 200).map((item, i) => {
+              const r = render(item);
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    data-hi={i === hi ? '1' : '0'}
+                    role="option"
+                    aria-selected={item.id === value}
+                    className={`w-full text-left px-2.5 py-1.5 transition-colors duration-100
+                                ${i === hi ? 'bg-accent-soft' : 'hover:bg-muted'}
+                                ${item.id === value ? 'font-semibold' : ''}`}
+                    onMouseEnter={() => setHi(i)}
+                    onClick={() => choose(item)}
+                  >
+                    <div className="text-[13px] truncate">{r.label}</div>
+                    {r.sub && <div className="text-2xs text-muted-ink truncate">{r.sub}</div>}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Ô chọn có tìm kiếm chạy trên MÁY CHỦ.
+ *
+ * Khác với <Combo> nhận sẵn cả danh sách rồi lọc tại chỗ: danh mục hàng
+ * hoá của tiệm hơn hai nghìn món, đổ hết xuống trình duyệt vừa chậm vừa
+ * dễ nhầm — người dùng thấy danh sách tưởng là đủ, trong khi nó mới có
+ * một trang. Ở đây gõ tới đâu hỏi máy chủ tới đó.
+ *
+ * @param search   (từ khoá) => Promise<mảng bản ghi>
+ * @param loadOne  (id) => Promise<bản ghi> — để hiện tên món đã chọn sẵn
+ */
+export function AsyncCombo({
+  search, loadOne, value, onChange, render, placeholder = 'Chọn...',
+  size = 'md', emptyText = 'Không tìm thấy', allowClear = true, className = '',
+  hint = 'Gõ để tìm...',
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [list, setList] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [hi, setHi] = useState(0);
+  const [picked, setPicked] = useState(null);
+  const box = useRef(null);
+  const listRef = useRef(null);
+  const seq = useRef(0);
+
+  /* Tên của món đang chọn: nút đóng lại vẫn phải hiện tên, mà lúc đó
+     danh sách kết quả đã trống nên phải hỏi riêng một lần. */
+  useEffect(() => {
+    if (!value) { setPicked(null); return; }
+    if (picked?.id === value) return;
+    let alive = true;
+    Promise.resolve(loadOne ? loadOne(value) : null)
+      .then((r) => { if (alive && r) setPicked(r); })
+      .catch(() => { /* không tra được tên thì thôi, vẫn giữ lựa chọn */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  /* Gõ tới đâu hỏi tới đó, chờ 300ms cho người ta gõ xong đã. Đánh số
+     từng lượt hỏi để kết quả về chậm của lượt cũ không đè lên lượt mới. */
+  useEffect(() => {
+    if (!open) return;
+    const mine = ++seq.current;
+    setBusy(true);
+    const t = setTimeout(() => {
+      Promise.resolve(search(q))
+        .then((rows) => {
+          if (seq.current !== mine) return;
+          setList(Array.isArray(rows) ? rows : (rows?.rows || []));
+        })
+        .catch(() => { if (seq.current === mine) setList([]); })
+        .finally(() => { if (seq.current === mine) setBusy(false); });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, open]);
+
+  useEffect(() => {
+    const onDoc = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  useEffect(() => { setHi(0); }, [q]);
+
+  const choose = (item) => {
+    setPicked(item);
+    onChange(item ? item.id : null);
+    setOpen(false);
+    setQ('');
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, list.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[hi]) choose(list[hi]); }
+    else if (e.key === 'Escape') { setOpen(false); }
+  };
+
+  const sz = { sm: 'field-sm', md: '', lg: 'field-lg' }[size] || '';
+
+  return (
+    <div ref={box} className={`relative ${className}`}>
+      <button
+        type="button"
+        className={`field ${sz} flex items-center justify-between gap-2 text-left cursor-pointer`}
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className={`truncate ${picked ? '' : 'text-slate-400'}`}>
+          {picked ? render(picked).label : placeholder}
+        </span>
+        <ChevronDown size={15} className="shrink-0 text-muted-ink" aria-hidden="true" />
+      </button>
+
+      {open && (
+        <div className="absolute z-30 mt-1 w-full bg-card border border-line rounded-lg shadow-pop overflow-hidden">
+          <div className="p-1.5 border-b border-line flex items-center gap-1.5">
+            <input
+              className="field field-sm"
+              autoFocus
+              value={q}
+              placeholder={hint}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={onKey}
+              aria-label="Tìm trong danh sách"
+            />
+            {busy && <Loader2 size={14} className="shrink-0 animate-spin text-muted-ink" aria-hidden="true" />}
+          </div>
+          <ul ref={listRef} className="max-h-60 overflow-y-auto py-1" role="listbox">
+            {allowClear && (
+              <li>
+                <button
+                  type="button"
+                  className="w-full text-left px-2.5 py-1.5 text-[13px] text-muted-ink hover:bg-muted"
+                  onClick={() => choose(null)}
+                >
+                  — Bỏ chọn —
+                </button>
+              </li>
+            )}
+            {!busy && list.length === 0 && (
+              <li className="px-2.5 py-3 text-[13px] text-muted-ink text-center">{emptyText}</li>
+            )}
+            {list.map((item, i) => {
               const r = render(item);
               return (
                 <li key={item.id}>

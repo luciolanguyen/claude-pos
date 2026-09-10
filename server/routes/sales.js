@@ -723,15 +723,166 @@ r.get('/customers/:id/quick', (req, res) => {
 /* Cập nhật trạng thái giao hàng                                        */
 /* ==================================================================== */
 
+/**
+ * Các chặng của một đơn giao hàng, theo đúng thứ tự ngoài đời:
+ *
+ *   pending   hàng đã xuất hoá đơn, còn nằm ở tiệm chờ người tới lấy
+ *   shipping  shipper đã cầm hàng đi
+ *   delivered khách đã nhận được hàng
+ *   collected tiền đã về tới tiệm            <- chặng cuối của đơn thu hộ
+ *   returned  giao không được, hàng quay về tiệm
+ *   cancelled bỏ giao
+ *
+ * Tách "đã giao" khỏi "đã thu tiền" là chuyện bắt buộc với đơn thu hộ:
+ * khách cầm hàng rồi nhưng tiền còn nằm trong túi shipper, tiệm vẫn đang
+ * bị nợ. Gộp hai chặng làm một là mất dấu khoản tiền đó.
+ */
+export const DELIVERY_STATUSES = ['pending', 'shipping', 'delivered', 'collected', 'returned', 'cancelled'];
+
+/** Cột mốc thời gian tương ứng với từng chặng, để biết đơn đi mấy ngày rồi. */
+const STAMP_OF = { shipping: 'shipped_at', delivered: 'delivered_at', collected: 'collected_at' };
+
+/** Danh sách đơn đang giao — bảng theo dõi ở quầy. */
+r.get('/deliveries', (req, res) => {
+  const { status = '', q = '', carrier_id, from, to, active } = req.query;
+  const where = ['s.delivery_status IS NOT NULL', "s.status = 'done'"];
+  const params = [];
+  if (status) { where.push('s.delivery_status = ?'); params.push(status); }
+  /* Mặc định chỉ hiện đơn CHƯA xong: đơn đã thu tiền hoặc đã bỏ thì không
+     còn phải trông nữa, để lẫn vào chỉ làm rối bảng theo dõi. */
+  if (active === '1') where.push("s.delivery_status IN ('pending','shipping','delivered')");
+  if (carrier_id) { where.push('s.carrier_id = ?'); params.push(carrier_id); }
+  if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }
+  if (to) { where.push('date(s.ts) <= date(?)'); params.push(to); }
+  if (q.trim()) {
+    where.push(`(s.code LIKE ? OR s.delivery_name LIKE ? OR s.delivery_phone LIKE ?
+                 OR s.delivery_address LIKE ? OR s.tracking_code LIKE ? OR s.shipper_name LIKE ?)`);
+    const like = `%${q.trim()}%`;
+    params.push(like, like, like, like, like, like);
+  }
+  const w = 'WHERE ' + where.join(' AND ');
+  const { page, size, offset } = pageParams(req.query, 20);
+
+  const agg = get(`
+    SELECT COUNT(*) AS n,
+           COALESCE(SUM(CASE WHEN s.delivery_status IN ('pending','shipping','delivered')
+                             THEN s.total - s.paid END), 0) AS pending_money
+    FROM sales s ${w}`, params);
+
+  const rows = all(`
+    SELECT s.id, s.code, s.ts, s.total, s.paid, s.cod_amount, s.ship_fee, s.ship_payer,
+           s.delivery_status, s.delivery_name, s.delivery_phone, s.delivery_address,
+           s.tracking_code, s.delivery_note, s.shipper_name,
+           s.shipped_at, s.delivered_at, s.collected_at,
+           s.carrier_id, ca.name AS carrier_name,
+           c.name AS customer_name, c.phone AS customer_phone,
+           u.full_name AS user_name,
+           s.total - s.paid AS owed,
+           CAST(julianday('now','localtime') - julianday(s.ts) AS INTEGER) AS days_out
+    FROM sales s
+    LEFT JOIN carriers ca ON ca.id = s.carrier_id
+    LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN users u ON u.id = s.user_id
+    ${w}
+    ORDER BY s.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+
+  /* Đếm theo từng chặng để hiện con số trên các thẻ lọc */
+  const counts = {};
+  for (const row of all(`
+    SELECT s.delivery_status AS st, COUNT(*) AS n FROM sales s
+    WHERE s.delivery_status IS NOT NULL AND s.status = 'done'
+    GROUP BY s.delivery_status`)) counts[row.st] = row.n;
+
+  res.json({ rows, total: agg.n, page, page_size: size, counts, pending_money: agg.pending_money });
+});
+
+/**
+ * Chuyển chặng của một đơn giao.
+ *
+ * Chuyện tiền: sang chặng "đã thu tiền" mà hoá đơn còn thiếu thì shipper
+ * vừa mang tiền về — phải ghi phiếu thu và trừ nợ ngay tại đây. Nếu chỉ
+ * đổi chữ trạng thái, đơn coi như giao xong nhưng sổ vẫn treo nợ khách,
+ * và cuối tháng chủ tiệm đi đòi một khoản đã thu rồi.
+ */
 r.put('/sales/:id/delivery', (req, res) => {
   const b = req.body;
-  const s2 = get('SELECT id FROM sales WHERE id = ?', [req.params.id]);
-  if (!s2) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
-  run(`UPDATE sales SET delivery_status = ?, tracking_code = ?, carrier_id = ?,
-         delivery_note = ? WHERE id = ?`,
-    [b.delivery_status || null, b.tracking_code || null, b.carrier_id || null,
-      b.delivery_note || null, req.params.id]);
-  res.json({ ok: true });
+  const sale = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
+  if (!sale) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
+
+  const next = b.delivery_status === undefined ? sale.delivery_status : (b.delivery_status || null);
+  if (next && !DELIVERY_STATUSES.includes(next)) {
+    return res.status(400).json({ error: 'Trạng thái giao hàng không hợp lệ: ' + next });
+  }
+
+  try {
+    const out = tx(() => {
+      const changed = next !== sale.delivery_status;
+      const stamp = changed && STAMP_OF[next] ? STAMP_OF[next] : null;
+
+      /* Giữ nguyên trường nào không gửi lên — màn hình theo dõi chỉ đổi
+         trạng thái, không nên xoá mất mã vận đơn đã nhập từ trước. */
+      const keep = (v, old) => (v === undefined ? old : (v || null));
+
+      run(`UPDATE sales SET delivery_status = ?, tracking_code = ?, carrier_id = ?,
+             delivery_note = ?, shipper_name = ?
+             ${stamp ? `, ${stamp} = COALESCE(${stamp}, datetime('now','localtime'))` : ''}
+           WHERE id = ?`,
+        [next, keep(b.tracking_code, sale.tracking_code), keep(b.carrier_id, sale.carrier_id),
+          keep(b.delivery_note, sale.delivery_note), keep(b.shipper_name, sale.shipper_name),
+          sale.id]);
+
+      let receipt = null;
+      const owed = sale.total - sale.paid;
+      /* Tiền về tiệm: ghi phiếu thu và trừ nợ. Chỉ làm khi thật sự còn
+         thiếu — đơn đã trả trước rồi thì chuyển chặng không sinh tiền. */
+      if (changed && next === 'collected' && owed > 0 && b.skip_payment !== true) {
+        const amount = Math.min(
+          b.amount === undefined || b.amount === null || b.amount === ''
+            || Number.isNaN(Number(b.amount))
+            ? owed
+            : Math.round(Number(b.amount)),
+          owed);
+        if (amount > 0) {
+          const accountId = Number(b.account_id) || defaultCashAccount();
+          if (!accountId) throw Object.assign(new Error('Chưa thiết lập quỹ tiền'), { status: 400 });
+          const cust = sale.customer_id
+            ? get('SELECT name FROM customers WHERE id = ?', [sale.customer_id]) : null;
+          receipt = addCashTx({
+            accountId, direction: 'in', amount, category: 'sale',
+            partnerType: 'customer', partnerId: sale.customer_id || null,
+            partnerName: cust?.name || sale.delivery_name || 'Khách lẻ',
+            refType: 'sale', refId: sale.id, refCode: sale.code,
+            userId: b.user_id || req.user?.id || null,
+            note: `Shipper nộp tiền đơn giao ${sale.code}`,
+          });
+          run('UPDATE sales SET paid = paid + ? WHERE id = ?', [amount, sale.id]);
+        }
+      }
+      return { ok: true, receipt, sale: get('SELECT * FROM sales WHERE id = ?', [sale.id]) };
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message });
+  }
+});
+
+/** Một đơn giao kèm danh sách hàng — để in phiếu giao cho shipper. */
+r.get('/deliveries/:id', (req, res) => {
+  const sale = get(`
+    SELECT s.*, c.name AS customer_name, c.phone AS customer_phone,
+           ca.name AS carrier_name, u.full_name AS user_name
+    FROM sales s
+    LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN carriers ca ON ca.id = s.carrier_id
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.id = ?`, [req.params.id]);
+  if (!sale) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
+  sale.items = all(`
+    SELECT si.*, p.base_unit
+    FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+    WHERE si.sale_id = ? ORDER BY si.id`, [sale.id]);
+  sale.owed = sale.total - sale.paid;
+  res.json(sale);
 });
 
 /* ========================== CÔNG NỢ KHÁCH ========================== */

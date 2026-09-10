@@ -26,6 +26,7 @@ export const PERMISSIONS = {
   'stock.manage':    'Kiểm kê, chuyển kho, sản xuất',
   'purchase.manage': 'Nhập hàng, nhà cung cấp, công nợ NCC',
   'cash.manage':     'Quỹ tiền, thu chi',
+  'cash.voucher':    'In lại phiếu thu, phiếu chi đã lập',
   'cost.view':       'Xem giá vốn và lãi lỗ',
   'report.view':     'Xem báo cáo',
   'settings.manage': 'Thiết lập, người dùng, sao lưu',
@@ -41,6 +42,9 @@ export const ROLE_PERMISSIONS = {
     'sale.pos', 'sale.view', 'sale.return',
     'order.manage', 'customer.manage', 'warranty.manage',
     'product.view',
+    /* Thu nợ tại quầy xong thì in tờ phiếu thu đưa khách. Chỉ xem lại
+       được đúng phiếu theo số, không mở được cả sổ quỹ. */
+    'cash.voucher',
   ],
   stock: [
     'product.view', 'product.manage', 'stock.manage', 'purchase.manage',

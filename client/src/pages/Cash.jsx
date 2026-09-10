@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   Wallet, Plus, Minus, ArrowLeftRight, Download, Trash2, Landmark,
-  TrendingUp, TrendingDown, Banknote,
+  TrendingUp, TrendingDown, Banknote, Printer,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/store';
@@ -15,6 +15,7 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import CashVoucherPrint from '../components/CashVoucherPrint';
 
 export default function Cash() {
   const { toast, loadMeta } = useApp();
@@ -42,6 +43,17 @@ export default function Cash() {
   const [creating, setCreating] = useState(null); // 'in' | 'out'
   const [transferring, setTransferring] = useState(false);
   const [deleting, setDeleting] = useState(null);
+  const [voucher, setVoucher] = useState(null);   // phiếu đang mở để in
+
+  /* Lấy tờ phiếu đầy đủ rồi mở hộp in. Dòng trong sổ quỹ không có sẵn
+     địa chỉ người nộp và tên người lập, mà tờ phiếu thì cần. */
+  const openVoucher = async (id) => {
+    try {
+      setVoucher(await api.get(`/cash/transactions/${id}`));
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    }
+  };
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
 
@@ -242,10 +254,18 @@ export default function Cash() {
                         </td>
                         <td className="font-mono text-2xs text-muted-ink">{t.ref_code || '—'}</td>
                         <td className="text-right">
-                          {!t.ref_type && (
-                            <IconButton icon={Trash2} label={`Xoá phiếu ${t.code}`} size={14}
-                              className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(t)} />
-                          )}
+                          <div className="flex items-center justify-end gap-0.5">
+                            <IconButton
+                              icon={Printer}
+                              size={14}
+                              label={`In ${t.direction === 'in' ? 'phiếu thu' : 'phiếu chi'} ${t.code}`}
+                              onClick={() => openVoucher(t.id)}
+                            />
+                            {!t.ref_type && (
+                              <IconButton icon={Trash2} label={`Xoá phiếu ${t.code}`} size={14}
+                                className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(t)} />
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -294,6 +314,8 @@ export default function Cash() {
         open={accountsOpen}
         onClose={() => { setAccountsOpen(false); reloadAll(); }}
       />
+
+      {voucher && <CashVoucherPrint voucher={voucher} onClose={() => setVoucher(null)} />}
 
       <Confirm
         open={!!deleting}

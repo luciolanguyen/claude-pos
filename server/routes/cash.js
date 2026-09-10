@@ -126,6 +126,38 @@ r.get('/cash/transactions', (req, res) => {
   res.json({ rows, total, page, page_size: size, ...totals, net: totals.total_in - totals.total_out });
 });
 
+/**
+ * Một phiếu thu / chi để in ra giấy.
+ *
+ * Kèm luôn tên quỹ, tên người lập và tên đối tác — tờ phiếu đưa cho
+ * khách ký phải có đủ những dòng đó, không thể để trống.
+ */
+r.get('/cash/transactions/:id', (req, res) => {
+  const t = get(`
+    SELECT t.*, a.name AS account_name, a.type AS account_type,
+           u.full_name AS user_name
+    FROM cash_transactions t
+    JOIN cash_accounts a ON a.id = t.account_id
+    LEFT JOIN users u ON u.id = t.user_id
+    WHERE t.id = ?`, [req.params.id]);
+  if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu' });
+
+  /* Địa chỉ đối tác để in lên phiếu — khách ký nhận tiền thì trên phiếu
+     phải có địa chỉ của người ký, không thì tờ phiếu không có giá trị. */
+  if (t.partner_type === 'customer' && t.partner_id) {
+    const c = get('SELECT name, phone, address FROM customers WHERE id = ?', [t.partner_id]);
+    if (c) { t.partner_phone = c.phone; t.partner_address = c.address; }
+  } else if (t.partner_type === 'supplier' && t.partner_id) {
+    const sp = get('SELECT name, phone, address FROM suppliers WHERE id = ?', [t.partner_id]);
+    if (sp) { t.partner_phone = sp.phone; t.partner_address = sp.address; }
+  }
+
+  /* Nhãn tiếng Việt của loại thu/chi, để khỏi in ra mã máy như debt_in */
+  const list = CASH_CATEGORIES[t.direction] || [];
+  t.category_label = list.find((x) => x.code === t.category)?.label || t.category;
+  res.json(t);
+});
+
 /** Lập phiếu thu / chi thủ công. */
 r.post('/cash/transactions', (req, res) => {
   const b = req.body;
