@@ -583,6 +583,87 @@ CREATE TABLE IF NOT EXISTS sale_order_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_sod_order ON sale_order_deliveries(order_id);
 
+-- ============================================================
+-- MO RONG v12: nhieu moi cho mot mat hang, phieu bao het hang,
+--              phieu tam dung chung
+-- ============================================================
+
+-- ---------- Mot mat hang mua duoc cua nhieu moi ----------
+-- Cung mot cai aptomat, cho nay 68k cho kia 71k nhung giao nhanh hon.
+-- Danh dau mot moi la "uu tien chinh" de phieu bao het hang tu chon san.
+CREATE TABLE IF NOT EXISTS product_suppliers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  is_primary  INTEGER NOT NULL DEFAULT 0,
+  supplier_sku TEXT,                        -- ma hang ben moi, de doc don cho nhanh
+  last_price  INTEGER NOT NULL DEFAULT 0,   -- gia nhap gan nhat cua moi nay
+  note        TEXT,
+  UNIQUE(product_id, supplier_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ps_product ON product_suppliers(product_id);
+CREATE INDEX IF NOT EXISTS idx_ps_supplier ON product_suppliers(supplier_id);
+
+-- ---------- Phieu bao het hang ----------
+-- Nhan vien di kiem quay, ghi lai mon nao can nhap them.
+CREATE TABLE IF NOT EXISTS requisitions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status       TEXT NOT NULL DEFAULT 'open',   -- open | done | cancelled
+  note         TEXT,
+  adjusted_at  TEXT,                            -- lan cuoi can bang kho tu phieu nay
+  split_at     TEXT,                            -- lan cuoi tach phieu nhap tam
+  closed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_req_ts ON requisitions(ts);
+CREATE INDEX IF NOT EXISTS idx_req_status ON requisitions(status);
+
+CREATE TABLE IF NOT EXISTS requisition_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  requisition_id INTEGER NOT NULL REFERENCES requisitions(id) ON DELETE CASCADE,
+  product_id     INTEGER NOT NULL REFERENCES products(id),
+  name_snapshot  TEXT NOT NULL,
+  unit_name      TEXT NOT NULL,
+  system_qty     REAL NOT NULL DEFAULT 0,       -- ton kho may ghi luc lap phieu
+  actual_qty     REAL,                          -- ton dem duoc ngoai quay; NULL = chua dem
+  buy_qty        REAL NOT NULL DEFAULT 0,       -- so luong du mua
+  adjusted       INTEGER NOT NULL DEFAULT 0,    -- da can bang kho theo dong nay chua
+  adjust_move_id INTEGER,                       -- the kho sinh ra khi can bang
+  note           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reqi_req ON requisition_items(requisition_id);
+
+-- Moi nao duoc chon cho tung dong hang (co the chon nhieu moi)
+CREATE TABLE IF NOT EXISTS requisition_item_suppliers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id     INTEGER NOT NULL REFERENCES requisition_items(id) ON DELETE CASCADE,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  UNIQUE(item_id, supplier_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reqis_item ON requisition_item_suppliers(item_id);
+
+-- ---------- Phieu tam dung chung cho moi loai chung tu ----------
+-- draft_sales chi luu duoc gio hang cua man hinh ban. Bang nay luu duoc
+-- moi loai phieu dang lam do: nhap hang, tra hang, lap rap, kiem ke...
+CREATE TABLE IF NOT EXISTS doc_drafts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  code       TEXT NOT NULL UNIQUE,
+  kind       TEXT NOT NULL,                     -- purchase | purchase_return | ...
+  ts         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  title      TEXT,
+  user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  partner_name TEXT,                            -- ten moi / ten khach, de nhin danh sach cho biet
+  total      INTEGER NOT NULL DEFAULT 0,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  source     TEXT,                              -- vd: "req:12" neu sinh tu phieu bao het hang
+  payload    TEXT NOT NULL                      -- toan bo phieu dang lam do, dang JSON
+);
+CREATE INDEX IF NOT EXISTS idx_docdraft_kind ON doc_drafts(kind, updated_at);
+
 -- Cac lan khach dua tien coc
 CREATE TABLE IF NOT EXISTS sale_order_deposits (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,

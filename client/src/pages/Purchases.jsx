@@ -11,6 +11,7 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 import { ProductPicker } from '../components/ProductPicker';
 import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
@@ -115,9 +116,12 @@ export default function Purchases() {
         title="Phiếu nhập hàng"
         subtitle={`${r.label} · ${date(r.from)} — ${date(r.to)}`}
         actions={
-          <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-            Tạo phiếu nhập
-          </Button>
+          <>
+            <OpenDraftsButton kind="purchase" onOpen={(d) => setCreating(d)} />
+            <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
+              Tạo phiếu nhập
+            </Button>
+          </>
         }
       >
         <div className="flex flex-wrap gap-2">
@@ -224,7 +228,8 @@ export default function Purchases() {
       </Page>
 
       <PurchaseForm
-        open={creating}
+        open={!!creating}
+        draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={(code) => { setCreating(false); reload(); toast(`Đã lưu phiếu nhập ${code}`, 'ok'); }}
       />
@@ -373,7 +378,12 @@ export default function Purchases() {
 /* Form tạo phiếu nhập hàng                                              */
 /* ==================================================================== */
 
-export function PurchaseForm({ open, onClose, onSaved }) {
+/**
+ * @param draft  phiếu tạm mở lại (nếu có). Mở từ phiếu tạm thì đổ nguyên
+ *               nội dung cũ vào biểu mẫu và nhớ id để lần lưu tạm sau
+ *               GHI ĐÈ chứ không đẻ thêm bản nháp.
+ */
+export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse, toast } = useApp();
   const [supplierId, setSupplierId] = useState(null);
   const [warehouseId, setWarehouseId] = useState(defaultWarehouse);
@@ -389,6 +399,7 @@ export function PurchaseForm({ open, onClose, onSaved }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
 
   const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open });
   const [creatingProduct, setCreatingProduct] = useState(false);
@@ -397,18 +408,31 @@ export function PurchaseForm({ open, onClose, onSaved }) {
 
   useEffect(() => {
     if (!open) return;
-    setSupplierId(null);
-    setLines([]);
-    setDiscount(0);
-    setOtherCost(0);
-    setPaid(0);
-    setInvoiceNo('');
-    setDueDate('');
-    setNote('');
     setErr('');
-    setWarehouseId(defaultWarehouse);
-    setAccountId(meta.accounts?.[0]?.id || '');
-  }, [open, defaultWarehouse, meta.accounts]);
+    const p = draft?.payload;
+    /* Phiếu tạm lưu từ bản cũ có thể thiếu mảng đơn vị. Vá lại ngay lúc
+       mở chứ không để biểu mẫu nổ giữa chừng. */
+    const fixLines = (list) => (list || []).map((l) => (
+      Array.isArray(l.units) && l.units.length
+        ? l
+        : {
+          ...l,
+          units: [{ id: l.unit_id ?? 0, unit_name: l.unit_name || l.base_unit || 'Cái', factor: l.factor || 1 }],
+          unit_id: l.unit_id ?? 0,
+        }));
+    /* Mở lại phiếu tạm: đổ nguyên nội dung cũ. Không có thì làm phiếu trắng. */
+    setDraftId(draft?.id || null);
+    setSupplierId(p?.supplier_id ?? null);
+    setLines(fixLines(p?.lines));
+    setDiscount(p?.discount || 0);
+    setOtherCost(p?.other_cost || 0);
+    setPaid(p?.paid || 0);
+    setInvoiceNo(p?.invoice_no || '');
+    setDueDate(p?.due_date || '');
+    setNote(p?.note || '');
+    setWarehouseId(p?.warehouse_id || defaultWarehouse);
+    setAccountId(p?.account_id || meta.accounts?.[0]?.id || '');
+  }, [open, draft, defaultWarehouse, meta.accounts]);
 
   /* Chọn NCC -> tự tính hạn thanh toán theo số ngày công nợ đã khai */
   useEffect(() => {
@@ -421,17 +445,18 @@ export function PurchaseForm({ open, onClose, onSaved }) {
     }
   }, [supplierId, suppliers]);
 
-  const addProduct = (p) => {
+  const addProduct = (p, qty = 1) => {
+    const add = Number(qty) > 0 ? Number(qty) : 1;
     const unit = p.units.find((u) => u.factor === 1) || p.units[0];
     const key = `${p.id}:${unit.id}`;
     setLines((prev) => {
       if (prev.some((l) => l.key === key)) {
-        return prev.map((l) => l.key === key ? { ...l, qty: l.qty + 1 } : l);
+        return prev.map((l) => l.key === key ? { ...l, qty: l.qty + add } : l);
       }
       return [...prev, {
         key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
         units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
-        qty: 1, price: Math.round(p.cost_price * unit.factor), discount: 0,
+        qty: add, price: Math.round(p.cost_price * unit.factor), discount: 0,
         vat_rate: p.vat_rate, current_stock: p.stock,
       }];
     });
@@ -498,6 +523,12 @@ export function PurchaseForm({ open, onClose, onSaved }) {
           vat_rate: applyVat ? l.vat_rate : 0,
         })),
       });
+      /* Đã lưu chính thức thì bỏ bản nháp, để lần sau khỏi mở nhầm lại
+         phiếu đã nhập rồi mà nhập thêm lần nữa. */
+      if (draftId) {
+        try { await api.del(`/doc-drafts/${draftId}`); }
+        catch { /* nháp mất rồi thì thôi, phiếu chính đã lưu xong */ }
+      }
       onSaved?.(res.code);
     } catch (e) {
       setErr(e.message);
@@ -515,6 +546,27 @@ export function PurchaseForm({ open, onClose, onSaved }) {
         subtitle="Hàng sẽ được cộng vào tồn kho và cập nhật giá vốn bình quân"
         size="xl"
         footer={<>
+          <SaveDraftButton
+            className="mr-auto"
+            disabled={!lines.length}
+            onSaved={(d) => setDraftId(d.id)}
+            build={() => ({
+              kind: 'purchase',
+              id: draftId,
+              title: supplierId
+                ? `Nhập của ${suppliers?.find((x) => x.id === supplierId)?.name || 'mối'}`
+                : 'Phiếu nhập hàng',
+              partner_name: suppliers?.find((x) => x.id === supplierId)?.name || null,
+              total: totals.total,
+              item_count: lines.length,
+              source: draft?.source || null,
+              payload: {
+                supplier_id: supplierId, warehouse_id: warehouseId, lines,
+                discount, other_cost: otherCost, paid, account_id: accountId,
+                invoice_no: invoiceNo, due_date: dueDate, note,
+              },
+            })}
+          />
           <Button onClick={onClose}>Huỷ</Button>
           <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length}>
             Lưu phiếu nhập

@@ -11,6 +11,7 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 import PhotoPicker, { PhotoGallery } from '../components/PhotoPicker';
 import WarrantyReturnPrint from '../components/WarrantyReturnPrint';
 import { ProductPicker } from '../components/ProductPicker';
@@ -174,6 +175,7 @@ function Tickets() {
           Chỉ phiếu chưa trả khách
         </button>
         <div className="flex-1" />
+        <OpenDraftsButton kind="warranty" onOpen={(d) => setCreating(d)} />
         <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
           Nhận hàng bảo hành
         </Button>
@@ -269,7 +271,8 @@ function Tickets() {
           )}
 
       <TicketForm
-        open={creating}
+        open={!!creating}
+        draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={async (res) => {
           setCreating(false);
@@ -308,7 +311,7 @@ const EMPTY = {
   in_warranty: false, warranty_until: '', promised_at: '', note: '',
 };
 
-function TicketForm({ open, onClose, onSaved }) {
+function TicketForm({ open, onClose, onSaved, draft = null }) {
   const { user, toast } = useApp();
   const [form, setForm] = useState(EMPTY);
   const [photos, setPhotos] = useState([]);
@@ -317,6 +320,13 @@ function TicketForm({ open, onClose, onSaved }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setDraftId(draft?.id || null);
+    if (draft?.payload?.form) setForm({ ...EMPTY, ...draft.payload.form });
+  }, [open, draft]);
 
   const { data: customers } = useFetch(() => api.customers({ active: 1 }), [], { skip: !open });
   const { data: products } = useFetch(() => api.posProducts(), [], { skip: !open });
@@ -392,6 +402,23 @@ function TicketForm({ open, onClose, onSaved }) {
         subtitle="Lập phiếu và in biên nhận cho khách giữ"
         size="xl"
         footer={<>
+          {/* Phiếu tạm KHÔNG mang theo ảnh: ảnh lưu dạng chuỗi base64,
+              vài tấm là vài megabyte nhét vào một ô văn bản — cất kiểu đó
+              làm phình cơ sở dữ liệu mà chẳng để làm gì. Chụp lại lúc lập
+              phiếu thật, máy vẫn còn ở đó. */}
+          <SaveDraftButton
+            className="mr-auto"
+            disabled={!form.product_name?.trim()}
+            onSaved={(d) => setDraftId(d.id)}
+            build={() => ({
+              kind: 'warranty',
+              id: draftId,
+              title: `Bảo hành ${form.product_name || ''}`.trim(),
+              partner_name: form.customer_name || null,
+              item_count: 1,
+              payload: { form },
+            })}
+          />
           <Button onClick={onClose}>Huỷ</Button>
           <Button variant="primary" icon={Printer} onClick={save} loading={busy}>
             Lưu &amp; in biên nhận
@@ -545,6 +572,7 @@ function TicketForm({ open, onClose, onSaved }) {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         products={products || []}
+        withQty={false}
         onPick={(p) => {
           setForm((f) => ({ ...f, product_id: p.id, product_name: p.name }));
           setPickerOpen(false);
@@ -1024,10 +1052,13 @@ function PartsModal({ open, ticket, onClose, onDone }) {
     return Number(u.prices[defaultPriceList] ?? Object.values(u.prices)[0]) || 0;
   };
 
-  const add = (p) => setLines((prev) => prev.some((x) => x.product_id === p.id)
-    ? prev
-    : [...prev, { product_id: p.id, name: p.name, sku: p.sku, base_unit: p.base_unit,
-        price: retailOf(p), stock: p.stock, qty: 1 }]);
+  const add = (p, qty = 1) => {
+    const add_ = Number(qty) > 0 ? Number(qty) : 1;
+    setLines((prev) => prev.some((x) => x.product_id === p.id)
+      ? prev.map((x) => (x.product_id === p.id ? { ...x, qty: x.qty + add_ } : x))
+      : [...prev, { product_id: p.id, name: p.name, sku: p.sku, base_unit: p.base_unit,
+          price: retailOf(p), stock: p.stock, qty: add_ }]);
+  };
 
   const total = lines.reduce((a, l) => a + Math.round(l.qty * l.price), 0);
 

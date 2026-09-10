@@ -15,6 +15,7 @@ import {
   Field, MoneyInput, Textarea, Input, QtyInput,
 } from './ui';
 import { ProductPicker } from './ProductPicker';
+import { CategorySelect } from './CategoryTree';
 
 const EMPTY = {
   sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
@@ -167,10 +168,16 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           </Field>
 
           <Field label="Nhóm hàng" htmlFor="pf-cat">
-            <Select id="pf-cat" value={form.category_id} onChange={set('category_id')}>
-              <option value="">— Chưa phân nhóm —</option>
-              {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
+            {/* leafOnly: hàng hoá gán vào nhóm NHỎ NHẤT của nhánh. Gán vào
+                nhóm còn con thì báo cáo theo nhóm đếm hai lần. */}
+            <CategorySelect
+              id="pf-cat"
+              value={form.category_id}
+              onChange={(v) => set('category_id')({ target: { value: v } })}
+              categories={meta.categories}
+              placeholder="— Chưa phân nhóm —"
+              leafOnly
+            />
           </Field>
           <Field label="Đơn vị cơ bản" required hint="Đơn vị nhỏ nhất khi bán" htmlFor="pf-unit">
             <Input id="pf-unit" value={form.base_unit} onChange={set('base_unit')} placeholder="Cái, Mét, Cuộn..." />
@@ -418,16 +425,17 @@ function BomEditor({ product }) {
 
   const materialCost = rows.reduce((a, x) => a + Math.round(x.qty * x.cost_price), 0);
 
-  const add = (p) => {
+  const add = (p, qty = 1) => {
     if (p.id === product.id) {
       toast('Không thể lấy chính mặt hàng này làm linh kiện.', 'warn');
       return;
     }
+    const add_ = Number(qty) > 0 ? Number(qty) : 1;
     setRows((prev) => prev.some((x) => x.component_id === p.id)
-      ? prev
+      ? prev.map((x) => (x.component_id === p.id ? { ...x, qty: add_ } : x))
       : [...prev, {
           component_id: p.id, component_name: p.name, sku: p.sku,
-          base_unit: p.base_unit, cost_price: p.cost_price, stock: p.stock, qty: 1,
+          base_unit: p.base_unit, cost_price: p.cost_price, stock: p.stock, qty: add_,
         }]);
   };
 

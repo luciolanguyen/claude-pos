@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { all, get, run, tx, moveStock, costOf, costMethodOf, pageParams } from '../db.js';
+import {
+  all, get, run, tx, moveStock, costOf, costMethodOf, pageParams,
+  categoryTree, categoryTreeIds, categoryFilter } from '../db.js';
 
 const r = Router();
 
@@ -9,33 +11,132 @@ const normCostMethod = (v) => (v === 'average' || v === 'fixed' ? v : null);
 
 /* ----------------------------- Nhóm hàng ----------------------------- */
 
+/**
+ * Cả cây nhóm hàng, phẳng ra thành danh sách kèm cấp và đường dẫn.
+ *
+ * Số hàng hoá đếm theo hai kiểu:
+ *   product_count       chỉ hàng gán thẳng vào nhóm này
+ *   product_count_tree  gồm cả hàng nằm ở nhóm con cháu
+ * Nhóm cha thường không có hàng gán thẳng — chỉ hiện số 0 thì chủ tiệm
+ * tưởng cả ngành hàng trống rỗng.
+ */
 r.get('/categories', (req, res) => {
-  res.json(all(`
-    SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) AS product_count
-    FROM categories c ORDER BY c.sort_order, c.name
-  `));
+  const { flat } = categoryTree();
+  const counts = new Map(all(`SELECT category_id AS id, COUNT(*) AS n FROM products
+                              WHERE category_id IS NOT NULL GROUP BY category_id`)
+    .map((x) => [x.id, x.n]));
+
+  const out = flat.map((c) => {
+    const ids = categoryTreeIds(c.id);
+    return {
+      id: c.id, name: c.name, parent_id: c.parent_id, sort_order: c.sort_order,
+      level: c.level, path: c.path, has_children: c.has_children,
+      product_count: counts.get(c.id) || 0,
+      product_count_tree: ids.reduce((a, id) => a + (counts.get(id) || 0), 0),
+    };
+  });
+  res.json(out);
 });
 
 r.post('/categories', (req, res) => {
   const { name, parent_id = null, sort_order = 0 } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Thiếu tên nhóm hàng' });
+  if (parent_id) {
+    const p = get('SELECT id FROM categories WHERE id = ?', [parent_id]);
+    if (!p) return res.status(400).json({ error: 'Không tìm thấy nhóm hàng cha' });
+  }
   const info = run('INSERT INTO categories(name, parent_id, sort_order) VALUES(?, ?, ?)',
-    [name.trim(), parent_id, sort_order]);
+    [name.trim(), parent_id || null, sort_order]);
   res.json(get('SELECT * FROM categories WHERE id = ?', [Number(info.lastInsertRowid)]));
 });
 
 r.put('/categories/:id', (req, res) => {
+  const id = Number(req.params.id);
   const { name, parent_id = null, sort_order = 0 } = req.body;
+  const cur = get('SELECT * FROM categories WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: 'Không tìm thấy nhóm hàng' });
+  if (!name?.trim()) return res.status(400).json({ error: 'Thiếu tên nhóm hàng' });
+
+  const parent = parent_id ? Number(parent_id) : null;
+  /* Không cho đưa một nhóm vào chính nó hoặc vào nhánh con của nó — làm
+     vậy là cắt rời cả nhánh khỏi cây, và mọi hàm duyệt cây sẽ chạy vòng. */
+  if (parent) {
+    if (parent === id) {
+      return res.status(400).json({ error: 'Không thể đặt một nhóm làm cha của chính nó.' });
+    }
+    if (categoryTreeIds(id).includes(parent)) {
+      return res.status(400).json({
+        error: 'Không thể chuyển nhóm này vào bên trong nhóm con của nó.' });
+    }
+  }
+
   run('UPDATE categories SET name = ?, parent_id = ?, sort_order = ? WHERE id = ?',
-    [name, parent_id, sort_order, req.params.id]);
-  res.json(get('SELECT * FROM categories WHERE id = ?', [req.params.id]));
+    [name.trim(), parent, sort_order, id]);
+  res.json(get('SELECT * FROM categories WHERE id = ?', [id]));
 });
 
+/**
+ * Xoá nhóm hàng.
+ *
+ * Chặn khi còn nhóm con hoặc còn hàng bên trong, và nói rõ còn bao nhiêu
+ * cái gì — báo "không xoá được" trống không thì người dùng không biết
+ * phải đi dọn ở đâu. Kèm sẵn danh sách nhóm con để giao diện chỉ chỗ.
+ */
 r.delete('/categories/:id', (req, res) => {
-  const used = get('SELECT COUNT(*) AS n FROM products WHERE category_id = ?', [req.params.id]).n;
-  if (used > 0) return res.status(400).json({ error: `Nhóm này còn ${used} sản phẩm, không thể xoá.` });
-  run('DELETE FROM categories WHERE id = ?', [req.params.id]);
+  const id = Number(req.params.id);
+  const cur = get('SELECT * FROM categories WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: 'Không tìm thấy nhóm hàng' });
+
+  const kids = all('SELECT id, name FROM categories WHERE parent_id = ?', [id]);
+  const ids = categoryTreeIds(id);
+  const here = get(`SELECT COUNT(*) AS n FROM products WHERE category_id = ?`, [id]).n;
+  const inTree = get(`SELECT COUNT(*) AS n FROM products
+                      WHERE category_id IN (${ids.map(() => '?').join(',')})`, ids).n;
+
+  if (kids.length || inTree > 0) {
+    const parts = [];
+    if (kids.length) parts.push(`${kids.length} nhóm con`);
+    if (inTree > 0) {
+      parts.push(here === inTree
+        ? `${inTree} mặt hàng`
+        : `${inTree} mặt hàng (${here} nằm thẳng ở nhóm này)`);
+    }
+    return res.status(400).json({
+      error: `Nhóm "${cur.name}" còn ${parts.join(" và ")}. Hãy chuyển sang nhóm khác rồi mới xoá.`,
+      code: 'CATEGORY_NOT_EMPTY',
+      children: kids,
+      product_count: inTree,
+    });
+  }
+  run('DELETE FROM categories WHERE id = ?', [id]);
   res.json({ ok: true });
+});
+
+/**
+ * Chuyển hàng loạt hàng hoá và nhóm con sang nhóm khác — để dọn trước
+ * khi xoá một nhóm mà không phải sửa từng mặt hàng một.
+ */
+r.post('/categories/:id/move-contents', (req, res) => {
+  const id = Number(req.params.id);
+  const to = req.body.to_category_id ? Number(req.body.to_category_id) : null;
+  const cur = get('SELECT * FROM categories WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: 'Không tìm thấy nhóm hàng' });
+  if (to) {
+    const dest = get('SELECT id FROM categories WHERE id = ?', [to]);
+    if (!dest) return res.status(400).json({ error: 'Không tìm thấy nhóm hàng đích' });
+    if (categoryTreeIds(id).includes(to)) {
+      return res.status(400).json({ error: 'Không thể chuyển vào chính nhánh con của nhóm này.' });
+    }
+  }
+  const out = tx(() => {
+    const moved = run('UPDATE products SET category_id = ? WHERE category_id = ?', [to, id]).changes;
+    let movedKids = 0;
+    if (req.body.move_children !== false) {
+      movedKids = run('UPDATE categories SET parent_id = ? WHERE parent_id = ?', [to, id]).changes;
+    }
+    return { ok: true, moved_products: moved, moved_children: movedKids };
+  });
+  res.json(out);
 });
 
 /* ----------------------------- Bảng giá ------------------------------ */
@@ -153,7 +254,11 @@ r.get('/products', (req, res) => {
   if (barcode.trim()) { where.push('p.barcode LIKE ?'); params.push(like(barcode)); }
   if (brand.trim()) { where.push('p.brand = ?'); params.push(brand.trim()); }
   if (location.trim()) { where.push('p.location = ?'); params.push(location.trim()); }
-  if (category_id) { where.push('p.category_id = ?'); params.push(category_id); }
+  /* Lấy cả nhóm con cháu, không chỉ đúng nhóm được chọn */
+  if (category_id) {
+    const cf = categoryFilter(category_id);
+    if (cf) { where.push(cf.sql); params.push(...cf.params); }
+  }
   if (active !== undefined && active !== '') { where.push('p.active = ?'); params.push(Number(active)); }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
 

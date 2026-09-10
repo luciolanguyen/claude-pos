@@ -17,6 +17,7 @@ import { CustomerDebts, SupplierDebts } from './pages/Debts';
 import Products from './pages/Products';
 import Stock, { StockTakes, StockTransfers } from './pages/Stock';
 import Production from './pages/Production';
+import Requisitions from './pages/Requisitions';
 import Warranty from './pages/Warranty';
 import Cash from './pages/Cash';
 import Reports from './pages/Reports';
@@ -231,6 +232,7 @@ function Shell() {
               <Route path="stock-takes" element={<Guard perm="stock.manage"><StockTakes /></Guard>} />
               <Route path="stock-transfers" element={<Guard perm="stock.manage"><StockTransfers /></Guard>} />
               <Route path="production" element={<Guard perm="stock.manage"><Production /></Guard>} />
+              <Route path="requisitions" element={<Guard perm="product.view"><Requisitions /></Guard>} />
               <Route path="warranty" element={<Guard perm="warranty.manage"><Warranty /></Guard>} />
 
               <Route path="cash" element={<Guard perm="cash.manage"><Cash /></Guard>} />

@@ -12,6 +12,8 @@ import {
   Confirm, Field, Stat, QtyInput, Textarea, Input,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
+import { CategorySelect } from '../components/CategoryTree';
 import { StockHistory } from './Products';
 import { ProductPicker } from '../components/ProductPicker';
 
@@ -77,10 +79,9 @@ export default function Stock() {
             <option value="">Tất cả kho</option>
             {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
           </Select>
-          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} size="sm" className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          <CategorySelect size="sm" value={categoryId} onChange={setCategoryId}
+            categories={meta.categories} className="!w-auto"
+            ariaLabel="Lọc theo nhóm hàng" />
           <div className="flex gap-1">
             {FILTERS.map(([k, l]) => (
               <button key={k} onClick={() => setFilter(k)}
@@ -329,7 +330,10 @@ export function StockTakes() {
       <PageHeader
         title="Kiểm kê kho"
         subtitle="Đếm hàng thực tế rồi cân bằng lại tồn trên hệ thống"
-        actions={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu kiểm kê</Button>}
+        actions={<>
+          <OpenDraftsButton kind="stock_take" onOpen={(d) => setCreating(d)} />
+          <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu kiểm kê</Button>
+        </>}
       />
 
       <Page>
@@ -393,7 +397,8 @@ export function StockTakes() {
       </Page>
 
       <StockTakeForm
-        open={creating}
+        open={!!creating}
+        draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={(code) => { setCreating(false); reload(); toast(`Đã tạo phiếu kiểm kê ${code}`, 'ok'); }}
       />
@@ -502,7 +507,7 @@ export function StockTakes() {
 
 /* -------------------------------------------------------------------- */
 
-function StockTakeForm({ open, onClose, onSaved }) {
+function StockTakeForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse } = useApp();
   const [warehouseId, setWarehouseId] = useState(defaultWarehouse);
   const [lines, setLines] = useState([]);
@@ -510,6 +515,17 @@ function StockTakeForm({ open, onClose, onSaved }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const p = draft?.payload;
+    setDraftId(draft?.id || null);
+    if (!p) return;
+    setWarehouseId(p.warehouse_id || defaultWarehouse);
+    setLines(p.lines || []);
+    setNote(p.note || '');
+  }, [open, draft, defaultWarehouse]);
 
   const { data: products } = useFetch(
     () => api.posProducts({ warehouse_id: warehouseId }), [warehouseId], { skip: !open }
@@ -521,12 +537,17 @@ function StockTakeForm({ open, onClose, onSaved }) {
     setWarehouseId(defaultWarehouse);
   }, [open, defaultWarehouse]);
 
-  const addProduct = (p) => {
+  /* Kiểm kê: con số gõ ở hộp chọn là TỒN ĐẾM ĐƯỢC, không phải "thêm bao
+     nhiêu dòng". Đếm được bao nhiêu thì điền thẳng vào luôn cho nhanh. */
+  const addProduct = (p, counted) => {
+    const actual = counted === undefined || counted === null || counted === ''
+      ? p.stock : Number(counted);
     setLines((prev) => prev.some((l) => l.product_id === p.id)
       ? prev
       : [...prev, {
           product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
-          system_qty: p.stock, actual_qty: p.stock, cost_price: p.cost_price,
+          system_qty: p.stock, actual_qty: Number.isNaN(actual) ? p.stock : actual,
+          cost_price: p.cost_price,
         }]);
   };
 
@@ -572,6 +593,19 @@ function StockTakeForm({ open, onClose, onSaved }) {
         subtitle="Nhập số lượng đếm được thực tế. Phiếu lưu ở dạng nháp, cân bằng kho sau."
         size="xl"
         footer={<>
+          <SaveDraftButton
+            className="mr-auto"
+            disabled={!lines.length}
+            onSaved={(d) => setDraftId(d.id)}
+            build={() => ({
+              kind: 'stock_take',
+              id: draftId,
+              title: `Kiểm kê · ${lines.length} món`,
+              total: 0,
+              item_count: lines.length,
+              payload: { warehouse_id: warehouseId, lines, note },
+            })}
+          />
           <Button onClick={onClose}>Huỷ</Button>
           <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length}>
             Lưu phiếu kiểm kê
@@ -685,10 +719,13 @@ export function StockTransfers() {
         title="Chuyển kho"
         subtitle="Điều chuyển hàng giữa kho cửa hàng và kho phụ"
         actions={
-          <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}
-            disabled={meta.warehouses.length < 2}>
-            Tạo phiếu chuyển kho
-          </Button>
+          <>
+            <OpenDraftsButton kind="stock_transfer" onOpen={(d) => setCreating(d)} />
+            <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}
+              disabled={meta.warehouses.length < 2}>
+              Tạo phiếu chuyển kho
+            </Button>
+          </>
         }
       />
 
@@ -746,7 +783,8 @@ export function StockTransfers() {
       </Page>
 
       <TransferForm
-        open={creating}
+        open={!!creating}
+        draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={(code) => { setCreating(false); reload(); toast(`Đã tạo phiếu chuyển kho ${code}`, 'ok'); }}
       />
@@ -783,7 +821,7 @@ export function StockTransfers() {
 
 /* -------------------------------------------------------------------- */
 
-function TransferForm({ open, onClose, onSaved }) {
+function TransferForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse } = useApp();
   const [fromId, setFromId] = useState(defaultWarehouse);
   const [toId, setToId] = useState(null);
@@ -792,6 +830,18 @@ function TransferForm({ open, onClose, onSaved }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const p = draft?.payload;
+    setDraftId(draft?.id || null);
+    if (!p) return;
+    setFromId(p.from_id || defaultWarehouse);
+    setToId(p.to_id ?? null);
+    setLines(p.lines || []);
+    setNote(p.note || '');
+  }, [open, draft, defaultWarehouse]);
 
   const { data: products } = useFetch(
     () => api.posProducts({ warehouse_id: fromId }), [fromId], { skip: !open }
@@ -804,12 +854,13 @@ function TransferForm({ open, onClose, onSaved }) {
     setToId(meta.warehouses.find((w) => w.id !== defaultWarehouse)?.id || null);
   }, [open, defaultWarehouse, meta.warehouses]);
 
-  const addProduct = (p) => {
+  const addProduct = (p, qty = 1) => {
+    const add = Number(qty) > 0 ? Number(qty) : 1;
     setLines((prev) => prev.some((l) => l.product_id === p.id)
-      ? prev.map((l) => l.product_id === p.id ? { ...l, qty: l.qty + 1 } : l)
+      ? prev.map((l) => l.product_id === p.id ? { ...l, qty: l.qty + add } : l)
       : [...prev, {
           product_id: p.id, sku: p.sku, name: p.name,
-          base_unit: p.base_unit, qty: 1, stock: p.stock,
+          base_unit: p.base_unit, qty: add, stock: p.stock,
         }]);
   };
 
@@ -839,6 +890,19 @@ function TransferForm({ open, onClose, onSaved }) {
         title="Tạo phiếu chuyển kho"
         size="lg"
         footer={<>
+          <SaveDraftButton
+            className="mr-auto"
+            disabled={!lines.length}
+            onSaved={(d) => setDraftId(d.id)}
+            build={() => ({
+              kind: 'stock_transfer',
+              id: draftId,
+              title: `Chuyển kho · ${lines.length} món`,
+              total: 0,
+              item_count: lines.length,
+              payload: { from_id: fromId, to_id: toId, lines, note },
+            })}
+          />
           <Button onClick={onClose}>Huỷ</Button>
           <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length}>
             Lưu phiếu chuyển kho

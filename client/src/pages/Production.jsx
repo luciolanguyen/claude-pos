@@ -10,6 +10,7 @@ import {
   Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 
 export default function Production() {
   const { toast } = useApp();
@@ -55,6 +56,8 @@ export default function Production() {
         title="Sản xuất"
         subtitle="Lắp ráp thành phẩm từ linh kiện, hoặc chia nhỏ hàng lớn ra bán lẻ"
         actions={<>
+          <OpenDraftsButton kind="production"
+            onOpen={(d) => setCreating({ kind: 'assemble', draft: d })} />
           <Button icon={Scissors} onClick={() => setCreating('split')}>Chia nhỏ hàng</Button>
           <Button variant="primary" icon={Wrench} onClick={() => setCreating('assemble')}>
             Lắp ráp thành phẩm
@@ -162,12 +165,14 @@ export default function Production() {
       </Page>
 
       <AssembleForm
-        open={creating === 'assemble'}
+        open={creating === 'assemble' || creating?.kind === 'assemble'}
+        draft={creating?.draft || null}
         onClose={() => setCreating(null)}
         onSaved={(code) => { setCreating(null); reload(); toast(`Đã lập phiếu lắp ráp ${code}`, 'ok'); }}
       />
       <SplitForm
-        open={creating === 'split'}
+        open={creating === 'split' || creating?.kind === 'split'}
+        draft={creating?.draft || null}
         onClose={() => setCreating(null)}
         onSaved={(code) => { setCreating(null); reload(); toast(`Đã lập phiếu chia nhỏ ${code}`, 'ok'); }}
       />
@@ -273,7 +278,7 @@ export default function Production() {
 /* Phiếu lắp ráp theo định mức                                           */
 /* ==================================================================== */
 
-function AssembleForm({ open, onClose, onSaved }) {
+function AssembleForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse } = useApp();
   const [productId, setProductId] = useState(null);
   const [qty, setQty] = useState(1);
@@ -283,6 +288,19 @@ function AssembleForm({ open, onClose, onSaved }) {
   const [lines, setLines] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const p = draft?.payload;
+    setDraftId(draft?.id || null);
+    if (!p) return;
+    setProductId(p.product_id ?? null);
+    setQty(p.qty || 1);
+    setWarehouseId(p.warehouse_id || defaultWarehouse);
+    setLaborCost(p.labor_cost || 0);
+    setNote(p.note || '');
+  }, [open, draft, defaultWarehouse]);
 
   const { data: products } = useFetch(
     () => api.posProducts({ warehouse_id: warehouseId }), [warehouseId], { skip: !open }
@@ -337,8 +355,23 @@ function AssembleForm({ open, onClose, onSaved }) {
       onClose={onClose}
       title="Lắp ráp thành phẩm"
       subtitle="Trừ kho linh kiện, cộng kho thành phẩm và tính giá vốn tự động"
-      size="lg"
+      size="xl"
       footer={<>
+        <SaveDraftButton
+          className="mr-auto"
+          disabled={!productId}
+          onSaved={(d) => setDraftId(d.id)}
+          build={() => ({
+            kind: 'production',
+            id: draftId,
+            title: `Lắp ráp ${product?.name || ''}`.trim(),
+            item_count: lines.length,
+            payload: {
+              product_id: productId, qty, warehouse_id: warehouseId,
+              labor_cost: laborCost, note,
+            },
+          })}
+        />
         <Button onClick={onClose}>Huỷ</Button>
         <Button variant="primary" icon={Wrench} onClick={submit} loading={busy}
           disabled={!productId || !lines.length || shortage.length > 0}>
@@ -353,7 +386,7 @@ function AssembleForm({ open, onClose, onSaved }) {
               items={(products || []).filter((p) => p.track_stock)}
               value={productId}
               onChange={setProductId}
-              placeholder="Chọn mặt hàng cần lắp ráp..."
+              placeholder="Gõ tên hàng, tên phụ hoặc mã hàng..."
               filter={(p, q) => match(p.name, q) || match(p.alias || '', q) || match(p.sku, q)}
               render={(p) => ({
                 label: p.name,
@@ -486,7 +519,7 @@ function AssembleForm({ open, onClose, onSaved }) {
 /* Phiếu chia nhỏ / cắt lẻ                                               */
 /* ==================================================================== */
 
-function SplitForm({ open, onClose, onSaved }) {
+function SplitForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse } = useApp();
   const [fromId, setFromId] = useState(null);
   const [toId, setToId] = useState(null);
@@ -497,6 +530,21 @@ function SplitForm({ open, onClose, onSaved }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const p = draft?.payload;
+    setDraftId(draft?.id || null);
+    if (!p) return;
+    setFromId(p.from_id ?? null);
+    setToId(p.to_id ?? null);
+    setFromQty(p.from_qty || 1);
+    setToQty(p.to_qty || 1);
+    setWarehouseId(p.warehouse_id || defaultWarehouse);
+    setLaborCost(p.labor_cost || 0);
+    setNote(p.note || '');
+  }, [open, draft, defaultWarehouse]);
 
   const { data: products } = useFetch(
     () => api.posProducts({ warehouse_id: warehouseId }), [warehouseId], { skip: !open }
@@ -541,8 +589,23 @@ function SplitForm({ open, onClose, onSaved }) {
       onClose={onClose}
       title="Chia nhỏ hàng"
       subtitle="Tách hàng lớn ra thành hàng lẻ: cuộn dây thành mét, thùng bóng thành cái"
-      size="md"
+      size="lg"
       footer={<>
+        <SaveDraftButton
+          className="mr-auto"
+          disabled={!fromId}
+          onSaved={(d) => setDraftId(d.id)}
+          build={() => ({
+            kind: 'disassembly',
+            id: draftId,
+            title: 'Chia nhỏ hàng',
+            item_count: 1,
+            payload: {
+              from_id: fromId, to_id: toId, from_qty: fromQty, to_qty: toQty,
+              warehouse_id: warehouseId, labor_cost: laborCost, note,
+            },
+          })}
+        />
         <Button onClick={onClose}>Huỷ</Button>
         <Button variant="primary" icon={Scissors} onClick={submit} loading={busy}
           disabled={!fromId || !toId || notEnough}>
@@ -562,7 +625,7 @@ function SplitForm({ open, onClose, onSaved }) {
             items={(products || []).filter((p) => p.track_stock)}
             value={fromId}
             onChange={setFromId}
-            placeholder="Chọn hàng gốc..."
+            placeholder="Hàng gốc — gõ tên hoặc mã hàng..."
             filter={(p, q) => match(p.name, q) || match(p.alias || '', q) || match(p.sku, q)}
             render={(p) => ({ label: p.name, sub: `${p.sku} · tồn ${fq(p.stock)} ${p.base_unit}` })}
           />
@@ -586,7 +649,7 @@ function SplitForm({ open, onClose, onSaved }) {
             items={(products || []).filter((p) => p.track_stock && p.id !== fromId)}
             value={toId}
             onChange={setToId}
-            placeholder="Chọn hàng lẻ..."
+            placeholder="Hàng lẻ — gõ tên hoặc mã hàng..."
             filter={(p, q) => match(p.name, q) || match(p.alias || '', q) || match(p.sku, q)}
             render={(p) => ({ label: p.name, sub: `${p.sku} · tồn ${fq(p.stock)} ${p.base_unit}` })}
           />

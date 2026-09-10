@@ -152,7 +152,10 @@ r.post('/clear-transactions', (req, res) => {
     for (const t of ['sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
       'stock_take_items', 'stock_takes', 'stock_transfer_items', 'stock_transfers',
-      'production_items', 'productions', 'draft_sales',
+      'production_items', 'productions', 'draft_sales', 'doc_drafts',
+      /* Phiếu báo hết hàng là chứng từ nên xoá. Riêng product_suppliers là
+         DANH MỤC (khai mối nào bán món nào) nên giữ lại, như định mức. */
+      'requisition_item_suppliers', 'requisition_items', 'requisitions',
       'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
       'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
@@ -183,7 +186,10 @@ r.post('/reset-all', (req, res) => {
 
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
-    'activity_log', 'draft_sales',
+    'activity_log', 'draft_sales', 'doc_drafts',
+    /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
+    'requisition_item_suppliers', 'requisition_items', 'requisitions',
+    'product_suppliers',
     'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
     'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
     'production_items', 'productions', 'product_boms',

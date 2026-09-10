@@ -3,6 +3,7 @@ import { Undo2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { money, qty as fq, datetime } from '../lib/format';
 import { Modal, Button, Field, Select, MoneyInput, Textarea, QtyInput, Badge } from './ui';
+import SaveDraftButton from './DraftButtons';
 
 /**
  * Nhận hàng khách trả — chọn từ chính các dòng của hoá đơn gốc
@@ -17,6 +18,7 @@ export default function SaleReturnForm({ sale, user, accounts, onClose, onDone }
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
 
   useEffect(() => {
     if (!sale) return;
@@ -84,6 +86,25 @@ export default function SaleReturnForm({ sale, user, accounts, onClose, onDone }
       subtitle={`Hoá đơn gốc ${sale.code} · ${datetime(sale.ts)} · ${sale.customer_name || 'Khách lẻ'}`}
       size="lg"
       footer={<>
+        <SaveDraftButton
+          className="mr-auto"
+          disabled={subtotal <= 0}
+          onSaved={(d) => setDraftId(d.id)}
+          build={() => ({
+            kind: 'sale_return',
+            id: draftId,
+            title: `Khách trả hàng · ${sale?.code || ''}`.trim(),
+            partner_name: sale?.customer_name || null,
+            total,
+            item_count: lines.filter((l) => l.returnQty > 0).length,
+            payload: {
+              sale_id: sale?.id,
+              lines: lines.filter((l) => l.returnQty > 0)
+                .map((l) => ({ id: l.id, returnQty: l.returnQty })),
+              fee, refunded, reason, note, account_id: accountId,
+            },
+          })}
+        />
         <Button onClick={onClose}>Huỷ</Button>
         <Button variant="primary" icon={Undo2} onClick={submit} loading={busy} disabled={total <= 0 && subtotal <= 0}>
           Lập phiếu trả hàng

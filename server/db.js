@@ -201,6 +201,76 @@ export function pageParams(query = {}, defaultSize = 20) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Cây nhóm hàng                                                       */
+/*                                                                     */
+/* Nhóm hàng xếp theo hình cây: Ngành hàng > Nhóm > Phân nhóm. Sản     */
+/* phẩm luôn gán vào nhóm nhỏ nhất của nhánh đó.                       */
+/*                                                                     */
+/* Chọn lọc theo một nhóm CẤP TRÊN phải ra cả hàng nằm ở nhóm con —   */
+/* chọn "Dây & cáp điện" mà không thấy hàng nào chỉ vì hàng nằm ở      */
+/* nhóm cháu thì người dùng tưởng tiệm không có món đó.                */
+/* ------------------------------------------------------------------ */
+
+/** Id của một nhóm và TẤT CẢ nhóm con cháu bên dưới nó. */
+export function categoryTreeIds(rootId) {
+  const id = Number(rootId);
+  if (!id) return [];
+  const rows = all('SELECT id, parent_id FROM categories');
+  const childrenOf = new Map();
+  for (const c of rows) {
+    const k = c.parent_id || 0;
+    if (!childrenOf.has(k)) childrenOf.set(k, []);
+    childrenOf.get(k).push(c.id);
+  }
+  const out = [];
+  const stack = [id];
+  /* Đi theo chiều rộng, có chặn lặp: dữ liệu hỏng (A là cha của B, B là
+     cha của A) sẽ làm vòng lặp chạy mãi và treo máy chủ. */
+  const seen = new Set();
+  while (stack.length) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    out.push(cur);
+    for (const ch of childrenOf.get(cur) || []) stack.push(ch);
+  }
+  return out;
+}
+
+/** Mảnh SQL lọc theo nhóm hàng, đã bao gồm cả nhóm con. */
+export function categoryFilter(categoryId, column = 'p.category_id') {
+  const ids = categoryTreeIds(categoryId);
+  if (!ids.length) return null;
+  return { sql: `${column} IN (${ids.map(() => '?').join(',')})`, params: ids };
+}
+
+/**
+ * Cả cây nhóm hàng, kèm cấp và đường dẫn đầy đủ.
+ * Đường dẫn ("Điện tử › Điện thoại › Smartphone") là thứ hiện ra ở ô lọc
+ * và trên thẻ hàng hoá — chỉ hiện mỗi tên lá thì không biết nó nằm đâu.
+ */
+export function categoryTree() {
+  const rows = all('SELECT * FROM categories ORDER BY sort_order, name');
+  const byId = new Map(rows.map((c) => [c.id, { ...c, children: [] }]));
+  const roots = [];
+  for (const c of byId.values()) {
+    const parent = c.parent_id ? byId.get(c.parent_id) : null;
+    if (parent && parent.id !== c.id) parent.children.push(c);
+    else roots.push(c);
+  }
+  const flat = [];
+  const walk = (node, level, trail) => {
+    node.level = level;
+    node.path = [...trail, node.name].join(' › ');
+    node.has_children = node.children.length > 0;
+    flat.push(node);
+    for (const ch of node.children) walk(ch, level + 1, [...trail, node.name]);
+  };
+  for (const r of roots) walk(r, 1, []);
+  return { roots, flat };
+}
+
+/* ------------------------------------------------------------------ */
 /* Sinh mã chứng từ: HD250905-0001                                     */
 /* ------------------------------------------------------------------ */
 
@@ -248,12 +318,16 @@ export function moveStock({
     [productId, warehouseId]
   );
 
-  run(
+  const moveInfo = run(
     `INSERT INTO stock_moves(ts, product_id, warehouse_id, qty_change, balance, unit_cost, ref_type, ref_id, ref_code, note)
      VALUES(COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [ts, productId, warehouseId, qtyChange, bal.qty, Math.round(unitCost), refType, refId, refCode, note]
   );
-  return bal.qty;
+
+  /* { balance, moveId } chứ không phải mỗi con số tồn: phiếu cân bằng kho
+     cần giữ lại số thẻ để sau này tra ngược "tồn bị sửa lúc nào, theo
+     phiếu nào". Đổi được kiểu trả về vì không chỗ nào đang dùng nó. */
+  return { balance: bal.qty, moveId: Number(moveInfo.lastInsertRowid) };
 }
 
 /* ------------------------------------------------------------------ *

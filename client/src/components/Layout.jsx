@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
   BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
-  ShieldCheck, ClipboardList,
+  ShieldCheck, ClipboardList, PackageX,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
@@ -40,6 +40,7 @@ export const NAV = [
     children: [
       { to: '/products', icon: Boxes, label: 'Hàng hoá', perm: 'product.view' },
       { to: '/stock', icon: Package, label: 'Tồn kho', perm: 'product.view' },
+      { to: '/requisitions', icon: PackageX, label: 'Báo hết hàng', perm: 'product.view' },
       { to: '/stock-takes', icon: ClipboardCheck, label: 'Kiểm kê', perm: 'stock.manage' },
       { to: '/stock-transfers', icon: ArrowLeftRight, label: 'Chuyển kho', perm: 'stock.manage' },
       { to: '/production', icon: Wrench, label: 'Sản xuất', perm: 'stock.manage' },

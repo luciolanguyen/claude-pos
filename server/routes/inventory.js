@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { all, get, run, tx, nextCode, moveStock, costOf , pageParams } from '../db.js';
+import { all, get, run, tx, nextCode, moveStock, costOf , pageParams, categoryFilter } from '../db.js';
 
 const r = Router();
 
@@ -14,7 +14,11 @@ r.get('/stock', (req, res) => {
     const like = `%${q.trim()}%`;
     params.push(like, like, like);
   }
-  if (category_id) { where.push('p.category_id = ?'); params.push(category_id); }
+  /* Lấy cả nhóm con cháu (xem chú thích ở catalog.js) */
+  if (category_id) {
+    const cf = categoryFilter(category_id);
+    if (cf) { where.push(cf.sql); params.push(...cf.params); }
+  }
 
   const stockExpr = warehouse_id
     ? 'COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0)'

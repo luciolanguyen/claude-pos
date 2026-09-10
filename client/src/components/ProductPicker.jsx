@@ -15,23 +15,47 @@ import { useState, useMemo, useEffect } from 'react';
 import { Search, Plus } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { money, qty as fq, match } from '../lib/format';
-import { Button, SearchInput, Select, Modal, Empty } from './ui';
+import { Button, SearchInput, Select, Modal, Empty, QtyInput } from './ui';
+import { CategorySelect, categoryBranch } from './CategoryTree';
 
+/**
+ * @param withQty  cho gõ số lượng ngay trên dòng (mặc định có). Chỗ nào
+ *                 chỉ chọn đúng MỘT mặt hàng (ví dụ chọn máy để lập phiếu
+ *                 bảo hành) thì truyền false — ở đó số lượng vô nghĩa.
+ */
 export function ProductPicker({
   open, onClose, products, onPick, title = 'Chọn hàng hoá', onCreateRequest,
+  withQty = true,
 }) {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('');
+  /* Số lượng đang gõ cho từng dòng, theo id mặt hàng. Chưa gõ thì coi là 1. */
+  const [qtys, setQtys] = useState({});
   const { meta } = useApp();
 
-  useEffect(() => { if (open) setQ(''); }, [open]);
+  useEffect(() => { if (open) { setQ(''); setQtys({}); } }, [open]);
+
+  const qtyOf = (id) => {
+    const v = qtys[id];
+    return v === undefined || v === null || v === '' ? 1 : Number(v);
+  };
+  const take = (p) => {
+    const n = qtyOf(p.id);
+    onPick(p, n > 0 ? n : 1);
+    /* Trả ô về 1 sau khi thêm: để nguyên số cũ thì bấm nhầm lần nữa là
+       nhân đôi số lượng mà không ai để ý. */
+    setQtys((m) => ({ ...m, [p.id]: 1 }));
+  };
 
   const list = useMemo(() => {
     let l = products;
-    if (cat) l = l.filter((p) => p.category_id === Number(cat));
+    if (cat) {
+      const branch = categoryBranch(meta.categories, cat);
+      if (branch) l = l.filter((p) => branch.has(p.category_id));
+    }
     if (q.trim()) l = l.filter((p) => match(p.name, q) || match(p.sku, q) || (p.barcode || '').includes(q.trim()));
     return l.slice(0, 300);
-  }, [products, q, cat]);
+  }, [products, q, cat, meta.categories]);
 
   return (
     <Modal
@@ -53,10 +77,8 @@ export function ProductPicker({
       <div className="space-y-2">
         <div className="flex gap-2">
           <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng hoặc quét mã vạch..." className="flex-1" autoFocus />
-          <Select value={cat} onChange={(e) => setCat(e.target.value)} className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          <CategorySelect value={cat} onChange={setCat} categories={meta.categories}
+            className="!w-auto" ariaLabel="Lọc theo nhóm hàng" />
         </div>
 
         {list.length === 0 ? (
@@ -78,12 +100,13 @@ export function ProductPicker({
                   <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th>
                   <th className="text-right">Tồn kho</th>
                   <th className="text-right">Giá vốn</th>
-                  <th style={{ width: 60 }} />
+                  {withQty && <th style={{ width: 104 }} className="text-right">Số lượng</th>}
+                  <th style={{ width: 76 }} />
                 </tr>
               </thead>
               <tbody>
                 {list.map((p) => (
-                  <tr key={p.id} className="hoverable clickable" onClick={() => onPick(p)}>
+                  <tr key={p.id} className="hoverable clickable" onClick={() => take(p)}>
                     <td className="font-mono text-muted-ink">{p.sku}</td>
                     <td className="font-semibold">{p.name}</td>
                     <td className="text-muted-ink">{p.category_name || '—'}</td>
@@ -95,8 +118,21 @@ export function ProductPicker({
                         : <span className="text-muted-ink">Dịch vụ</span>}
                     </td>
                     <td className="num">{money(p.cost_price)}</td>
+                    {withQty && (
+                      /* Bấm vào ô số lượng KHÔNG được tính là bấm vào dòng,
+                         nếu không thì vừa chạm vào ô đã thêm mất một dòng. */
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <QtyInput
+                          value={qtyOf(p.id)}
+                          min={1}
+                          onChange={(v) => setQtys((m) => ({ ...m, [p.id]: v }))}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); take(p); } }}
+                          aria-label={`Số lượng ${p.name}`}
+                        />
+                      </td>
+                    )}
                     <td>
-                      <Button size="sm" variant="soft" onClick={(e) => { e.stopPropagation(); onPick(p); }}>
+                      <Button size="sm" variant="soft" onClick={(e) => { e.stopPropagation(); take(p); }}>
                         Thêm
                       </Button>
                     </td>

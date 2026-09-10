@@ -33,6 +33,23 @@ export const ACCESS_RULES = [
   ['*',    /^\/sale-returns/,             'sale.return'],
   ['POST', /^\/sale-exchanges$/,           'sale.return'],
   ['*',    /^\/orders/,                   'order.manage'],
+
+  /* --- Phiếu tạm: ai lập được phiếu loại nào thì lưu tạm được loại đó.
+     Một tờ nháp không đụng kho, không đụng tiền, nên để chung một quyền
+     rộng là được — nhưng vẫn phải đăng nhập. --- */
+  ['*',    /^\/doc-drafts/,               'product.view'],
+
+  /* --- Phiếu báo hết hàng --- */
+  /* Lập phiếu và đếm hàng là việc của nhân viên kho và thu ngân đứng quầy.
+     Nhưng CÂN BẰNG KHO và TÁCH PHIẾU NHẬP thì phải người quản: một cái sửa
+     thẳng tồn kho, một cái mở đường cho việc chi tiền mua hàng. */
+  ['POST', /^\/requisitions\/\d+\/adjust$/, 'stock.manage'],
+  ['POST', /^\/requisitions\/\d+\/split$/,  'purchase.manage'],
+  ['*',    /^\/requisition/,               'product.view'],
+
+  /* Danh sách mối của một mặt hàng: xem thì cần biết giá nhập lần trước,
+     nên khoá theo quyền mua hàng. */
+  ['*',    /^\/products\/\d+\/suppliers$/, 'purchase.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
   ['*',    /^\/warranty/,                 'warranty.manage'],

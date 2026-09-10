@@ -11,6 +11,7 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import CategoryTree, { CategorySelect } from '../components/CategoryTree';
 import ImportProducts from '../components/ImportProducts';
 import PrintLabels from '../components/PrintLabels';
 import { ProductPicker } from '../components/ProductPicker';
@@ -123,10 +124,14 @@ export default function Products() {
       >
         <div className="flex flex-wrap gap-2">
           <SearchInput value={q} onChange={setQ} placeholder="Tìm tên hàng, mã hàng, mã vạch, hãng..." className="w-full sm:w-80" />
-          <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} size="sm" className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          <CategorySelect
+            value={categoryId}
+            onChange={setCategoryId}
+            categories={meta.categories}
+            size="sm"
+            className="!w-auto"
+            ariaLabel="Lọc theo nhóm hàng"
+          />
           <Select value={active} onChange={(e) => setActive(e.target.value)} size="sm" className="!w-auto">
             <option value="1">Đang kinh doanh</option>
             <option value="0">Ngừng kinh doanh</option>
@@ -240,11 +245,9 @@ export default function Products() {
                           placeholder="Lọc tên hoặc tên phụ..." aria-label="Lọc theo tên hàng" />
                       </th>
                       <th>
-                        <Select size="sm" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}
-                          aria-label="Lọc theo nhóm hàng">
-                          <option value="">Mọi nhóm</option>
-                          {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </Select>
+                        <CategorySelect size="sm" value={categoryId} onChange={setCategoryId}
+                          categories={meta.categories} placeholder="Mọi nhóm"
+                          ariaLabel="Lọc theo nhóm hàng" />
                       </th>
                       <th>
                         <Input size="sm" value={col.barcode} onChange={(e) => setColField('barcode')(e.target.value)}
@@ -385,9 +388,10 @@ export default function Products() {
         onDone={() => { reload(); loadMeta(); }}
       />
 
-      <CategoryManager
+      <CategoryTree
         open={catOpen}
-        onClose={() => { setCatOpen(false); loadMeta(); reload(); }}
+        onClose={() => setCatOpen(false)}
+        onChanged={() => { loadMeta(); reload(); }}
       />
 
       <Confirm
@@ -601,88 +605,3 @@ function PurchaseHistoryTab({ product }) {
 /* ==================================================================== */
 /* Quản lý nhóm hàng                                                     */
 /* ==================================================================== */
-
-function CategoryManager({ open, onClose }) {
-  const { toast } = useApp();
-  const { data, busy, reload } = useFetch(() => api.categories(), [], { skip: !open });
-  const [name, setName] = useState('');
-  const [editId, setEditId] = useState(null);
-  const [editName, setEditName] = useState('');
-
-  const add = async () => {
-    if (!name.trim()) return;
-    try {
-      await api.post('/categories', { name: name.trim(), sort_order: (data?.length || 0) });
-      setName('');
-      reload();
-    } catch (e) { toast(e.message, 'bad'); }
-  };
-
-  const save = async (c) => {
-    try {
-      await api.put(`/categories/${c.id}`, { name: editName, sort_order: c.sort_order });
-      setEditId(null);
-      reload();
-    } catch (e) { toast(e.message, 'bad'); }
-  };
-
-  const remove = async (c) => {
-    try {
-      await api.del(`/categories/${c.id}`);
-      reload();
-      toast(`Đã xoá nhóm ${c.name}`, 'ok');
-    } catch (e) { toast(e.message, 'bad', 5000); }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Nhóm hàng hoá"
-      subtitle="Phân nhóm để lọc nhanh khi bán và xem báo cáo theo nhóm"
-      size="sm"
-      footer={<Button variant="primary" onClick={onClose}>Xong</Button>}
-    >
-      <div className="space-y-3">
-        <div className="flex gap-2">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && add()}
-            placeholder="Tên nhóm hàng mới..."
-            aria-label="Tên nhóm hàng mới"
-          />
-          <Button variant="primary" icon={Plus} onClick={add} disabled={!name.trim()}>Thêm</Button>
-        </div>
-
-        {busy ? <Spinner />
-          : !data?.length ? <Empty icon={Layers} title="Chưa có nhóm hàng nào" />
-            : (
-              <ul className="divide-y divide-line border border-line rounded-lg">
-                {data.map((c) => (
-                  <li key={c.id} className="flex items-center gap-2 px-2.5 py-1.5">
-                    {editId === c.id ? (
-                      <>
-                        <Input size="sm" value={editName} onChange={(e) => setEditName(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && save(c)} autoFocus aria-label="Sửa tên nhóm" />
-                        <Button size="sm" variant="primary" onClick={() => save(c)}>Lưu</Button>
-                        <Button size="sm" onClick={() => setEditId(null)}>Huỷ</Button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 text-[13px] font-semibold">{c.name}</span>
-                        <span className="text-2xs text-muted-ink">{c.product_count} mặt hàng</span>
-                        <IconButton icon={Pencil} label={`Sửa nhóm ${c.name}`} size={13}
-                          onClick={() => { setEditId(c.id); setEditName(c.name); }} />
-                        <IconButton icon={Trash2} label={`Xoá nhóm ${c.name}`} size={13}
-                          className="!text-danger hover:!bg-red-50" onClick={() => remove(c)} />
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-      </div>
-    </Modal>
-  );
-}

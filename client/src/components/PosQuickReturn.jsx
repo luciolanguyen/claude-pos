@@ -75,13 +75,14 @@ export default function QuickReturnModal({
     if (!touchedRefund) setRefunded(total);
   }, [total, touchedRefund]);
 
-  const add = (p) => {
+  const add = (p, qty = 1) => {
+    const more = Number(qty) > 0 ? Number(qty) : 1;
     setPickOpen(false);
     setLines((prev) => {
       const at = prev.findIndex((l) => l.product_id === p.id);
       if (at >= 0) {
         const copy = [...prev];
-        copy[at] = { ...copy[at], qty: copy[at].qty + 1 };
+        copy[at] = { ...copy[at], qty: copy[at].qty + more };
         return copy;
       }
       return [...prev, {
@@ -90,7 +91,7 @@ export default function QuickReturnModal({
         name: p.name,
         unit_name: p.base_unit,
         factor: 1,
-        qty: 1,
+        qty: more,
         price: listedPrice(p, priceListId),
         listed: listedPrice(p, priceListId),
       }];

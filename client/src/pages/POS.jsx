@@ -18,6 +18,7 @@ import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
 import QuickReturnModal from '../components/PosQuickReturn';
 import CashVoucherPrint from '../components/CashVoucherPrint';
 import CustomerForm from '../components/CustomerForm';
+import { categoryBranch } from '../components/CategoryTree';
 import {
   OrderBell, SaveAsOrderModal, PickOrderModal, ExchangeModal,
 } from '../components/PosOrders';
@@ -361,7 +362,12 @@ export default function POS() {
   const filtered = useMemo(() => {
     if (!products) return [];
     let list = products;
-    if (categoryId) list = list.filter((p) => p.category_id === Number(categoryId));
+    /* Chọn nhóm cha thì lấy cả hàng của nhóm con cháu — hàng thường
+       nằm ở nhóm lá, so đúng một id là ra danh sách trống. */
+    if (categoryId) {
+      const branch = categoryBranch(meta.categories, categoryId);
+      if (branch) list = list.filter((p) => branch.has(p.category_id));
+    }
     if (search.trim()) {
       list = list.filter((p) =>
         match(p.name, search) || match(p.alias || '', search) || match(p.sku, search) ||
@@ -381,7 +387,7 @@ export default function POS() {
       list = [...list].sort((a, b) => seen(b) - seen(a));
     }
     return list;
-  }, [products, categoryId, search, priceHist]);
+  }, [products, categoryId, search, priceHist, meta.categories]);
 
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
@@ -788,7 +794,9 @@ export default function POS() {
               className={`btn btn-sm shrink-0 ${categoryId === '' ? 'btn-secondary' : 'btn-outline'}`}>
               Tất cả <span className="text-2xs opacity-70">({products?.length || 0})</span>
             </button>
-            {meta.categories.map((c) => (
+            {/* Chỉ hiện ngành hàng cấp 1: bấm vào là ra cả hàng của các
+                nhóm con bên dưới, nên không cần bày hết mọi cấp ra đây */}
+            {meta.categories.filter((c) => (c.level || 1) === 1).map((c) => (
               <button key={c.id} onClick={() => setCategoryId(String(c.id))}
                 className={`btn btn-sm shrink-0 ${categoryId === String(c.id) ? 'btn-secondary' : 'btn-outline'}`}>
                 {c.name}

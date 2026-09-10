@@ -8,6 +8,7 @@ import {
   Field, MoneyInput, Textarea, Combo, QtyInput, Pager,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 import { ProductPicker } from '../components/ProductPicker';
 
 /* ==================================================================== */
@@ -128,9 +129,12 @@ export function PurchaseReturns() {
         title="Trả hàng nhà cung cấp"
         subtitle={`${r.label} · Hàng lỗi, sai quy cách trả lại cho mối`}
         actions={
-          <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-            Lập phiếu trả hàng
-          </Button>
+          <>
+            <OpenDraftsButton kind="purchase_return" onOpen={(d) => setCreating(d)} />
+            <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
+              Lập phiếu trả hàng
+            </Button>
+          </>
         }
       >
         <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
@@ -202,7 +206,8 @@ export function PurchaseReturns() {
       <ReturnDetail detail={detail} onClose={() => setDetail(null)} kind="purchase" />
 
       <PurchaseReturnForm
-        open={creating}
+        open={!!creating}
+        draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={(code) => { setCreating(false); reload(); toast(`Đã lập phiếu trả hàng ${code}`, 'ok'); }}
       />
@@ -297,7 +302,7 @@ function ReturnDetail({ detail, onClose, kind }) {
 
 /* -------------------------------------------------------------------- */
 
-function PurchaseReturnForm({ open, onClose, onSaved }) {
+function PurchaseReturnForm({ open, onClose, onSaved, draft = null }) {
   const { meta, user, defaultWarehouse } = useApp();
   const [supplierId, setSupplierId] = useState(null);
   const [warehouseId, setWarehouseId] = useState(defaultWarehouse);
@@ -309,6 +314,21 @@ function PurchaseReturnForm({ open, onClose, onSaved }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [draftId, setDraftId] = useState(null);
+
+  /* Mở lại phiếu tạm thì đổ nội dung cũ vào biểu mẫu */
+  useEffect(() => {
+    if (!open) return;
+    const p = draft?.payload;
+    setDraftId(draft?.id || null);
+    if (!p) return;
+    setSupplierId(p.supplier_id ?? null);
+    setWarehouseId(p.warehouse_id || defaultWarehouse);
+    setLines(p.lines || []);
+    setRefunded(p.refunded || 0);
+    setReason(p.reason || '');
+    setNote(p.note || '');
+  }, [open, draft, defaultWarehouse]);
 
   const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open });
   const { data: products } = useFetch(
@@ -323,15 +343,16 @@ function PurchaseReturnForm({ open, onClose, onSaved }) {
     setAccountId(meta.accounts?.[0]?.id || '');
   }, [open, defaultWarehouse, meta.accounts]);
 
-  const addProduct = (p) => {
+  const addProduct = (p, qty = 1) => {
+    const add = Number(qty) > 0 ? Number(qty) : 1;
     const unit = p.units.find((u) => u.factor === 1) || p.units[0];
     const key = `${p.id}:${unit.id}`;
     setLines((prev) => prev.some((l) => l.key === key)
-      ? prev.map((l) => l.key === key ? { ...l, qty: l.qty + 1 } : l)
+      ? prev.map((l) => l.key === key ? { ...l, qty: l.qty + add } : l)
       : [...prev, {
           key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
           units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
-          qty: 1, price: Math.round(p.cost_price * unit.factor), stock: p.stock,
+          qty: add, price: Math.round(p.cost_price * unit.factor), stock: p.stock,
         }]);
   };
 
@@ -358,6 +379,12 @@ function PurchaseReturnForm({ open, onClose, onSaved }) {
           factor: l.factor, qty: l.qty, price: l.price,
         })),
       });
+      /* Lưu chính thức xong thì bỏ bản nháp đi, để lần sau khỏi mở nhầm
+         một phiếu đã lập rồi mà lập thêm lần nữa. */
+      if (draftId) {
+        try { await api.del(`/doc-drafts/${draftId}`); }
+        catch { /* nháp mất rồi thì thôi, phiếu chính đã lưu xong */ }
+      }
       onSaved?.(res.code);
     } catch (e) {
       setErr(e.message);
@@ -375,6 +402,20 @@ function PurchaseReturnForm({ open, onClose, onSaved }) {
         subtitle="Hàng trả sẽ bị trừ khỏi tồn kho"
         size="lg"
         footer={<>
+          <SaveDraftButton
+            className="mr-auto"
+            disabled={!lines.length}
+            onSaved={(d) => setDraftId(d.id)}
+            build={() => ({
+              kind: 'purchase_return',
+              id: draftId,
+              title: supplierId ? `Trả hàng ${suppliers?.find((x) => x.id === supplierId)?.name || 'NCC'}` : 'Trả hàng nhà cung cấp',
+              partner_name: suppliers?.find((x) => x.id === supplierId)?.name || null,
+              total: subtotal,
+              item_count: lines.length,
+              payload: { supplier_id: supplierId, warehouse_id: warehouseId, lines, refunded, reason, note },
+            })}
+          />
           <Button onClick={onClose}>Huỷ</Button>
           <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length}>
             Lưu phiếu trả hàng

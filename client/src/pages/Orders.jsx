@@ -19,6 +19,7 @@ import {
   TotalRow,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { CategorySelect } from '../components/CategoryTree';
 
 const STATUS = {
   open: { label: 'Đang chờ hàng', tone: 'info', icon: Clock },
@@ -546,10 +547,9 @@ function OrderProductPicker({ open, onClose, products, priceListId, onPick }) {
         <div className="flex gap-2">
           <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng, tên phụ hoặc quét mã vạch..."
             className="flex-1" autoFocus />
-          <Select value={cat} onChange={(e) => setCat(e.target.value)} className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          <CategorySelect value={cat} onChange={setCat}
+            categories={meta.categories} className="!w-auto"
+            ariaLabel="Lọc theo nhóm hàng" />
         </div>
 
         {list.length === 0 ? (

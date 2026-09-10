@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Printer, Tag, Plus, Minus, Trash2, AlertTriangle } from 'lucide-react';
-import { barcodeSvg, LABEL_SIZES, getLabelSize } from '../lib/barcode';
+import {
+  barcodeSvg, LABEL_SIZES, getLabelSize, fitModuleWidth, checkBarcode,
+} from '../lib/barcode';
 import { useApp, useFetch } from '../lib/store';
 import { api } from '../lib/api';
 import { money, n } from '../lib/format';
@@ -63,6 +65,24 @@ export default function PrintLabels({ open, onClose, products = [] }) {
   };
 
   const noCode = items.filter((p) => !codeOf(p));
+
+  /* Mã 13 chữ số nhưng số kiểm tra cuối sai.
+
+     Máy quét của tiệm vẫn đọc được (nó đọc theo chuẩn Code 128), nên
+     tiệm không tự phát hiện ra. Chỉ tới lúc bán buôn cho siêu thị hay
+     nơi dùng máy quét chuẩn EAN mới vỡ ra là cả lô tem không quét được. */
+  const badCheck = useMemo(() => items
+    .map((p) => ({ p, chk: checkBarcode(codeOf(p)) }))
+    .filter((x) => x.chk.warn === 'sai_so_kiem_tra'),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [items, priceListId]);
+
+  /* Tem quá hẹp so với độ dài mã: vạch mảnh hơn ngưỡng máy in nhiệt in nổi */
+  const tooNarrow = useMemo(() => items
+    .map((p) => ({ p, fit: fitModuleWidth(codeOf(p), size.w - 3) }))
+    .filter((x) => x.fit?.tooNarrow),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [items, size.w]);
 
   /* Dàn tem thành mảng phẳng để in */
   const labels = useMemo(() => {
@@ -161,6 +181,32 @@ export default function PrintLabels({ open, onClose, products = [] }) {
             </div>
           )}
 
+          {tooNarrow.length > 0 && (
+            <div className="card p-2.5 bg-amber-50 border-warn/30 text-[13px] flex gap-2">
+              <AlertTriangle size={15} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+              <span className="text-amber-900">
+                Mã của <b>{tooNarrow[0].p.name}</b>
+                {tooNarrow.length > 1 && ` và ${tooNarrow.length - 1} mặt khác`} quá dài so với
+                khổ tem {size.name}: vạch phải in mảnh tới mức máy quét khó đọc.
+                {' '}Nên chọn khổ tem rộng hơn (cần ít nhất{' '}
+                <b>{Math.ceil(tooNarrow[0].fit.needMm + 3)} mm</b> bề ngang).
+              </span>
+            </div>
+          )}
+
+          {badCheck.length > 0 && (
+            <div className="card p-2.5 bg-amber-50 border-warn/30 text-[13px] flex gap-2">
+              <AlertTriangle size={15} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+              <span className="text-amber-900">
+                <b>{badCheck.length} mã vạch 13 chữ số có số kiểm tra sai.</b>{' '}
+                Tem vẫn in và máy quét của tiệm vẫn đọc được, nhưng máy quét theo
+                chuẩn siêu thị thì không. Ví dụ: <b>{badCheck[0].p.name}</b> đang là{' '}
+                <span className="font-mono">{codeOf(badCheck[0].p)}</span>, đúng ra phải là{' '}
+                <span className="font-mono font-bold">{badCheck[0].chk.suggest}</span>.
+              </span>
+            </div>
+          )}
+
           {/* Số tem cho từng mặt hàng */}
           {items.length === 0 ? (
             <Empty icon={Tag} title="Chưa chọn hàng nào" message="Chọn hàng ở danh sách hàng hoá rồi bấm In tem." />
@@ -247,9 +293,19 @@ export default function PrintLabels({ open, onClose, products = [] }) {
 function LabelBox({ p, size, show, store, code, price, forPrint }) {
   if (!code) return null;
 
-  // Tem càng nhỏ, vạch càng phải mảnh để đủ chỗ
-  const modWidth = size.w <= 30 ? 0.9 : size.w <= 40 ? 1.1 : 1.4;
+  /* Bề rộng vạch tính THEO ĐỘ DÀI MÃ và chỗ trống thật trên tem.
+
+     Trước đây con số này đặt cứng theo khổ tem: mã ngắn thì thừa chỗ,
+     mã 13 chữ số thì rộng gần gấp đôi bề ngang tem và bị cắt mất mấy số
+     cuối — mà cắt xong trông vẫn như một mã vạch bình thường, nên không
+     ai biết là tem hỏng cho tới lúc quét không ra. */
+  const padMm = 1.5 * 2;                       // lề trái phải của ô tem
+  const avail = size.w - padMm;
+  const fit = fitModuleWidth(code, avail, size.w >= 50 ? 0.4 : 0.34);
   const barH = size.h <= 22 ? 26 : size.h <= 30 ? 34 : 44;
+
+  /* mm -> px để vẽ SVG (96 chấm mỗi inch) */
+  const modWidth = fit ? (fit.mm / 25.4) * 96 : 1.1;
   const svg = barcodeSvg(code, { width: modWidth, height: barH, showText: true, fontSize: 8 });
 
   return (

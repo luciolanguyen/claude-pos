@@ -24,6 +24,7 @@ import {
   Spinner, Badge, Combo, Textarea, QtyInput, SearchInput, TotalRow, ErrorBox,
 } from './ui';
 import InvoicePrint from './InvoicePrint';
+import { CategorySelect } from './CategoryTree';
 
 /* ==================== CHUÔNG ĐƠN TỚI HẸN ========================== */
 
@@ -881,10 +882,9 @@ function SwapProductPicker({ open, onClose, products, onPick }) {
         <div className="flex gap-2">
           <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng hoặc quét mã vạch..."
             className="flex-1" autoFocus />
-          <Select value={cat} onChange={(e) => setCat(e.target.value)} className="!w-auto">
-            <option value="">Mọi nhóm hàng</option>
-            {meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          <CategorySelect value={cat} onChange={setCat}
+            categories={meta.categories} className="!w-auto"
+            ariaLabel="Lọc theo nhóm hàng" />
         </div>
         {list.length === 0 ? (
           <Empty icon={Search} title="Không tìm thấy hàng nào" message={`Không có mặt hàng khớp "${q}".`} />
