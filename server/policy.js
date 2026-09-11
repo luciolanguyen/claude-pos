@@ -48,6 +48,19 @@ export function posPolicy() {
   };
 }
 
+/**
+ * Số ngày nợ tối đa áp cho một khách (tài liệu 08). Khách có cài riêng thì
+ * theo khách — kể cả 0, nghĩa là khách này không giới hạn số ngày; để trống
+ * thì theo chính sách chung của tiệm.
+ */
+export function maxDebtDaysFor(customerId) {
+  const c = customerId ? get('SELECT max_debt_days FROM customers WHERE id = ?', [customerId]) : null;
+  if (c && c.max_debt_days !== null && c.max_debt_days !== undefined) {
+    return Math.max(0, Math.round(Number(c.max_debt_days) || 0));
+  }
+  return posPolicy().maxDebtDays;
+}
+
 /* ------------------------------- Mã PIN ------------------------------ */
 
 const APPROVER_ROLES = ['owner', 'manager'];

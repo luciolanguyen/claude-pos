@@ -13,7 +13,6 @@ import Customers, { CustomerDetail } from './pages/Customers';
 import Suppliers, { SupplierDetail } from './pages/Suppliers';
 import Purchases from './pages/Purchases';
 import { SaleReturns, PurchaseReturns } from './pages/Returns';
-import { CustomerDebts, SupplierDebts } from './pages/Debts';
 import Products from './pages/Products';
 import Stock, { StockTakes, StockTransfers } from './pages/Stock';
 import Production from './pages/Production';
@@ -219,13 +218,14 @@ function Shell() {
               <Route path="sale-returns" element={<Guard perm="sale.return"><SaleReturns /></Guard>} />
               <Route path="customers" element={<Guard perm="customer.manage"><Customers /></Guard>} />
               <Route path="customers/:id" element={<Guard perm="customer.manage"><CustomerDetail /></Guard>} />
-              <Route path="customer-debts" element={<Guard perm="customer.manage"><CustomerDebts /></Guard>} />
+              {/* Trang công nợ riêng đã gộp vào danh mục (tài liệu 08, 10) — link cũ tự chuyển sang bộ lọc */}
+              <Route path="customer-debts" element={<Navigate to="/customers?filter=debt" replace />} />
 
               <Route path="purchases" element={<Guard perm="purchase.manage"><Purchases /></Guard>} />
               <Route path="purchase-returns" element={<Guard perm="purchase.manage"><PurchaseReturns /></Guard>} />
               <Route path="suppliers" element={<Guard perm="purchase.manage"><Suppliers /></Guard>} />
               <Route path="suppliers/:id" element={<Guard perm="purchase.manage"><SupplierDetail /></Guard>} />
-              <Route path="supplier-debts" element={<Guard perm="purchase.manage"><SupplierDebts /></Guard>} />
+              <Route path="supplier-debts" element={<Navigate to="/suppliers?filter=debt" replace />} />
 
               <Route path="products" element={<Guard perm="product.view"><Products /></Guard>} />
               <Route path="stock" element={<Guard perm="product.view"><Stock /></Guard>} />

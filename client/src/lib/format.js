@@ -151,6 +151,7 @@ export const CASH_LABEL = {
   salary: 'Lương nhân viên', rent: 'Thuê mặt bằng', utility: 'Điện nước internet',
   transport: 'Vận chuyển', tax: 'Thuế, lệ phí', capital_in: 'Góp vốn',
   capital_out: 'Rút vốn', transfer_in: 'Nhận chuyển quỹ', transfer_out: 'Chuyển quỹ đi',
+  warranty_in: 'Thu sửa chữa / bảo hành', custom_parts_in: 'Doanh thu linh kiện ngoài hệ thống',
   other_in: 'Thu khác', other_out: 'Chi khác',
 };
 

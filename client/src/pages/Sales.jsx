@@ -13,6 +13,7 @@ import {
 import { PageHeader, Page } from '../components/Layout';
 import InvoicePrint from '../components/InvoicePrint';
 import SaleReturnForm from '../components/SaleReturnForm';
+import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
 
 export default function Sales() {
   const { store, settings, toast, meta, user } = useApp();
@@ -34,6 +35,7 @@ export default function Sales() {
   } = usePaged((pg) => api.sales({ ...filters, ...pg }), [filters], { key: 'sales' });
 
   const [detail, setDetail] = useState(null);
+  const [wHistory, setWHistory] = useState(null);   // dòng thời gian bảo hành đang xem
   const [printing, setPrinting] = useState(null);
   const [returning, setReturning] = useState(null);
   const [cancelling, setCancelling] = useState(null);
@@ -172,6 +174,8 @@ export default function Sales() {
                           </button>
                           {s.is_vat_invoice === 1 && <Badge tone="info" className="ml-1">GTGT</Badge>}
                           {s.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
+                          <WarrantyFlag count={s.warranty_count} compact className="ml-1"
+                            onClick={() => setWHistory({ query: { sale_id: s.id }, subtitle: `Hoá đơn ${s.code}` })} />
                         </td>
                         <td className="whitespace-nowrap text-muted-ink">{datetime(s.ts)}</td>
                         <td>
@@ -310,6 +314,16 @@ export default function Sales() {
                       <td>
                         <div className="font-semibold">{it.name_snapshot}</div>
                         <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
+                        {(it.warranty_months > 0 || it.serial || it.warranty_count > 0) && (
+                          <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                            {it.warranty_months > 0 && (
+                              <Badge tone="ok">BH {it.warranty_months} tháng{it.warranty_until ? ` · tới ${date(it.warranty_until)}` : ''}</Badge>
+                            )}
+                            {it.serial && <span className="text-2xs text-muted-ink font-mono">SN {it.serial}</span>}
+                            <WarrantyFlag count={it.warranty_count}
+                              onClick={() => setWHistory({ query: { sale_id: detail.id, product_id: it.product_id }, subtitle: `${it.name_snapshot} · ${detail.code}` })} />
+                          </div>
+                        )}
                       </td>
                       <td>{it.unit_name}</td>
                       <td className="num">{fq(it.qty)}</td>
@@ -392,6 +406,13 @@ export default function Sales() {
             Thao tác này không hoàn tác được.
           </>
         )}
+      />
+
+      <WarrantyHistoryModal
+        open={!!wHistory}
+        onClose={() => setWHistory(null)}
+        query={wHistory?.query}
+        subtitle={wHistory?.subtitle}
       />
 
       {printing && (

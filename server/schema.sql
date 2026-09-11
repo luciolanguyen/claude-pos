@@ -722,3 +722,84 @@ CREATE TABLE IF NOT EXISTS sale_order_deposits (
   note      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sodep_order ON sale_order_deposits(order_id);
+
+-- ============================================================
+-- MO RONG v14: ho so NCC nhieu so dien thoai / tai khoan, hang giao
+--              sai tren phieu nhap, tra hang NCC, sua chua dich vu
+-- ============================================================
+
+-- Mot NCC nhieu so dien thoai, moi so gan nhan: kinh doanh, ke toan cong
+-- no, giao nhan kho, giam doc... Cot suppliers.phone giu so dau tien de
+-- cac man hinh cu van hien duoc.
+CREATE TABLE IF NOT EXISTS supplier_phones (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  phone       TEXT NOT NULL,
+  label       TEXT,
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sphone_supplier ON supplier_phones(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_sphone_phone ON supplier_phones(phone);
+
+-- Tai khoan ngan hang cua NCC, de phieu chi tra no chon dung tai khoan nhan
+CREATE TABLE IF NOT EXISTS supplier_bank_accounts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  bank_name   TEXT NOT NULL,
+  account_no  TEXT NOT NULL,
+  holder      TEXT,
+  label       TEXT,
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sbank_supplier ON supplier_bank_accounts(supplier_id);
+
+-- Hang giao sai / ngoai danh muc: tinh vao tien phieu nhap va cong no NCC,
+-- KHONG vao kho, khong co ma hang. Cho tra lai NCC.
+CREATE TABLE IF NOT EXISTS purchase_custom_items (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  unit_name   TEXT,
+  qty         REAL NOT NULL,
+  price       INTEGER NOT NULL DEFAULT 0,
+  amount      INTEGER NOT NULL DEFAULT 0,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pci_purchase ON purchase_custom_items(purchase_id);
+
+-- Dong hang ngoai he thong tren phieu tra NCC (khong tru kho)
+CREATE TABLE IF NOT EXISTS purchase_return_custom_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  return_id      INTEGER NOT NULL REFERENCES purchase_returns(id) ON DELETE CASCADE,
+  custom_item_id INTEGER REFERENCES purchase_custom_items(id) ON DELETE SET NULL,
+  name           TEXT NOT NULL,
+  unit_name      TEXT,
+  qty            REAL NOT NULL,
+  price          INTEGER NOT NULL DEFAULT 0,
+  amount         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_prci_return ON purchase_return_custom_items(return_id);
+CREATE INDEX IF NOT EXISTS idx_prci_custom ON purchase_return_custom_items(custom_item_id);
+
+-- Linh kien mua ngoai khi sua, go tay: khong dung kho, doanh thu gom rieng
+CREATE TABLE IF NOT EXISTS warranty_custom_parts (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES warranty_tickets(id) ON DELETE CASCADE,
+  name      TEXT NOT NULL,
+  qty       REAL NOT NULL DEFAULT 1,
+  price     INTEGER NOT NULL DEFAULT 0,
+  amount    INTEGER NOT NULL DEFAULT 0,
+  note      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wcp_ticket ON warranty_custom_parts(ticket_id);
+
+-- Phi phat sinh khac cua phieu sua: gui hang, van chuyen...
+CREATE TABLE IF NOT EXISTS warranty_fees (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES warranty_tickets(id) ON DELETE CASCADE,
+  name      TEXT NOT NULL,
+  amount    INTEGER NOT NULL DEFAULT 0,
+  note      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wfee_ticket ON warranty_fees(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_wt_sale ON warranty_tickets(sale_id);

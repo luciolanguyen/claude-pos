@@ -1,31 +1,50 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
-  Users, UserPlus, Pencil, Trash2, Phone, HandCoins, Receipt, ArrowLeft,
-  Download, Package, TrendingUp,
+  Users, UserPlus, Pencil, Trash2, HandCoins, ArrowLeft, Download, TrendingUp, AlertTriangle, Clock,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
-import { money, n, short, qty as fq, date, datetime, smartTime, PAYMENT_LABEL, CASH_LABEL } from '../lib/format';
+import { useLiveReload } from '../lib/useLive';
+import { money, n, short, smartTime, date } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Select, Textarea, Stat, Tabs,
+  Confirm, Field, MoneyInput, Select, Textarea, Stat,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
-import CustomerForm from '../components/CustomerForm';
+import CustomerForm, { CUSTOMER_TYPES } from '../components/CustomerForm';
+import CustomerProfile, { CustomerTypeBadge } from '../components/CustomerProfile';
+import { DebtCollectModal } from '../components/PosDebt';
+
+/* Phân hệ khách hàng gộp công nợ (tài liệu 08): không còn trang công nợ
+   riêng — lọc "đang nợ", "nợ quá hạn", "vượt hạn mức" ngay trên danh mục. */
+const FILTERS = [
+  { key: '', label: 'Tất cả khách' },
+  { key: 'debt', label: 'Đang nợ' },
+  { key: 'overdue', label: 'Nợ quá hạn' },
+  { key: 'over_limit', label: 'Vượt hạn mức' },
+];
 
 export default function Customers() {
-  const { toast, meta } = useApp();
+  const { toast } = useApp();
+  const [params, setParams] = useSearchParams();
+  const filter = FILTERS.some((f) => f.key === params.get('filter')) ? params.get('filter') : '';
+  const type = CUSTOMER_TYPES.some((t) => t.key === params.get('type')) ? params.get('type') : '';
+  const setParam = (key, value) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value); else next.delete(key);
+    setParams(next, { replace: true });
+  };
+
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
-  const [onlyDebt, setOnlyDebt] = useState(false);
   const { data, busy, error, reload } = useFetch(
-    () => api.customers({ q: dq, has_debt: onlyDebt ? 1 : '' }), [dq, onlyDebt]
-  );
+    () => api.customers({ q: dq, filter, type, detail: filter ? 1 : '' }), [dq, filter, type]);
+  useLiveReload(reload);
 
   const [editing, setEditing] = useState(null);   // đối tượng hoặc 'new'
   const [deleting, setDeleting] = useState(null);
-  const [paying, setPaying] = useState(null);
+  const [collecting, setCollecting] = useState(null);
   const [busyAction, setBusyAction] = useState(false);
 
   const totals = useMemo(() => {
@@ -35,6 +54,8 @@ export default function Customers() {
       debt: data.reduce((a, c) => a + Math.max(0, c.debt), 0),
       spent: data.reduce((a, c) => a + c.total_spent, 0),
       debtors: data.filter((c) => c.debt > 0).length,
+      overdue: data.filter((c) => c.overdue_count > 0).length,
+      overLimit: data.filter((c) => c.debt_limit > 0 && c.debt > c.debt_limit).length,
     };
   }, [data]);
 
@@ -54,26 +75,35 @@ export default function Customers() {
 
   const exportCsv = () => {
     if (!data?.length) return;
-    const head = ['Mã KH', 'Tên khách hàng', 'Điện thoại', 'Địa chỉ', 'Bảng giá', 'Số đơn', 'Tổng mua', 'Đang nợ', 'Hạn mức'];
+    const head = ['Mã KH', 'Tên khách hàng', 'Loại khách', 'Điện thoại', 'Địa chỉ', 'Bảng giá', 'Số đơn', 'Tổng mua',
+      'Đang nợ', 'Hạn mức nợ', 'Số ngày nợ tối đa', ...(filter ? ['HĐ chưa trả', 'Nợ lâu nhất (ngày)', 'HĐ quá hạn'] : [])];
     const rows = data.map((c) => [
-      c.code, c.name, c.phone || '', c.address || '', c.price_list_name || 'Giá lẻ',
-      c.order_count, c.total_spent, c.debt, c.debt_limit,
+      c.code, c.name, CUSTOMER_TYPES.find((t) => t.key === c.customer_type)?.label || 'Thành viên',
+      c.phone || '', c.address || '', c.price_list_name || 'Giá lẻ',
+      c.order_count, c.total_spent, c.debt, c.debt_limit, c.max_debt_days ?? 'Theo tiệm',
+      ...(filter ? [c.unpaid_bills ?? '', c.oldest_days ?? '', c.overdue_count ?? ''] : []),
     ]);
     const csv = '﻿' + [head, ...rows]
       .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'khachhang.csv';
+    a.download = filter ? `khachhang-${filter}.csv` : 'khachhang.csv';
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const emptyText = {
+    debt: 'Không có khách nào đang nợ.',
+    overdue: 'Không có khách nào nợ quá hạn.',
+    over_limit: 'Không có khách nào vượt hạn mức nợ.',
+  }[filter];
 
   return (
     <>
       <PageHeader
         title="Khách hàng"
-        subtitle={totals ? `${n(totals.count)} khách · ${n(totals.debtors)} khách đang nợ` : ''}
+        subtitle={totals ? `${n(totals.count)} khách · ${n(totals.debtors)} đang nợ · tổng nợ ${money(totals.debt)}` : ''}
         actions={<>
           <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
           <Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>
@@ -81,30 +111,53 @@ export default function Customers() {
           </Button>
         </>}
       >
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <SearchInput
             value={q}
             onChange={setQ}
             placeholder="Tìm tên, số điện thoại, mã khách..."
-            className="w-full sm:w-80"
+            className="w-full sm:w-72"
           />
-          <button
-            onClick={() => setOnlyDebt((v) => !v)}
-            className={`btn btn-sm ${onlyDebt ? 'btn-secondary' : 'btn-outline'}`}
+          <div className="flex rounded-lg border border-line overflow-hidden" role="radiogroup" aria-label="Lọc theo công nợ">
+            {FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                role="radio"
+                aria-checked={filter === f.key}
+                onClick={() => setParam('filter', f.key)}
+                className={`px-2.5 h-9 text-[13px] font-semibold whitespace-nowrap cursor-pointer transition-colors duration-150
+                            ${filter === f.key ? 'bg-primary text-white' : 'bg-card hover:bg-muted'}`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <label htmlFor="cust-type" className="sr-only">Loại khách</label>
+          <select
+            id="cust-type"
+            className="input !w-auto h-9"
+            value={type}
+            onChange={(e) => setParam('type', e.target.value)}
           >
-            <HandCoins size={13} aria-hidden="true" />
-            Chỉ khách đang nợ
-          </button>
+            <option value="">Mọi loại khách</option>
+            {CUSTOMER_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+          </select>
         </div>
       </PageHeader>
 
       <Page className="space-y-3">
         {totals && (
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
-            <Stat label="Tổng số khách" value={n(totals.count)} icon={Users} />
-            <Stat label="Khách đang nợ" value={n(totals.debtors)} tone={totals.debtors > 0 ? 'warn' : 'default'} />
-            <Stat label="Tổng công nợ" value={short(totals.debt)} tone="warn" icon={HandCoins} />
-            <Stat label="Tổng đã mua" value={short(totals.spent)} tone="good" icon={TrendingUp} />
+            <Stat label="Số khách" value={n(totals.count)} icon={Users} />
+            <Stat label="Tổng công nợ" value={short(totals.debt)} tone="warn" icon={HandCoins}
+              sub={`${n(totals.debtors)} khách đang nợ`} onClick={() => setParam('filter', 'debt')} />
+            {filter
+              ? <Stat label="Nợ quá hạn" value={n(totals.overdue)} tone={totals.overdue > 0 ? 'bad' : 'default'}
+                  icon={Clock} sub="khách có hoá đơn quá số ngày nợ" onClick={() => setParam('filter', 'overdue')} />
+              : <Stat label="Tổng đã mua" value={short(totals.spent)} tone="good" icon={TrendingUp} />}
+            <Stat label="Vượt hạn mức" value={n(totals.overLimit)} tone={totals.overLimit > 0 ? 'bad' : 'default'}
+              icon={AlertTriangle} onClick={() => setParam('filter', 'over_limit')} />
           </div>
         )}
 
@@ -113,9 +166,9 @@ export default function Customers() {
             : !data?.length ? (
               <Empty
                 icon={Users}
-                title="Chưa có khách hàng nào"
-                message={q ? `Không tìm thấy khách khớp "${q}".` : 'Thêm khách quen để theo dõi công nợ và lịch sử mua hàng.'}
-                action={<Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>Thêm khách hàng</Button>}
+                title={filter ? emptyText : 'Chưa có khách hàng nào'}
+                message={q ? `Không tìm thấy khách khớp "${q}".` : filter ? '' : 'Thêm khách quen để theo dõi công nợ và lịch sử mua hàng.'}
+                action={!filter && <Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>Thêm khách hàng</Button>}
               />
             ) : (
               <div className="table-wrap">
@@ -125,61 +178,85 @@ export default function Customers() {
                       <th>Mã</th>
                       <th>Tên khách hàng</th>
                       <th>Điện thoại</th>
-                      <th>Bảng giá</th>
+                      <th>Loại</th>
                       <th className="text-right">Số đơn</th>
                       <th className="text-right">Tổng mua</th>
                       <th className="text-right">Đang nợ</th>
+                      {filter && <th>Nợ lâu nhất</th>}
                       <th>Mua gần nhất</th>
                       <th className="text-right">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.map((c) => (
-                      <tr key={c.id} className={`hoverable ${c.active === 0 ? 'opacity-55' : ''}`}>
-                        <td className="font-mono text-muted-ink">{c.code}</td>
-                        <td>
-                          <Link to={`/customers/${c.id}`} className="font-semibold text-accent hover:underline">
-                            {c.name}
-                          </Link>
-                          {c.active === 0 && <Badge tone="mute" className="ml-1.5">Ngừng</Badge>}
-                          {c.company_name && <div className="text-2xs text-muted-ink truncate max-w-[220px]">{c.company_name}</div>}
-                        </td>
-                        <td className="tabular">{c.phone || '—'}</td>
-                        <td>{c.price_list_name ? <Badge tone="info">{c.price_list_name}</Badge> : <span className="text-muted-ink">Giá lẻ</span>}</td>
-                        <td className="num">{c.order_count}</td>
-                        <td className="num">{money(c.total_spent)}</td>
-                        <td className="num">
-                          {c.debt > 0
-                            ? <span className={`font-semibold ${c.debt_limit > 0 && c.debt > c.debt_limit ? 'text-danger' : 'text-warn'}`}>
-                                {money(c.debt)}
-                              </span>
-                            : <span className="text-muted-ink">—</span>}
-                        </td>
-                        <td className="text-muted-ink whitespace-nowrap">{c.last_order ? smartTime(c.last_order) : '—'}</td>
-                        <td>
-                          <div className="flex items-center justify-end gap-0.5">
-                            {c.debt > 0 && (
+                    {data.map((c) => {
+                      const overLimit = c.debt_limit > 0 && c.debt > c.debt_limit;
+                      return (
+                        <tr key={c.id} className={`hoverable ${c.active === 0 ? 'opacity-55' : ''}`}>
+                          <td className="font-mono text-muted-ink">{c.code}</td>
+                          <td>
+                            <Link to={`/customers/${c.id}`} className="font-semibold text-accent hover:underline">
+                              {c.name}
+                            </Link>
+                            {c.active === 0 && <Badge tone="mute" className="ml-1.5">Ngừng</Badge>}
+                            {c.company_name && <div className="text-2xs text-muted-ink truncate max-w-[220px]">{c.company_name}</div>}
+                          </td>
+                          <td className="tabular">{c.phone || '—'}</td>
+                          <td><CustomerTypeBadge type={c.customer_type} /></td>
+                          <td className="num">{c.order_count}</td>
+                          <td className="num">{money(c.total_spent)}</td>
+                          <td className="num">
+                            {c.debt > 0
+                              ? <div className="flex flex-col items-end gap-0.5">
+                                  <span className={`font-semibold ${overLimit ? 'text-danger' : 'text-warn'}`}>{money(c.debt)}</span>
+                                  {overLimit && <Badge tone="bad">Vượt hạn mức</Badge>}
+                                  {c.overdue_count > 0 && <Badge tone="bad">{c.overdue_count} HĐ quá hạn</Badge>}
+                                </div>
+                              : <span className="text-muted-ink">—</span>}
+                          </td>
+                          {filter && (
+                            <td className="whitespace-nowrap">
+                              {c.oldest_unpaid
+                                ? <span className={c.overdue_count > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}>
+                                    {date(c.oldest_unpaid)} ({c.oldest_days} ngày)
+                                  </span>
+                                : <span className="text-muted-ink">—</span>}
+                            </td>
+                          )}
+                          <td className="text-muted-ink whitespace-nowrap">{c.last_order ? smartTime(c.last_order) : '—'}</td>
+                          <td>
+                            <div className="flex items-center justify-end gap-0.5">
+                              {c.debt > 0 && (
+                                <IconButton
+                                  icon={HandCoins}
+                                  label={`Thu nợ của ${c.name}`}
+                                  size={14}
+                                  className="!text-warn"
+                                  onClick={() => setCollecting(c)}
+                                />
+                              )}
+                              <IconButton icon={Pencil} label={`Sửa ${c.name}`} size={14} onClick={() => setEditing(c)} />
                               <IconButton
-                                icon={HandCoins}
-                                label={`Thu nợ của ${c.name}`}
+                                icon={Trash2}
+                                label={`Xoá ${c.name}`}
                                 size={14}
-                                className="!text-warn"
-                                onClick={() => setPaying(c)}
+                                className="!text-danger hover:!bg-red-50"
+                                onClick={() => setDeleting(c)}
                               />
-                            )}
-                            <IconButton icon={Pencil} label={`Sửa ${c.name}`} size={14} onClick={() => setEditing(c)} />
-                            <IconButton
-                              icon={Trash2}
-                              label={`Xoá ${c.name}`}
-                              size={14}
-                              className="!text-danger hover:!bg-red-50"
-                              onClick={() => setDeleting(c)}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
+                  {filter && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={6} className="text-right">TỔNG CỘNG PHẢI THU</td>
+                        <td className="num text-warn">{money(totals.debt)}</td>
+                        <td colSpan={3} />
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             )}
@@ -196,13 +273,15 @@ export default function Customers() {
         }}
       />
 
-      <DebtPayModal
-        partner={paying}
-        kind="customer"
-        accounts={meta.accounts}
-        onClose={() => setPaying(null)}
-        onDone={() => { setPaying(null); reload(); toast('Đã lập phiếu thu nợ', 'ok'); }}
-      />
+      {/* Thu nợ dùng chung sổ phụ công nợ của màn hình bán hàng (tài liệu 05) */}
+      {collecting && (
+        <DebtCollectModal
+          open
+          customerId={collecting.id}
+          onClose={() => setCollecting(null)}
+          onDone={() => reload()}
+        />
+      )}
 
       <Confirm
         open={!!deleting}
@@ -237,7 +316,7 @@ export default function Customers() {
 }
 
 /* ==================================================================== */
-/* Hộp thu / trả nợ dùng chung cho khách hàng và nhà cung cấp            */
+/* Hộp thu / trả nợ đơn giản — giữ lại cho màn hình cũ còn gọi tới        */
 /* ==================================================================== */
 
 export function DebtPayModal({ partner, kind, accounts, onClose, onDone }) {
@@ -323,222 +402,46 @@ export function DebtPayModal({ partner, kind, accounts, onClose, onDone }) {
 }
 
 /* ==================================================================== */
-/* Trang chi tiết một khách hàng                                         */
+/* Trang hồ sơ một khách hàng — cùng hồ sơ ba tab với màn hình bán hàng   */
 /* ==================================================================== */
+
+const PROFILE_TABS = ['info', 'history', 'debt'];
 
 export function CustomerDetail() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { toast, meta, store } = useApp();
-  const { data: c, busy, error, reload } = useFetch(() => api.customer(id), [id]);
-  const [tab, setTab] = useState('sales');
+  const [params] = useSearchParams();
+  const { toast } = useApp();
+  const [customer, setCustomer] = useState(null);
   const [editing, setEditing] = useState(false);
-  const [paying, setPaying] = useState(null);
-  /* Số lần người này đi mua hộ cho khách khác (tài liệu 03) — thống kê riêng,
-     doanh số và công nợ vẫn tính cho khách chủ */
-  const { data: proxy } = useFetch(() => api.proxyStats(id), [id]);
-
-  if (busy && !c) return <><PageHeader title="Khách hàng" /><Spinner /></>;
-  if (error) return <><PageHeader title="Khách hàng" /><Page><ErrorBox error={error} onRetry={reload} /></Page></>;
-  if (!c) return null;
+  const [reloadKey, setReloadKey] = useState(0);
+  const initialTab = PROFILE_TABS.includes(params.get('tab')) ? params.get('tab') : 'info';
 
   return (
     <>
       <PageHeader
-        title={c.name}
-        subtitle={[c.code, c.phone, c.address].filter(Boolean).join(' · ')}
+        title={customer?.name || 'Khách hàng'}
+        subtitle="Hồ sơ khách hàng · lịch sử mua hàng · công nợ"
         actions={<>
           <Button icon={ArrowLeft} onClick={() => nav('/customers')}>Danh sách khách</Button>
-          {c.debt > 0 && (
-            <Button variant="primary" icon={HandCoins} onClick={() => setPaying(c)}>
-              Thu nợ {money(c.debt)}
-            </Button>
-          )}
-          <Button icon={Pencil} onClick={() => setEditing(true)}>Sửa thông tin</Button>
+          <Button icon={Pencil} onClick={() => setEditing(true)} disabled={!customer}>Sửa thông tin</Button>
         </>}
       />
 
-      <Page className="space-y-3">
-        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
-          <Stat label="Tổng đã mua" value={short(c.sales.reduce((a, s) => a + s.total, 0))} tone="good" />
-          <Stat label="Số hoá đơn" value={n(c.sales.length)} icon={Receipt} />
-          <Stat
-            label="Đang nợ"
-            value={short(c.debt)}
-            tone={c.debt > 0 ? 'warn' : 'default'}
-            sub={c.debt_limit > 0 ? `Hạn mức ${short(c.debt_limit)}` : 'Không giới hạn'}
-          />
-          <Stat label="Nợ đầu kỳ" value={short(c.opening_debt)} />
-        </div>
-
-        {proxy?.times > 0 && (
-          <div className="card-pad text-[13px] flex flex-wrap items-center gap-x-3 gap-y-1 border-violet-200 bg-violet-50/60">
-            <Users size={15} className="text-violet-700" aria-hidden="true" />
-            <span className="text-violet-950">
-              Đã <b>đi mua hộ {n(proxy.times)} lần</b> cho {n(proxy.for_customers)} khách, tổng <b>{money(proxy.total)}</b>
-            </span>
-            {proxy.last_ts && <span className="text-2xs text-muted-ink">lần gần nhất {smartTime(proxy.last_ts)}</span>}
-          </div>
-        )}
-
-        {c.company_name && (
-          <div className="card-pad text-[13px]">
-            <div className="font-semibold mb-1">Thông tin xuất hoá đơn</div>
-            <div className="grid gap-1 sm:grid-cols-2 text-muted-ink">
-              <div>Tên công ty: <span className="text-ink">{c.company_name}</span></div>
-              <div>Mã số thuế: <span className="text-ink">{c.tax_code || '—'}</span></div>
-            </div>
-          </div>
-        )}
-
-        <div className="card">
-          <Tabs
-            value={tab}
-            onChange={setTab}
-            className="px-2 pt-1"
-            tabs={[
-              { key: 'sales', label: 'Lịch sử mua hàng', count: c.sales.length },
-              { key: 'products', label: 'Hàng hay mua', count: c.top_products.length },
-              { key: 'payments', label: 'Thu chi tiền', count: c.payments.length },
-              { key: 'returns', label: 'Trả hàng', count: c.returns.length },
-            ]}
-          />
-
-          <div className="p-0">
-            {tab === 'sales' && (
-              c.sales.length === 0
-                ? <Empty icon={Receipt} title="Khách chưa mua lần nào" />
-                : (
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Mã hoá đơn</th><th>Ngày</th>
-                        <th className="text-right">Tổng tiền</th>
-                        <th className="text-right">Đã trả</th>
-                        <th className="text-right">Còn nợ</th>
-                        <th>Thanh toán</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {c.sales.map((s) => (
-                        <tr key={s.id} className={`hoverable ${s.status === 'cancelled' ? 'opacity-50' : ''}`}>
-                          <td>
-                            <Link to={`/sales?q=${s.code}`} className="font-mono font-semibold text-accent hover:underline">
-                              {s.code}
-                            </Link>
-                            {s.is_vat_invoice === 1 && <Badge tone="info" className="ml-1">GTGT</Badge>}
-                            {s.status === 'cancelled' && <Badge tone="bad" className="ml-1">Huỷ</Badge>}
-                          </td>
-                          <td className="text-muted-ink whitespace-nowrap">{datetime(s.ts)}</td>
-                          <td className="num font-semibold">{money(s.total)}</td>
-                          <td className="num">{money(s.paid)}</td>
-                          <td className={`num ${s.total - s.paid > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}`}>
-                            {s.total - s.paid > 0 ? money(s.total - s.paid) : '—'}
-                          </td>
-                          <td><Badge tone={s.payment_method === 'debt' ? 'warn' : 'mute'}>{PAYMENT_LABEL[s.payment_method]}</Badge></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-            )}
-
-            {tab === 'products' && (
-              c.top_products.length === 0
-                ? <Empty icon={Package} title="Chưa có dữ liệu" />
-                : (
-                  <table className="data">
-                    <thead>
-                      <tr><th>Tên hàng</th><th>ĐVT</th><th className="text-right">Đã mua</th><th className="text-right">Thành tiền</th></tr>
-                    </thead>
-                    <tbody>
-                      {c.top_products.map((p, i) => (
-                        <tr key={i} className="hoverable">
-                          <td className="font-semibold">{p.name}</td>
-                          <td>{p.unit_name}</td>
-                          <td className="num">{fq(p.qty)}</td>
-                          <td className="num font-semibold">{money(p.amount)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-            )}
-
-            {tab === 'payments' && (
-              c.payments.length === 0
-                ? <Empty icon={HandCoins} title="Chưa có giao dịch tiền" />
-                : (
-                  <table className="data">
-                    <thead>
-                      <tr><th>Mã phiếu</th><th>Ngày</th><th>Loại</th><th className="text-right">Số tiền</th><th>Diễn giải</th></tr>
-                    </thead>
-                    <tbody>
-                      {c.payments.map((p) => (
-                        <tr key={p.id} className="hoverable">
-                          <td className="font-mono">{p.code}</td>
-                          <td className="text-muted-ink whitespace-nowrap">{datetime(p.ts)}</td>
-                          <td>
-                            <Badge tone={p.direction === 'in' ? 'ok' : 'bad'}>
-                              {p.direction === 'in' ? 'Thu' : 'Chi'} · {CASH_LABEL[p.category] || p.category}
-                            </Badge>
-                          </td>
-                          <td className={`num font-semibold ${p.direction === 'in' ? 'text-emerald-700' : 'text-danger'}`}>
-                            {p.direction === 'in' ? '+' : '-'}{money(p.amount)}
-                          </td>
-                          <td className="text-muted-ink">{p.note}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-            )}
-
-            {tab === 'returns' && (
-              c.returns.length === 0
-                ? <Empty title="Khách chưa trả hàng lần nào" />
-                : (
-                  <table className="data">
-                    <thead>
-                      <tr><th>Mã phiếu</th><th>Ngày</th><th className="text-right">Giá trị</th><th className="text-right">Đã hoàn</th><th>Lý do</th></tr>
-                    </thead>
-                    <tbody>
-                      {c.returns.map((rt) => (
-                        <tr key={rt.id} className="hoverable">
-                          <td className="font-mono">{rt.code}</td>
-                          <td className="text-muted-ink">{date(rt.ts)}</td>
-                          <td className="num">{money(rt.total)}</td>
-                          <td className="num">{money(rt.refunded)}</td>
-                          <td className="text-muted-ink">{rt.reason || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-            )}
-          </div>
-        </div>
-
-        {c.note && (
-          <div className="card-pad text-[13px]">
-            <span className="font-semibold">Ghi chú: </span>{c.note}
-          </div>
-        )}
+      <Page>
+        <CustomerProfile
+          customerId={Number(id)}
+          initialTab={initialTab}
+          reloadKey={reloadKey}
+          onLoaded={setCustomer}
+        />
       </Page>
 
       <CustomerForm
         open={editing}
-        customer={c}
+        customer={customer}
         onClose={() => setEditing(false)}
-        onSaved={() => { setEditing(false); reload(); toast('Đã lưu thay đổi', 'ok'); }}
-      />
-
-      <DebtPayModal
-        partner={paying}
-        kind="customer"
-        accounts={meta.accounts}
-        onClose={() => setPaying(null)}
-        onDone={() => { setPaying(null); reload(); toast('Đã lập phiếu thu nợ', 'ok'); }}
+        onSaved={() => { setEditing(false); setReloadKey((k) => k + 1); toast('Đã lưu thay đổi', 'ok'); }}
       />
     </>
   );

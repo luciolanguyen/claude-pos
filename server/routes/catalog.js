@@ -312,6 +312,7 @@ r.get('/products/pos', (req, res) => {
   const products = all(`
     SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.cost_price, p.vat_rate,
            p.track_stock, p.min_stock, p.category_id, p.brand, p.location, p.is_manufactured,
+           p.warranty_months, p.warranty_note,
            c.name AS category_name,
            /* Giá nhập gần nhất quy về đơn vị cơ bản — cho quản lý thấy biên lãi
               thật khi sửa giá (tài liệu 06). Người không có quyền giá vốn thì
@@ -465,15 +466,17 @@ r.post('/products', (req, res) => {
       const info = run(`
         INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
                              track_stock, min_stock, max_stock, brand, location, note, active,
-                             cost_method, cost_fixed)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             cost_method, cost_fixed, warranty_months, warranty_note)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
           normCostMethod(b.cost_method),
           // Khai báo sẵn giá vốn lúc tạo hàng thì coi như đã chốt luôn
-          Math.round(b.cost_price || 0) > 0 ? 1 : 0]);
+          Math.round(b.cost_price || 0) > 0 ? 1 : 0,
+          Math.max(0, Math.round(Number(b.warranty_months) || 0)),
+          String(b.warranty_note ?? '').trim() || null]);
       const pid = Number(info.lastInsertRowid);
       saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái');
 
@@ -506,13 +509,19 @@ r.put('/products/:id', (req, res) => {
     tx(() => {
       run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
              vat_rate = ?, track_stock = ?, min_stock = ?, max_stock = ?,
-             brand = ?, location = ?, note = ?, active = ?, cost_method = ?
+             brand = ?, location = ?, note = ?, active = ?, cost_method = ?,
+             warranty_months = COALESCE(?, warranty_months),
+             warranty_note = CASE WHEN ? = 1 THEN ? ELSE warranty_note END
            WHERE id = ?`,
         [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
-          normCostMethod(b.cost_method), id]);
+          normCostMethod(b.cost_method),
+          /* Màn hình cũ không gửi hai ô bảo hành thì giữ nguyên giá trị đang có */
+          b.warranty_months === undefined ? null : Math.max(0, Math.round(Number(b.warranty_months) || 0)),
+          b.warranty_note === undefined ? 0 : 1, String(b.warranty_note ?? '').trim() || null,
+          id]);
       saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái');
     });
     res.json(hydrate(get('SELECT * FROM products WHERE id = ?', [id])));

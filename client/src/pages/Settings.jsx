@@ -645,7 +645,7 @@ function Warehouses() {
 
 function WarrantySettings() {
   const { settings, saveSettings, toast } = useApp();
-  const [form, setForm] = useState({ keep_days: 30, photo_keep_days: 60 });
+  const [form, setForm] = useState({ keep_days: 30, photo_keep_days: 60, labor_presets: [] });
   const [busy, setBusy] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const { data: usage, reload: reloadUsage } = useFetch(() => api.photoUsage(), []);
@@ -653,14 +653,24 @@ function WarrantySettings() {
   useEffect(() => {
     setForm({
       keep_days: Number(settings?.warranty?.keep_days) || 30,
-      photo_keep_days: Number(settings?.warranty?.photo_keep_days) ?? 60,
+      /* Không dùng Number(x) ?? 60: Number(undefined) là NaN chứ không rỗng */
+      photo_keep_days: settings?.warranty?.photo_keep_days ?? 60,
+      labor_presets: Array.isArray(settings?.warranty?.labor_presets) ? settings.warranty.labor_presets : [],
     });
   }, [settings]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await saveSettings({ warranty: form });
+      await saveSettings({
+        warranty: {
+          ...(settings?.warranty || {}),
+          ...form,
+          labor_presets: form.labor_presets
+            .filter((x) => String(x.name || '').trim())
+            .map((x) => ({ name: String(x.name).trim(), price: Math.max(0, Math.round(Number(x.price) || 0)) })),
+        },
+      });
       toast('Đã lưu thiết lập bảo hành', 'ok');
       reloadUsage();
     } catch (e) {
@@ -685,6 +695,30 @@ function WarrantySettings() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Bảng giá tiền công sửa chữa</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Kỹ thuật viên chọn nhanh ở phiếu sửa chữa thay vì gõ tay. Vẫn gõ số khác được.
+        </p>
+        <div className="space-y-1.5">
+          {form.labor_presets.map((p, i) => (
+            <div key={i} className="flex gap-1.5 items-center">
+              <Input aria-label={`Tên công việc ${i + 1}`} value={p.name} placeholder="VD: Quấn lại motor quạt"
+                className="flex-1"
+                onChange={(e) => setForm((x) => ({ ...x, labor_presets: x.labor_presets.map((q, j) => (j === i ? { ...q, name: e.target.value } : q)) }))} />
+              <MoneyInput aria-label={`Tiền công ${i + 1}`} value={p.price} className="!w-36"
+                onChange={(v) => setForm((x) => ({ ...x, labor_presets: x.labor_presets.map((q, j) => (j === i ? { ...q, price: v } : q)) }))} />
+              <IconButton icon={Trash2} label={`Bỏ công việc ${i + 1}`} size={15} className="!text-danger hover:!bg-red-50"
+                onClick={() => setForm((x) => ({ ...x, labor_presets: x.labor_presets.filter((_, j) => j !== i) }))} />
+            </div>
+          ))}
+          <Button size="sm" variant="soft" icon={Plus}
+            onClick={() => setForm((x) => ({ ...x, labor_presets: [...x.labor_presets, { name: '', price: 0 }] }))}>
+            Thêm công việc
+          </Button>
+        </div>
+      </div>
+
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-1">Giữ hàng khách gửi bảo hành</h2>
         <p className="text-2xs text-muted-ink mb-3">

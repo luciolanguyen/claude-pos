@@ -91,8 +91,9 @@ app.use('/api', (req, res, next) => {
 const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
   'last_purchase_price'];
 
+/* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
+   chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */
 app.use('/api', (req, res, next) => {
-  if (req.method !== 'GET') return next();
   if (!isLoginRequired()) return next();
   const u = whoami(req);
   if (u && u.active && permsOf(u.role).includes('cost.view')) return next();

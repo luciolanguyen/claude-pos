@@ -12,6 +12,8 @@ export const CASH_CATEGORIES = {
     { code: 'deposit_in', label: 'Khách đặt cọc đơn hàng' },
     { code: 'purchase_return', label: 'NCC hoàn tiền trả hàng' },
     { code: 'capital_in', label: 'Chủ góp vốn' },
+    { code: 'warranty_in', label: 'Thu sửa chữa / bảo hành' },
+    { code: 'custom_parts_in', label: 'Doanh thu linh kiện ngoài hệ thống' },
     { code: 'other_in', label: 'Thu khác' },
   ],
   out: [

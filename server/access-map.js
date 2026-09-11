@@ -60,6 +60,9 @@ export const ACCESS_RULES = [
   ['*',    /^\/products\/\d+\/suppliers$/, 'purchase.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
+  /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá
+     đơn thấy dấu "đã từng bảo hành" thì phải bấm xem được (tài liệu 09) */
+  ['GET',  /^\/warranty-history$/,        'sale.view'],
   ['*',    /^\/warranty/,                 'warranty.manage'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */

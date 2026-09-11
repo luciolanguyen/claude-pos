@@ -4,6 +4,7 @@ import {
   addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
+  maxDebtDaysFor,
 } from '../policy.js';
 import { debtBreakdown, overdueInvoices } from '../debt.js';
 import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
@@ -47,7 +48,9 @@ r.get('/sales', (req, res) => {
            u.full_name AS user_name, w.name AS warehouse_name,
            (s.total - s.paid) AS remaining,
            (s.total - s.vat_amount - s.cogs) AS profit,
-           (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count
+           (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
+           (SELECT COUNT(*) FROM warranty_tickets wt
+             WHERE wt.sale_id = s.id AND wt.status <> 'cancelled') AS warranty_count
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN users u ON u.id = s.user_id
@@ -91,7 +94,14 @@ r.get('/sales/:id', (req, res) => {
     it.returned_qty = returned.get(it.id) || 0;
     it.returnable_qty = Math.max(0, it.qty - it.returned_qty);
     it.no_return_category = noReturnCategoryOf(it.product_id);
+    /* Mặt hàng này của hoá đơn đã từng vào tiệm bảo hành / sửa chữa chưa */
+    it.warranty_count = get(`
+      SELECT COUNT(*) AS n FROM warranty_tickets
+      WHERE sale_id = ? AND COALESCE(product_id, 0) = COALESCE(?, 0) AND status <> 'cancelled'`,
+    [s.id, it.product_id]).n;
   }
+  s.warranty_count = get(`SELECT COUNT(*) AS n FROM warranty_tickets
+                          WHERE sale_id = ? AND status <> 'cancelled'`, [s.id]).n;
   s.age_days = get(`SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER) AS d`, [s.ts]).d;
   s.return_days = policy.returnDays;
   s.return_expired = policy.returnDays > 0 && s.age_days > policy.returnDays;
@@ -214,12 +224,13 @@ export function createSale(b) {
 
     /* 2. Còn hoá đơn nợ quá hạn thì không bán nợ thêm, bắt trả đủ (tài liệu 05).
           Chặn cứng, không mở bằng PIN: muốn bán nợ tiếp thì thu nợ cũ trước. */
-    if (fromRoute && policy.maxDebtDays > 0) {
-      const od = overdueInvoices(b.customer_id, policy.maxDebtDays);
+    const maxDays = fromRoute ? maxDebtDaysFor(b.customer_id) : 0;
+    if (maxDays > 0) {
+      const od = overdueInvoices(b.customer_id, maxDays);
       if (od.length) {
         const oldest = od[0];
         throw badRequest(
-          `"${c?.name}" còn ${od.length} hoá đơn nợ quá ${policy.maxDebtDays} ngày `
+          `"${c?.name}" còn ${od.length} hoá đơn nợ quá ${maxDays} ngày `
           + `(cũ nhất ${oldest.code}, ${oldest.age_days} ngày, còn nợ ${fmt(oldest.remaining)} đ). `
           + 'Đơn mới phải trả đủ tiền, không bán nợ thêm được.', 'OVERDUE_BLOCK');
       }
@@ -370,15 +381,17 @@ export function createSale(b) {
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
-                                    warranty_months, warranty_until, serial, list_price)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    warranty_months, warranty_until, serial, list_price, warranty_note)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, it.product_id, it.name_snapshot || '', it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._discount,
             it.discount_type === 'percent' ? 'percent' : 'amount',
             Number(it.discount_percent) || 0,
             Number(it.vat_rate) || 0, it._unitCost, it._amount, it.note || null,
             wm, wUntil, it.serial?.trim() || null,
-            listPrice ?? Math.round(Number(it.price) || 0)]);
+            listPrice ?? Math.round(Number(it.price) || 0),
+            /* Điều kiện bảo hành in lên phiếu bảo hành — chỉ khi dòng có bảo hành */
+            wm > 0 ? (String(it.warranty_note ?? '').trim() || null) : null]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,

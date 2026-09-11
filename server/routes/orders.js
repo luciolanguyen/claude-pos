@@ -7,6 +7,11 @@
 
    Đơn đặt hàng KHÔNG trừ kho. Kho chỉ trừ lúc xuất hoá đơn giao hàng,
    vì hàng chưa chắc đã có trong tiệm lúc nhận đơn.
+
+   Đợt 14 (tài liệu 12): mỗi lần nhận cọc ghi rõ AI đưa tiền; mỗi đợt giao
+   chọn khách tự lấy hay giao tận nơi; và chi tiết đơn trả kèm khối tổng kết
+   (hàng đặt, các lần giao, các lần cọc, còn nợ) để in phiếu tổng kết theo
+   thời gian thực.
    ==================================================================== */
 import { Router } from 'express';
 import {
@@ -61,6 +66,15 @@ function refreshStatus(orderId) {
     [next, next, orderId]);
 }
 
+/** Tên khách đứng trên đơn — dùng làm người đưa cọc mặc định. */
+function orderCustomerName(o) {
+  if (o?.customer_id) {
+    const c = get('SELECT name FROM customers WHERE id = ?', [o.customer_id]);
+    if (c?.name) return c.name;
+  }
+  return o?.customer_name || 'Khách lẻ';
+}
+
 /* =========================== DANH SÁCH ============================= */
 
 r.get('/orders', (req, res) => {
@@ -99,6 +113,7 @@ r.get('/orders', (req, res) => {
            (SELECT COUNT(*) FROM sale_order_items i WHERE i.order_id = o.id) AS item_count,
            (SELECT COUNT(*) FROM sale_order_items i
              WHERE i.order_id = o.id AND i.delivered_qty < i.qty - 0.0001) AS pending_lines,
+           (SELECT COUNT(*) FROM sale_order_deliveries d WHERE d.order_id = o.id) AS delivery_count,
            CASE WHEN o.status IN ('open','partial') AND o.promised_at IS NOT NULL
                      AND date(o.promised_at) < date('now','localtime')
                 THEN 1 ELSE 0 END AS is_late
@@ -235,11 +250,21 @@ r.get('/orders/:id', (req, res) => {
 
   o.deliveries = all(`
     SELECT d.*, s.code AS sale_code, s.total AS sale_total, s.paid AS sale_paid,
+           s.vat_amount AS sale_vat, s.ship_fee, s.ship_payer, s.status AS sale_status,
+           s.delivery_status, s.cod_status, s.cod_amount, s.delivery_name, s.delivery_phone,
+           s.delivery_address, ca.name AS carrier_name, s.shipper_name,
            u.full_name AS user_name
     FROM sale_order_deliveries d
     LEFT JOIN sales s ON s.id = d.sale_id
+    LEFT JOIN carriers ca ON ca.id = s.carrier_id
     LEFT JOIN users u ON u.id = d.user_id
     WHERE d.order_id = ? ORDER BY d.id`, [o.id]);
+  o.deliveries.forEach((d, i) => {
+    d.seq = i + 1;
+    d.items = d.sale_id
+      ? all('SELECT name_snapshot, unit_name, qty, amount FROM sale_items WHERE sale_id = ? ORDER BY id', [d.sale_id])
+      : [];
+  });
 
   o.deposits = all(`
     SELECT dp.*, a.name AS account_name, u.full_name AS user_name
@@ -247,6 +272,30 @@ r.get('/orders/:id', (req, res) => {
     LEFT JOIN cash_accounts a ON a.id = dp.account_id
     LEFT JOIN users u ON u.id = dp.user_id
     WHERE dp.order_id = ? ORDER BY dp.id`, [o.id]);
+  const customerName = orderCustomerName(o);
+  let seq = 0;
+  for (const dp of o.deposits) {
+    dp.seq = dp.amount > 0 ? ++seq : null;            // hoàn cọc không đánh số lần
+    dp.payer_display = dp.payer_name || customerName;
+  }
+
+  /* Khối tổng kết cho phiếu in (tài liệu 12, mục 3.2). "Đã giao" tính theo
+     tiền hàng của các hoá đơn giao, không kể phí ship. Khách trả thêm lúc
+     nhận hàng cũng trừ vào nợ còn lại — nếu không, khách đã trả đủ khi lấy
+     hàng vẫn thấy mình còn nợ trên phiếu. */
+  const delivered = o.deliveries.filter((d) => d.sale_status !== 'cancelled');
+  const deliveredValue = delivered.reduce((a, d) =>
+    a + (d.sale_total || 0) - (d.sale_vat || 0) - (d.ship_payer === 'customer' ? (d.ship_fee || 0) : 0), 0);
+  const paidAtDelivery = delivered.reduce((a, d) => a + Math.max(0, (d.sale_paid || 0) - (d.deposit_applied || 0)), 0);
+  o.summary = {
+    total: o.total,
+    deposit_total: o.deposit,
+    deposit_count: seq,
+    delivered_value: deliveredValue,
+    paid_at_delivery: paidAtDelivery,
+    remaining: Math.max(0, o.total - o.deposit - paidAtDelivery),
+    delivery_count: o.deliveries.length,
+  };
 
   o.store = getSettings().store || {};
   res.json(o);
@@ -300,7 +349,12 @@ r.post('/orders', (req, res) => {
 
       // Tiền cọc nhận ngay lúc lập đơn
       const dep = money(b.deposit);
-      if (dep > 0) addDeposit(id, code, dep, b);
+      if (dep > 0) {
+        if (dep > t.total) {
+          throw Object.assign(new Error('Tiền cọc không được lớn hơn tổng tiền đơn hàng.'), { status: 400 });
+        }
+        addDeposit(id, code, dep, { ...b, note: b.deposit_note ?? null });
+      }
       return { id, code, total: t.total, deposit: dep };
     });
     res.json(out);
@@ -367,26 +421,37 @@ r.put('/orders/:id', (req, res) => {
 
 /* ============================= TIỀN CỌC ============================ */
 
-/** Ghi một lần khách đưa cọc. Phải gọi bên trong tx(). */
+/**
+ * Ghi một lần khách đưa cọc. Phải gọi bên trong tx().
+ * Người đưa cọc bỏ trống thì lấy tên khách đứng trên đơn (tài liệu 12, mục 2.1).
+ * Trả về số thứ tự lần cọc (lần 1, lần 2...) để in đúng "phiếu thu cọc lần X".
+ */
 function addDeposit(orderId, orderCode, amount, b) {
   const o = get('SELECT customer_id, customer_name FROM sale_orders WHERE id = ?', [orderId]);
-  const cust = o?.customer_id ? get('SELECT name FROM customers WHERE id = ?', [o.customer_id]) : null;
+  const customerName = orderCustomerName(o);
+  const payer = String(b.payer_name ?? '').trim() || customerName;
   const accountId = Number(b.account_id) || defaultCashAccount('cash');
   let cashTxId = null;
   if (accountId) {
     const t = addCashTx({
       accountId, direction: 'in', amount, category: 'deposit_in',
       partnerType: 'customer', partnerId: o?.customer_id || null,
-      partnerName: cust?.name || o?.customer_name || 'Khách lẻ',
+      partnerName: customerName,
       refType: 'sale_order', refId: orderId, refCode: orderCode, userId: b.user_id || null,
-      note: b.note || `Khách đặt cọc đơn ${orderCode}`, ts: b.ts || null,
+      note: b.note || (payer !== customerName
+        ? `Đặt cọc đơn ${orderCode} — ${payer} nộp thay ${customerName}`
+        : `Khách đặt cọc đơn ${orderCode}`),
+      ts: b.ts || null,
     });
     cashTxId = t?.id ?? t ?? null;
   }
-  run(`INSERT INTO sale_order_deposits(order_id, ts, amount, account_id, cash_tx_id, user_id, note)
-       VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?)`,
-    [orderId, b.ts || null, amount, accountId || null, cashTxId, b.user_id || null, b.note || null]);
+  const info = run(`INSERT INTO sale_order_deposits(order_id, ts, amount, account_id, cash_tx_id, user_id, note, payer_name)
+       VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?)`,
+    [orderId, b.ts || null, amount, accountId || null, cashTxId, b.user_id || null, b.note || null, payer]);
   run('UPDATE sale_orders SET deposit = deposit + ? WHERE id = ?', [amount, orderId]);
+  const seq = get('SELECT COUNT(*) AS n FROM sale_order_deposits WHERE order_id = ? AND amount > 0 AND id <= ?',
+    [orderId, Number(info.lastInsertRowid)]).n;
+  return { id: Number(info.lastInsertRowid), seq, payer_name: payer, cash_tx_id: cashTxId };
 }
 
 r.post('/orders/:id/deposit', (req, res) => {
@@ -402,8 +467,8 @@ r.post('/orders/:id/deposit', (req, res) => {
     });
   }
   try {
-    tx(() => addDeposit(o.id, o.code, amount, req.body));
-    res.json({ ok: true });
+    const dep = tx(() => addDeposit(o.id, o.code, amount, req.body));
+    res.json({ ok: true, deposit_id: dep.id, deposit_no: dep.seq, payer_name: dep.payer_name, cash_tx_id: dep.cash_tx_id });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -412,7 +477,12 @@ r.post('/orders/:id/deposit', (req, res) => {
 /* ============================ GIAO HÀNG ============================ *
  * Mỗi đợt giao xuất một hoá đơn bán riêng. Tiền cọc còn lại được trừ
  * vào hoá đơn đó, ghi thành khoản đã trả — không tạo thêm phiếu thu,
- * vì tiền đã vào quỹ từ lúc nhận cọc rồi.                             */
+ * vì tiền đã vào quỹ từ lúc nhận cọc rồi.
+ *
+ * Hai hình thức (tài liệu 12, mục 2.2):
+ *   pickup  khách tự lấy tại quầy — xuất kho, xong ngay
+ *   ship    giao tận nơi — hoá đơn mang thông tin giao, đi vào bảng theo
+ *           dõi giao hàng; phần khách chưa trả là tiền thu hộ (COD)     */
 
 r.post('/orders/:id/deliver', (req, res) => {
   const o = get('SELECT * FROM sale_orders WHERE id = ?', [req.params.id]);
@@ -440,6 +510,30 @@ r.post('/orders/:id/deliver', (req, res) => {
     toDeliver.push({ line, qty });
   }
   if (!toDeliver.length) return res.status(400).json({ error: 'Chưa chọn mặt hàng nào để giao' });
+
+  /* Không nói rõ hình thức thì theo đơn: đơn có địa chỉ giao là giao tận nơi
+     (giữ đúng cách làm trước đợt 14) */
+  const mode = b.mode === 'ship' || b.mode === 'pickup' ? b.mode : (o.delivery_address ? 'ship' : 'pickup');
+  const ship = mode === 'ship' ? {
+    delivery_name: b.delivery_name ?? o.delivery_name,
+    delivery_phone: b.delivery_phone ?? o.delivery_phone,
+    delivery_address: b.delivery_address ?? o.delivery_address,
+    carrier_id: b.carrier_id ?? o.carrier_id,
+    tracking_code: b.tracking_code || null,
+    shipper_name: b.shipper_name || null,
+    shipper_user_id: b.shipper_user_id || null,
+    shipper_phone: b.shipper_phone || null,
+    ship_fee: money(b.ship_fee),
+    ship_payer: b.ship_payer === 'shop' ? 'shop' : 'customer',
+    cod_mode: b.cod_mode,
+    delivery_note: b.delivery_note || null,
+  } : {};
+  if (mode === 'ship' && !ship.delivery_address && !ship.carrier_id && !ship.shipper_name && !ship.shipper_user_id) {
+    return res.status(400).json({
+      error: 'Giao tận nơi thì cần địa chỉ giao, hoặc đơn vị vận chuyển / người giao hàng.',
+      code: 'SHIP_INFO_REQUIRED',
+    });
+  }
 
   try {
     const out = tx(() => {
@@ -490,8 +584,7 @@ r.post('/orders/:id/deliver', (req, res) => {
         transfer_amount: b.payment_method === 'transfer' ? paidNow : 0,
         cash_account_id: b.account_id || null,
         transfer_account_id: b.account_id || null,
-        delivery_name: o.delivery_name, delivery_phone: o.delivery_phone,
-        delivery_address: o.delivery_address, carrier_id: o.carrier_id,
+        ...ship,
         note: `Giao đơn đặt hàng ${o.code}${b.note ? ' — ' + b.note : ''}`,
       });
 
@@ -499,15 +592,19 @@ r.post('/orders/:id/deliver', (req, res) => {
         run('UPDATE sale_order_items SET delivered_qty = delivered_qty + ? WHERE id = ?', [qty, line.id]);
       }
       run('UPDATE sale_orders SET deposit_used = deposit_used + ? WHERE id = ?', [useDeposit, o.id]);
-      run(`INSERT INTO sale_order_deliveries(order_id, sale_id, ts, user_id, deposit_applied, note)
-           VALUES(?, ?, COALESCE(?, datetime('now','localtime')), ?, ?, ?)`,
-        [o.id, sale.id, b.ts || null, b.user_id || null, useDeposit, b.note || null]);
+      const d = run(`INSERT INTO sale_order_deliveries(order_id, sale_id, ts, user_id, deposit_applied, note, mode)
+           VALUES(?, ?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?)`,
+        [o.id, sale.id, b.ts || null, b.user_id || null, useDeposit, b.note || null, mode]);
       refreshStatus(o.id);
 
       return {
         sale_id: sale.id, sale_code: sale.code, sale_total: sale.total,
         deposit_applied: useDeposit, paid: sale.paid,
         remaining: sale.total - sale.paid,
+        cod_amount: sale.cod_amount || 0,
+        mode,
+        delivery_id: Number(d.lastInsertRowid),
+        delivery_no: get('SELECT COUNT(*) AS n FROM sale_order_deliveries WHERE order_id = ?', [o.id]).n,
         status: get('SELECT status FROM sale_orders WHERE id = ?', [o.id]).status,
       };
     });

@@ -21,6 +21,7 @@ const EMPTY = {
   sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
   cost_price: 0, vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
+  warranty_months: 0, warranty_note: '',
   opening_qty: 0, opening_warehouse_id: '',
   cost_method: '',        // rỗng = theo thiết lập chung của tiệm
 };
@@ -187,6 +188,23 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           </Field>
           <Field label="Vị trí trên kệ" htmlFor="pf-loc">
             <Input id="pf-loc" value={form.location || ''} onChange={set('location')} placeholder="Kệ A1" />
+          </Field>
+          {/* Bảo hành mặc định (tài liệu 09, mục 4): tự điền khi bán, in lên phiếu bảo hành */}
+          <Field label="Bảo hành mặc định (tháng)" hint="0 = không bảo hành" htmlFor="pf-wm">
+            <div className="flex items-center gap-1.5">
+              <QtyInput id="pf-wm" size="md" value={form.warranty_months || 0} min={0} className="flex-1"
+                onChange={(v) => setForm((f) => ({ ...f, warranty_months: Math.max(0, Math.round(Number(v) || 0)) }))} />
+              {[6, 12, 24].map((m) => (
+                <button key={m} type="button" onClick={() => setForm((f) => ({ ...f, warranty_months: m }))}
+                  className={`btn btn-sm ${Number(form.warranty_months) === m ? 'btn-soft' : 'btn-outline'}`}>
+                  {m}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành khi bán" htmlFor="pf-wn">
+            <Input id="pf-wn" value={form.warranty_note || ''} onChange={set('warranty_note')}
+              disabled={!(Number(form.warranty_months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
           </Field>
         </div>
 

@@ -9,7 +9,8 @@
    ==================================================================== */
 import { Router } from 'express';
 import { all, get, run, tx, addCashTx, defaultCashAccount, customerDebt } from '../db.js';
-import { verifyPin, issueApproval, posPolicy } from '../policy.js';
+import { verifyPin, issueApproval, posPolicy, maxDebtDaysFor } from '../policy.js';
+import { customerBuyers, proxyStats } from '../customers.js';
 import { customerLedger, overdueInvoices } from '../debt.js';
 import { lookupVoucher } from '../vouchers.js';
 
@@ -49,13 +50,13 @@ r.get('/pos/policy', (req, res) => res.json(posPolicy()));
 r.get('/customers/:id/credit-status', (req, res) => {
   const c = get('SELECT id, name, debt_limit FROM customers WHERE id = ?', [req.params.id]);
   if (!c) return res.status(404).json({ error: 'Không tìm thấy khách hàng' });
-  const policy = posPolicy();
+  const maxDays = maxDebtDaysFor(c.id);
   const debt = customerDebt(c.id);
-  const overdue = overdueInvoices(c.id, policy.maxDebtDays);
+  const overdue = overdueInvoices(c.id, maxDays);
   res.json({
     id: c.id, name: c.name, debt, debt_limit: c.debt_limit,
     available: c.debt_limit > 0 ? c.debt_limit - debt : null,
-    max_debt_days: policy.maxDebtDays,
+    max_debt_days: maxDays,
     blocked_overdue: overdue.length > 0,
     overdue: overdue.map((i) => ({
       id: i.id, code: i.code, ts: i.ts, remaining: i.remaining, age_days: i.age_days,
@@ -65,17 +66,18 @@ r.get('/customers/:id/credit-status', (req, res) => {
 
 /** Sổ phụ công nợ thu nhỏ, mới nhất trên cùng. */
 r.get('/customers/:id/ledger', (req, res) => {
-  const c = get('SELECT id, code, name, phone, address, debt_limit FROM customers WHERE id = ?',
+  const c = get(`SELECT id, code, name, phone, address, debt_limit, customer_type, max_debt_days
+                 FROM customers WHERE id = ?`,
     [req.params.id]);
   if (!c) return res.status(404).json({ error: 'Không tìm thấy khách hàng' });
-  const policy = posPolicy();
+  const maxDays = maxDebtDaysFor(c.id);
   const led = customerLedger(c.id);
-  const overdue = policy.maxDebtDays > 0
-    ? led.invoices.filter((i) => i.age_days > policy.maxDebtDays) : [];
+  const overdue = maxDays > 0
+    ? led.invoices.filter((i) => i.age_days > maxDays) : [];
   res.json({
     customer: c,
     ...led,
-    max_debt_days: policy.maxDebtDays,
+    max_debt_days: maxDays,
     overdue_count: overdue.length,
     over_limit: c.debt_limit > 0 && led.debt > c.debt_limit,
   });
@@ -88,22 +90,7 @@ r.get('/customers/:id/ledger', (req, res) => {
  * để thu ngân bấm chọn một phát thay vì gõ lại tên, số điện thoại.
  */
 r.get('/customers/:id/buyers', (req, res) => {
-  res.json(all(`
-    SELECT s.buyer_id,
-           COALESCE(b.name, s.buyer_name) AS name,
-           COALESCE(b.phone, s.buyer_phone) AS phone,
-           COUNT(*) AS times,
-           COALESCE(SUM(s.total), 0) AS total,
-           MAX(s.ts) AS last_ts
-    FROM sales s
-    LEFT JOIN customers b ON b.id = s.buyer_id
-    WHERE s.customer_id = ? AND s.status = 'done'
-      AND (s.buyer_id IS NOT NULL
-           OR COALESCE(s.buyer_name, '') <> '' OR COALESCE(s.buyer_phone, '') <> '')
-    GROUP BY COALESCE(CAST(s.buyer_id AS TEXT),
-                      'x:' || COALESCE(s.buyer_phone, '') || ':' || COALESCE(s.buyer_name, ''))
-    ORDER BY times DESC, last_ts DESC
-    LIMIT 10`, [req.params.id]));
+  res.json(customerBuyers(req.params.id));
 });
 
 /**
@@ -112,15 +99,7 @@ r.get('/customers/:id/buyers', (req, res) => {
  * kê riêng của người đi mua giùm.
  */
 r.get('/customers/:id/proxy-stats', (req, res) => {
-  const id = Number(req.params.id);
-  res.json(get(`
-    SELECT COUNT(*) AS times,
-           COALESCE(SUM(total), 0) AS total,
-           COUNT(DISTINCT customer_id) AS for_customers,
-           MAX(ts) AS last_ts
-    FROM sales
-    WHERE buyer_id = ? AND status = 'done'
-      AND (customer_id IS NULL OR customer_id <> ?)`, [id, id]));
+  res.json(proxyStats(req.params.id));
 });
 
 /* ---------------------------- Phiếu đổi hàng ------------------------- */

@@ -14,7 +14,7 @@
    ==================================================================== */
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Minus, Trash2, History, StickyNote, Tag, X } from 'lucide-react';
+import { Plus, Minus, Trash2, History, StickyNote, Tag, X, ShieldCheck, ShieldPlus } from 'lucide-react';
 import { n, qty as fq } from '../lib/format';
 import { IconButton, Badge } from './ui';
 
@@ -411,7 +411,38 @@ export function CartLine({
           )}
           {overStock && <Badge tone="bad">Vượt tồn ({fq(l.stock)} {l.base_unit})</Badge>}
           {l.note && <span className="text-2xs text-info truncate max-w-[180px]">Ghi chú: {l.note}</span>}
-          {l.warrantyMonths > 0 && <Badge tone="ok">BH {l.warrantyMonths} tháng</Badge>}
+          {l.warrantyMonths > 0 ? (
+            <button
+              type="button"
+              onClick={onNote}
+              aria-label={`Bảo hành ${l.warrantyMonths} tháng cho ${l.name} — bấm để sửa hoặc huỷ bảo hành`}
+              className="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5
+                         text-2xs font-semibold text-emerald-800 cursor-pointer transition-colors duration-150 hover:bg-emerald-100"
+            >
+              <ShieldCheck size={11} aria-hidden="true" /> BH {l.warrantyMonths} tháng
+            </button>
+          ) : l.warrantyDefault > 0 ? (
+            <button
+              type="button"
+              onClick={onNote}
+              aria-label={`Đã huỷ bảo hành ${l.name} cho hoá đơn này — bấm để bật lại`}
+              className="inline-flex items-center gap-0.5 rounded border border-dashed border-line px-1.5 py-0.5
+                         text-2xs font-semibold text-muted-ink line-through cursor-pointer transition-colors duration-150 hover:text-ink"
+            >
+              <ShieldCheck size={11} aria-hidden="true" /> BH {l.warrantyDefault} tháng
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onNote}
+              aria-label={`Thêm bảo hành cho ${l.name}`}
+              title="Thêm bảo hành cho món này"
+              className="inline-flex items-center justify-center rounded border border-dashed border-line w-6 h-5
+                         text-muted-ink cursor-pointer transition-colors duration-150 hover:text-ink hover:border-slate-400"
+            >
+              <ShieldPlus size={11} aria-hidden="true" />
+            </button>
+          )}
           {l.serial && <span className="text-2xs text-muted-ink font-mono">SN {l.serial}</span>}
         </div>
         {/* Giá vốn và giá nhập gần nhất đặt song song: vốn bình quân có khi

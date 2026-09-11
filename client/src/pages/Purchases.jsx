@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag,
+  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
@@ -16,6 +16,7 @@ import { ProductPicker } from '../components/ProductPicker';
 import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
+import { PurchaseReturnForm } from './Returns';
 
 export default function Purchases() {
   const { toast, meta, user } = useApp();
@@ -39,6 +40,7 @@ export default function Purchases() {
   const [cancelling, setCancelling] = useState(null);
   const [paying, setPaying] = useState(null);
   const [labelsOf, setLabelsOf] = useState(null);
+  const [returnOf, setReturnOf] = useState(null);   // trả hàng NCC theo đúng phiếu đang xem
   const [busyAction, setBusyAction] = useState(false);
 
   /* Số tổng do máy chủ tính trên cả bộ lọc, không phải trang đang xem */
@@ -183,6 +185,7 @@ export default function Purchases() {
                               {p.code}
                             </button>
                             {p.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
+                            {p.custom_count > 0 && <Badge tone="bad" className="ml-1">Hàng giao sai</Badge>}
                           </td>
                           <td className="text-muted-ink whitespace-nowrap">{datetime(p.ts)}</td>
                           <td className="truncate max-w-[200px]">{p.supplier_name || '—'}</td>
@@ -246,6 +249,9 @@ export default function Purchases() {
             <Button variant="danger" icon={XCircle} onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
           )}
           <div className="flex-1" />
+          {detail.status === 'done' && (
+            <Button icon={Undo2} onClick={() => setReturnOf(detail)}>Trả hàng NCC</Button>
+          )}
           <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
           <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
           <Button onClick={() => setDetail(null)}>Đóng</Button>
@@ -288,6 +294,9 @@ export default function Purchases() {
                       <td>
                         <div className="font-semibold">{it.product_name}</div>
                         <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
+                        {it.returned_qty > 0 && (
+                          <div className="text-2xs text-warn font-semibold">Đã trả NCC {fq(it.returned_qty)} {it.unit_name}</div>
+                        )}
                       </td>
                       <td>{it.unit_name}</td>
                       <td className="num">{fq(it.qty)}</td>
@@ -309,6 +318,64 @@ export default function Purchases() {
                 </tbody>
               </table>
             </div>
+
+            {detail.custom_items?.length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50/40 p-2.5">
+                <div className="text-[13px] font-bold mb-1.5 flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-danger" aria-hidden="true" />
+                  Hàng giao sai / ngoài danh mục — tính vào tiền phiếu, không vào kho
+                </div>
+                <div className="table-wrap bg-white">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Tên hàng</th><th>ĐVT</th>
+                        <th className="text-right">SL</th>
+                        <th className="text-right">Giá NCC</th>
+                        <th className="text-right">Thành tiền</th>
+                        <th>Tình trạng</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.custom_items.map((c) => (
+                        <tr key={c.id}>
+                          <td className="font-semibold">
+                            {c.name}
+                            {c.note && <div className="text-2xs text-muted-ink font-normal">{c.note}</div>}
+                          </td>
+                          <td>{c.unit_name || '—'}</td>
+                          <td className="num">{fq(c.qty)}</td>
+                          <td className="num">{money(c.price)}</td>
+                          <td className="num font-semibold">{money(c.amount)}</td>
+                          <td>
+                            {c.returnable_qty > 0
+                              ? <Badge tone="bad">Hàng giao sai - Chờ trả {fq(c.returnable_qty)}</Badge>
+                              : <Badge tone="ok">Đã trả NCC</Badge>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {detail.returns?.length > 0 && (
+              <div className="text-[13px]">
+                <div className="font-bold mb-1">Đã trả hàng NCC theo phiếu này</div>
+                <ul className="divide-y divide-line border border-line rounded">
+                  {detail.returns.map((rt) => (
+                    <li key={rt.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                      <span className="font-mono font-semibold">{rt.code}</span>
+                      <span className="text-muted-ink">{datetime(rt.ts)}</span>
+                      <span className="flex-1" />
+                      {rt.expense > 0 && <span className="text-2xs text-muted-ink">chi phí trả {money(rt.expense)}</span>}
+                      <span className="tabular font-semibold">NCC trừ {money(rt.total)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="flex justify-end">
               <div className="w-full sm:w-72 space-y-1 text-[13px]">
@@ -345,6 +412,19 @@ export default function Purchases() {
           base_unit: it.base_unit,
           defaultCount: Math.max(1, Math.round(Number(it.qty) || 1)),
         }))}
+      />
+
+      {/* Trả hàng NCC theo đúng phiếu này (tài liệu 11) */}
+      <PurchaseReturnForm
+        open={!!returnOf}
+        purchaseId={returnOf?.id || null}
+        onClose={() => setReturnOf(null)}
+        onSaved={(code) => {
+          setReturnOf(null);
+          setDetail(null);
+          reload();
+          toast(`Đã lập phiếu trả hàng ${code}, công nợ NCC đã giảm`, 'ok', 6000);
+        }}
       />
 
       <PurchasePayModal
@@ -400,6 +480,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [draftId, setDraftId] = useState(null);
+  /* Hàng giao sai / ngoài danh mục (tài liệu 11): không mã, không vào kho,
+     nhưng tính vào tiền phiếu và công nợ NCC, chờ trả lại */
+  const [customLines, setCustomLines] = useState([]);
 
   const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open });
   const [creatingProduct, setCreatingProduct] = useState(false);
@@ -424,6 +507,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     setDraftId(draft?.id || null);
     setSupplierId(p?.supplier_id ?? null);
     setLines(fixLines(p?.lines));
+    setCustomLines(p?.custom_lines || []);
     setDiscount(p?.discount || 0);
     setOtherCost(p?.other_cost || 0);
     setPaid(p?.paid || 0);
@@ -464,6 +548,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
 
   const updateLine = (key, patch) => setLines((prev) => prev.map((l) => l.key === key ? { ...l, ...patch } : l));
   const removeLine = (key) => setLines((prev) => prev.filter((l) => l.key !== key));
+  const patchCustom = (i, patch) => setCustomLines((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
 
   const changeUnit = (line, unitId) => {
     const u = line.units.find((x) => x.id === Number(unitId));
@@ -493,13 +578,20 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
       subtotal += amt;
       if (applyVat) vat += Math.round(amt * (l.vat_rate || 0) / 100);
     }
-    return { subtotal, vat, saved, total: subtotal - discount + vat + otherCost };
-  }, [lines, discount, otherCost, applyVat]);
+    /* Hàng giao sai tính vào tiền phiếu và công nợ NCC — không thuế, không vào kho */
+    const custom = customLines.reduce((a, c) => a + Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)), 0);
+    subtotal += custom;
+    return { subtotal, vat, saved, custom, total: subtotal - discount + vat + otherCost };
+  }, [lines, customLines, discount, otherCost, applyVat]);
 
   useEffect(() => { setPaid(totals.total); }, [totals.total]);
 
   const submit = async () => {
-    if (!lines.length) { setErr('Phiếu nhập phải có ít nhất 1 mặt hàng.'); return; }
+    if (!lines.length && !customLines.length) { setErr('Phiếu nhập phải có ít nhất 1 mặt hàng.'); return; }
+    if (customLines.some((c) => !String(c.name || '').trim() || !(Number(c.qty) > 0))) {
+      setErr('Hàng giao sai phải ghi tên hàng và số lượng lớn hơn 0.');
+      return;
+    }
     setBusy(true);
     setErr('');
     try {
@@ -521,6 +613,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
           discount_percent: Number(l.discount_percent) || 0,
           discount: l.discount || 0,
           vat_rate: applyVat ? l.vat_rate : 0,
+        })),
+        custom_items: customLines.map((c) => ({
+          name: String(c.name).trim(), unit_name: c.unit_name || null, qty: Number(c.qty),
+          price: Math.round(Number(c.price) || 0), note: c.note || null,
         })),
       });
       /* Đã lưu chính thức thì bỏ bản nháp, để lần sau khỏi mở nhầm lại
@@ -548,7 +644,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         footer={<>
           <SaveDraftButton
             className="mr-auto"
-            disabled={!lines.length}
+            disabled={!lines.length && !customLines.length}
             onSaved={(d) => setDraftId(d.id)}
             build={() => ({
               kind: 'purchase',
@@ -558,17 +654,17 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                 : 'Phiếu nhập hàng',
               partner_name: suppliers?.find((x) => x.id === supplierId)?.name || null,
               total: totals.total,
-              item_count: lines.length,
+              item_count: lines.length + customLines.length,
               source: draft?.source || null,
               payload: {
-                supplier_id: supplierId, warehouse_id: warehouseId, lines,
+                supplier_id: supplierId, warehouse_id: warehouseId, lines, custom_lines: customLines,
                 discount, other_cost: otherCost, paid, account_id: accountId,
                 invoice_no: invoiceNo, due_date: dueDate, note,
               },
             })}
           />
           <Button onClick={onClose}>Huỷ</Button>
-          <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length}>
+          <Button variant="primary" onClick={submit} loading={busy} disabled={!lines.length && !customLines.length}>
             Lưu phiếu nhập
           </Button>
         </>}
@@ -693,6 +789,70 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
             </div>
           )}
 
+          {/* ---------- Hàng giao sai / ngoài danh mục (tài liệu 11) ---------- */}
+          <div className="rounded-lg border border-red-200 bg-red-50/40 p-2.5 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[13px]">
+                <span className="font-bold">Hàng giao sai / ngoài danh mục</span>
+                <span className="text-muted-ink"> — tính vào tiền phiếu và công nợ NCC, không vào kho, chờ trả lại</span>
+              </div>
+              <Button size="sm" variant="soft" icon={PackagePlus}
+                onClick={() => setCustomLines((cs) => [...cs, { key: `c${Date.now()}`, name: '', unit_name: '', qty: 1, price: 0, note: '' }])}>
+                Nhập hàng giao sai/ngoài danh mục
+              </Button>
+            </div>
+            {customLines.length > 0 && (
+              <div className="table-wrap bg-white">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Tên hàng NCC giao</th>
+                      <th style={{ width: 90 }}>ĐVT</th>
+                      <th style={{ width: 90 }} className="text-right">Số lượng</th>
+                      <th style={{ width: 130 }} className="text-right">Giá NCC tính</th>
+                      <th className="text-right">Thành tiền</th>
+                      <th style={{ width: 40 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customLines.map((c, i) => (
+                      <tr key={c.key || i}>
+                        <td>
+                          <Input size="sm" value={c.name} placeholder="Ví dụ: Bóng LED 9W giao nhầm mẫu"
+                            aria-label={`Tên hàng giao sai ${i + 1}`}
+                            onChange={(e) => patchCustom(i, { name: e.target.value })} />
+                          <Badge tone="bad" className="mt-1">
+                            <AlertTriangle size={10} aria-hidden="true" /> Hàng giao sai - Chờ trả
+                          </Badge>
+                        </td>
+                        <td>
+                          <Input size="sm" value={c.unit_name} placeholder="Cái" aria-label={`Đơn vị hàng giao sai ${i + 1}`}
+                            onChange={(e) => patchCustom(i, { unit_name: e.target.value })} />
+                        </td>
+                        <td>
+                          <QtyInput value={c.qty} onChange={(v) => patchCustom(i, { qty: v })}
+                            aria-label={`Số lượng hàng giao sai ${i + 1}`} />
+                        </td>
+                        <td>
+                          <MoneyInput size="sm" value={c.price} onChange={(v) => patchCustom(i, { price: v })}
+                            aria-label={`Giá NCC tính hàng giao sai ${i + 1}`} />
+                        </td>
+                        <td className="num font-semibold">
+                          {money(Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)))}
+                        </td>
+                        <td>
+                          <IconButton icon={Trash2} label={`Bỏ hàng giao sai ${i + 1}`} size={14}
+                            className="!text-danger hover:!bg-red-50"
+                            onClick={() => setCustomLines((cs) => cs.filter((_, j) => j !== i))} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-3">
               <Field label="Hạn thanh toán" hint="Tự điền theo số ngày công nợ của NCC">
@@ -710,6 +870,12 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                   <span className="text-muted-ink">Tiền hàng</span>
                   <span className="tabular font-mono font-semibold">{money(totals.subtotal)}</span>
                 </div>
+                {totals.custom > 0 && (
+                  <div className="flex items-center justify-between text-2xs text-danger -mt-1">
+                    <span>trong đó hàng giao sai (không vào kho)</span>
+                    <span className="tabular font-mono">{money(totals.custom)}</span>
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between gap-2 text-[13px]">
                   <label htmlFor="pf-disc" className="text-muted-ink">Chiết khấu NCC cho</label>

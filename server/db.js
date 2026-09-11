@@ -189,6 +189,70 @@ addColumns('draft_sales', { tab_no: 'INTEGER' });
   }
 }
 
+/* ------------------- Đợt 14: năm tài liệu đặc tả tiếp theo ------------------- */
+
+/* Hồ sơ khách gộp công nợ (tài liệu 08): loại khách, và số ngày nợ tối đa
+   riêng từng khách. Để trống max_debt_days = theo chính sách chung của tiệm;
+   ghi 0 = khách này không giới hạn số ngày. */
+addColumns('customers', {
+  customer_type: "TEXT NOT NULL DEFAULT 'member'",   // member | vip | wholesale
+  max_debt_days: 'INTEGER',
+});
+
+/* Phiếu chi trả nợ NCC ghi lại chuyển vào tài khoản nào của NCC (tài liệu 10) */
+addColumns('cash_transactions', { counterparty_account: 'TEXT' });
+
+/* Trả hàng NCC (tài liệu 11): dòng nào của phiếu nhập gốc, chi phí trả hàng */
+addColumns('purchase_return_items', { purchase_item_id: 'INTEGER' });
+addColumns('purchase_returns', {
+  expense: 'INTEGER NOT NULL DEFAULT 0',
+  expense_note: 'TEXT',
+  mode: "TEXT NOT NULL DEFAULT 'free'",             // by_purchase | free
+});
+
+/* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
+addColumns('sale_order_deposits', { payer_name: 'TEXT' });
+addColumns('sale_order_deliveries', { mode: "TEXT NOT NULL DEFAULT 'pickup'" });
+
+/* Bảo hành và sửa chữa (tài liệu 09) */
+addColumns('products', {
+  warranty_months: 'INTEGER NOT NULL DEFAULT 0',    // bảo hành mặc định khi bán
+  warranty_note: 'TEXT',                            // điều kiện bảo hành
+});
+addColumns('sale_items', { warranty_note: 'TEXT' });
+addColumns('warranty_tickets', {
+  ticket_type: "TEXT NOT NULL DEFAULT 'warranty'",  // warranty | repair
+  discount: 'INTEGER NOT NULL DEFAULT 0',           // miễn giảm cho khách
+  custom_parts_price: 'INTEGER NOT NULL DEFAULT 0', // linh kiện mua ngoài
+  fees_total: 'INTEGER NOT NULL DEFAULT 0',         // phí phát sinh khác
+  technician_id: 'INTEGER',
+  exchange_mode: 'TEXT',                            // inherit | reset
+  exchange_warranty_until: 'TEXT',
+  exchange_serial: 'TEXT',
+  exchange_qty: 'REAL',
+});
+addColumns('warranty_parts', {
+  list_price: 'INTEGER NOT NULL DEFAULT 0',         // giá niêm yết lúc thêm
+  /* Linh kiện giữ trên phiếu, chỉ trừ kho khi hoàn thành. Dòng của phiếu cũ
+     đã trừ kho từ lúc thêm nên mặc định 1 — không trừ lần nữa. */
+  stock_applied: 'INTEGER NOT NULL DEFAULT 1',
+  approved_by: 'INTEGER',                           // ai duyệt giá dưới giá vốn
+});
+db.exec('CREATE INDEX IF NOT EXISTS idx_pri_pitem ON purchase_return_items(purchase_item_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_customers_type ON customers(customer_type)');
+
+/* Chuyển số điện thoại và tài khoản ngân hàng đang ghi một ô chữ sang bảng
+   nhiều dòng. Chạy mỗi lần khởi động nhưng chỉ đụng NCC chưa có dòng nào,
+   nên chạy lại vô hại; NCC đã xoá hết số thì ô chữ cũng đã được xoá theo. */
+db.exec(`INSERT INTO supplier_phones(supplier_id, phone, label, sort_order)
+         SELECT s.id, trim(s.phone), NULL, 0 FROM suppliers s
+         WHERE COALESCE(trim(s.phone), '') <> ''
+           AND NOT EXISTS (SELECT 1 FROM supplier_phones p WHERE p.supplier_id = s.id)`);
+db.exec(`INSERT INTO supplier_bank_accounts(supplier_id, bank_name, account_no, holder, label, sort_order)
+         SELECT s.id, 'Chưa rõ ngân hàng', trim(s.bank_account), NULL, NULL, 0 FROM suppliers s
+         WHERE COALESCE(trim(s.bank_account), '') <> ''
+           AND NOT EXISTS (SELECT 1 FROM supplier_bank_accounts b WHERE b.supplier_id = s.id)`);
+
 export const DB_FILE = DB_PATH;
 
 /* ------------------------------------------------------------------ */

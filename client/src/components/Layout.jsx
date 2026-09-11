@@ -21,9 +21,9 @@ export const NAV = [
       { to: '/orders', icon: ClipboardList, label: 'Đặt hàng', perm: 'order.manage' },
       { to: '/sales', icon: Receipt, label: 'Hoá đơn', perm: 'sale.view' },
       { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng', perm: 'sale.return' },
-      { to: '/customers', icon: Users, label: 'Khách hàng', perm: 'customer.manage' },
-      { to: '/customer-debts', icon: HandCoins, label: 'Công nợ khách', perm: 'customer.manage' },
-      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành', perm: 'warranty.manage' },
+      /* Công nợ khách nằm luôn trong hồ sơ khách hàng (tài liệu 08) */
+      { to: '/customers', icon: Users, label: 'Khách hàng & công nợ', perm: 'customer.manage' },
+      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành & sửa chữa', perm: 'warranty.manage' },
     ],
   },
   {
@@ -31,8 +31,8 @@ export const NAV = [
     children: [
       { to: '/purchases', icon: FileText, label: 'Phiếu nhập hàng', perm: 'purchase.manage' },
       { to: '/purchase-returns', icon: Undo2, label: 'Trả hàng NCC', perm: 'purchase.manage' },
-      { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp', perm: 'purchase.manage' },
-      { to: '/supplier-debts', icon: Landmark, label: 'Công nợ NCC', perm: 'purchase.manage' },
+      /* Công nợ NCC nằm luôn trong hồ sơ nhà cung cấp (tài liệu 10) */
+      { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp & công nợ', perm: 'purchase.manage' },
     ],
   },
   {

@@ -126,6 +126,9 @@ const TABLES = [
   'doc_drafts',
   /* Đợt 13 */
   'debt_allocations', 'vouchers', 'voucher_uses',
+  /* Đợt 14 */
+  'supplier_phones', 'supplier_bank_accounts', 'purchase_custom_items', 'purchase_return_custom_items',
+  'warranty_custom_parts', 'warranty_fees',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -190,12 +193,14 @@ r.post('/clear-transactions', (req, res) => {
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
     for (const t of ['voucher_uses', 'vouchers', 'debt_allocations',
       'sale_return_items', 'sale_returns', 'sale_items', 'sales',
+      'purchase_return_custom_items', 'purchase_custom_items',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
       'stock_take_items', 'stock_takes', 'stock_transfer_items', 'stock_transfers',
       'production_items', 'productions', 'draft_sales', 'doc_drafts',
       /* Phiếu báo hết hàng là chứng từ nên xoá. Riêng product_suppliers là
          DANH MỤC (khai mối nào bán món nào) nên giữ lại, như định mức. */
       'requisition_item_suppliers', 'requisition_items', 'requisitions',
+      'warranty_custom_parts', 'warranty_fees',
       'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
       'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
@@ -232,13 +237,16 @@ r.post('/reset-all', (req, res) => {
     'requisition_item_suppliers', 'requisition_items', 'requisitions',
     'product_suppliers',
     'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
+    'warranty_custom_parts', 'warranty_fees',
     'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
     'production_items', 'productions', 'product_boms',
     'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
     'sale_return_items', 'sale_returns', 'sale_items', 'sales',
+    'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
     'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
+    'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
   ];
 

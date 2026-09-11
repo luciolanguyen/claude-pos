@@ -13,6 +13,7 @@ import {
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
 import DeliveryNotePrint from '../components/DeliveryNotePrint';
+import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
 import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
 import DeliveryInfoModal, {
   normalizeDelivery, deliveryShipCharged, deliveryBody,
@@ -21,6 +22,7 @@ import QuickReturnModal from '../components/PosQuickReturn';
 import ExchangeModal from '../components/PosExchange';
 import CashVoucherPrint from '../components/CashVoucherPrint';
 import CustomerForm from '../components/CustomerForm';
+import CustomerProfile from '../components/CustomerProfile';
 import { OrderBell, SaveAsOrderModal, PickOrderModal } from '../components/PosOrders';
 import { DebtButton, DebtCollectModal, CustomerDebtBanner } from '../components/PosDebt';
 import PaymentModal from '../components/PosPayment';
@@ -106,6 +108,13 @@ function ProductTile({ p, priceListId, showCost, onPick, inCart = 0, bought = nu
       <div className="text-[13px] font-semibold leading-snug line-clamp-2 flex-1">{p.name}</div>
       {p.alias && (
         <div className="text-2xs text-muted-ink italic truncate leading-tight">{p.alias}</div>
+      )}
+      {/* Bảo hành mặc định của mặt hàng (tài liệu 09, mục 4) */}
+      {p.warranty_months > 0 && (
+        <div className="text-2xs font-semibold text-emerald-800 flex items-center gap-0.5 leading-tight">
+          <ShieldCheck size={10} aria-hidden="true" />
+          BH: {p.warranty_months} Tháng
+        </div>
       )}
       <div className="flex items-baseline justify-between gap-1">
         <span className="text-[13px] font-bold text-accent tabular font-mono">{n(price)}</span>
@@ -294,7 +303,10 @@ export default function POS() {
           discountType: 'amount',
           discountValue: 0,
           note: '',
-          warrantyMonths: 0,
+          /* Bảo hành mặc định lấy từ mặt hàng; sửa hay huỷ chỉ áp cho hoá đơn này */
+          warrantyMonths: Number(product.warranty_months) || 0,
+          warrantyNote: product.warranty_note || '',
+          warrantyDefault: Number(product.warranty_months) || 0,
           serial: '',
           vat_rate: product.vat_rate,
           track_stock: product.track_stock,
@@ -658,6 +670,7 @@ export default function POS() {
       vat_rate: l.vat_rate,
       note: l.note || null,
       warranty_months: Number(l.warrantyMonths) || 0,
+      warranty_note: Number(l.warrantyMonths) > 0 ? (l.warrantyNote || null) : null,
       serial: l.serial || null,
     })),
     customer_id: tab.customerId,
@@ -713,6 +726,13 @@ export default function POS() {
     } catch {
       toast(`Hoá đơn ${res.code} đã lưu nhưng chưa tải được để in — vào Hoá đơn hoặc Theo dõi giao để in lại.`,
         'warn', 8000);
+    }
+    /* Món có bảo hành: in phiếu bảo hành sau hoá đơn, chọn gộp hay tách (tài liệu 09, mục 5) */
+    if (tab.cart.some((l) => Number(l.warrantyMonths) > 0)) {
+      try {
+        const sale = queue.find((x) => x.kind === 'invoice')?.sale || await api.sale(res.id);
+        if (warrantyItemsOf(sale).length) queue.push({ kind: 'warranty', key: `w${res.id}`, sale });
+      } catch { /* in lại được từ màn hình Hoá đơn */ }
     }
     setPrintQueue(queue);
 
@@ -1344,6 +1364,7 @@ export default function POS() {
         open={quickOpen}
         customerId={tab.customerId}
         onClose={() => setQuickOpen(false)}
+        onChanged={reloadCustomers}
       />
 
       <CustomerForm
@@ -1363,6 +1384,11 @@ export default function POS() {
       )}
       {printing?.kind === 'note' && (
         <DeliveryNotePrint key={printing.key} note={printing.note} onClose={nextPrint} />
+      )}
+      {printing?.kind === 'warranty' && (
+        <WarrantyCardPrint key={printing.key} sale={printing.sale} store={store}
+          mode={settings?.pos?.warranty_card_mode === 'separate' ? 'separate' : 'combined'}
+          onClose={nextPrint} />
       )}
       {provisional && (
         <InvoicePrint sale={provisional} store={store} invoice={settings?.invoice || {}}
@@ -1428,19 +1454,29 @@ function PriceHistoryModal({ line, customer, onClose, onApply }) {
 function LineNoteModal({ line, onClose, onSave }) {
   const [text, setText] = useState('');
   const [months, setMonths] = useState(0);
+  const [wNote, setWNote] = useState('');
   const [serial, setSerial] = useState('');
 
   useEffect(() => {
     if (!line) return;
     setText(line.note || '');
     setMonths(Number(line.warrantyMonths) || 0);
+    setWNote(line.warrantyNote || '');
     setSerial(line.serial || '');
   }, [line]);
 
+  const def = Number(line?.warrantyDefault) || 0;
   /* Hạn bảo hành xem trước cho khách biết ngay */
   const until = months > 0
     ? new Date(new Date().setMonth(new Date().getMonth() + Number(months)))
     : null;
+  const save = (patch = {}) => onSave({
+    note: text.trim(),
+    warrantyMonths: Number(months) || 0,
+    warrantyNote: wNote.trim(),
+    serial: serial.trim(),
+    ...patch,
+  });
 
   return (
     <Modal
@@ -1450,17 +1486,13 @@ function LineNoteModal({ line, onClose, onSave }) {
       subtitle={line?.name}
       size="sm"
       footer={<>
+        {Number(months) > 0 && (
+          <Button variant="danger" className="mr-auto" onClick={() => save({ warrantyMonths: 0 })}>
+            Hủy bảo hành
+          </Button>
+        )}
         <Button onClick={onClose}>Huỷ</Button>
-        <Button
-          variant="primary"
-          onClick={() => onSave({
-            note: text.trim(),
-            warrantyMonths: Number(months) || 0,
-            serial: serial.trim(),
-          })}
-        >
-          Lưu
-        </Button>
+        <Button variant="primary" onClick={() => save()}>Lưu</Button>
       </>}
     >
       <div className="space-y-3">
@@ -1474,18 +1506,21 @@ function LineNoteModal({ line, onClose, onSave }) {
             placeholder="Cắt đúng 12,5 mét, bó riêng" />
         </Field>
 
+        <p className="text-2xs text-muted-ink leading-relaxed">
+          {def > 0
+            ? `Mặt hàng này mặc định bảo hành ${def} tháng. Sửa hay huỷ ở đây chỉ áp dụng cho hoá đơn này.`
+            : 'Mặt hàng này không có bảo hành mặc định — thêm bảo hành riêng cho hoá đơn này nếu cần.'}
+        </p>
+
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field
-            label="Bảo hành (tháng)"
-            hint="Để 0 nếu hàng không bảo hành"
-            htmlFor="ln-warranty"
-          >
+          <Field label="Bảo hành (tháng)" hint="Để 0 nếu hàng không bảo hành" htmlFor="ln-warranty">
             <div className="flex items-center gap-1.5">
-              <QtyInput size="md" value={months} onChange={setMonths} min={0} className="flex-1" />
+              <QtyInput id="ln-warranty" size="md" value={months} onChange={setMonths} min={0} className="flex-1" />
               <div className="flex gap-1">
                 {[6, 12, 24].map((m) => (
                   <button
                     key={m}
+                    type="button"
                     onClick={() => setMonths(m)}
                     className={`btn btn-sm ${Number(months) === m ? 'btn-soft' : 'btn-outline'}`}
                   >
@@ -1494,20 +1529,25 @@ function LineNoteModal({ line, onClose, onSave }) {
                 ))}
               </div>
             </div>
-            {until && (
-              <p className="hint">Hết hạn ngày <b>{date(until)}</b></p>
+            {until && <p className="hint">Hết hạn ngày <b>{date(until)}</b></p>}
+            {def > 0 && Number(months) !== def && (
+              <button type="button" onClick={() => { setMonths(def); setWNote(line?.warrantyNote || wNote); }}
+                className="text-2xs text-accent font-semibold hover:underline cursor-pointer mt-0.5">
+                Theo mặt hàng: {def} tháng
+              </button>
             )}
           </Field>
 
-          <Field
-            label="Số serial / số máy"
-            hint="Ghi để sau này tra ra ai mua"
-            htmlFor="ln-serial"
-          >
+          <Field label="Số serial / số máy" hint="Ghi để sau này tra ra ai mua" htmlFor="ln-serial">
             <Input id="ln-serial" value={serial} onChange={(e) => setSerial(e.target.value)}
               placeholder="PNS-2026-0099" />
           </Field>
         </div>
+
+        <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành" htmlFor="ln-wnote">
+          <Input id="ln-wnote" value={wNote} onChange={(e) => setWNote(e.target.value)}
+            disabled={!(Number(months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
+        </Field>
       </div>
     </Modal>
   );
@@ -1515,138 +1555,19 @@ function LineNoteModal({ line, onClose, onSave }) {
 
 /* ==================================================================== */
 
-function CustomerQuickModal({ open, customerId, onClose }) {
-  const { data, busy } = useFetch(
-    () => api.get(`/customers/${customerId}/quick`), [customerId], { skip: !open || !customerId }
-  );
-
+/* Cùng một hồ sơ ba tab với trang Khách hàng (tài liệu 08): thu nợ hay chỉnh
+   hạn mức ở quầy thì trang quản trị thấy ngay, và ngược lại. */
+function CustomerQuickModal({ open, customerId, onClose, onChanged }) {
   return (
     <Modal
-      open={open}
+      open={open && !!customerId}
       onClose={onClose}
-      title={data ? data.name : 'Thông tin khách hàng'}
-      subtitle={data ? [data.code, data.phone, data.address].filter(Boolean).join(' · ') : ''}
-      size="lg"
+      title="Hồ sơ khách hàng"
+      size="xl"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
-      {busy || !data ? <Spinner /> : (
-        <div className="space-y-3">
-          <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
-            <div className="card p-2.5">
-              <div className="text-2xs font-bold text-muted-ink uppercase">Đang nợ</div>
-              <div className={`font-display font-bold text-lg tabular ${data.debt > 0 ? 'text-warn' : ''}`}>
-                {money(data.debt)}
-              </div>
-              {data.debt_limit > 0 && (
-                <div className="text-2xs text-muted-ink">Hạn mức {money(data.debt_limit)}</div>
-              )}
-            </div>
-            <div className="card p-2.5">
-              <div className="text-2xs font-bold text-muted-ink uppercase">Tổng đã mua</div>
-              <div className="font-display font-bold text-lg tabular">{money(data.total_spent)}</div>
-            </div>
-            <div className="card p-2.5">
-              <div className="text-2xs font-bold text-muted-ink uppercase">Số hoá đơn</div>
-              <div className="font-display font-bold text-lg tabular">{n(data.order_count)}</div>
-            </div>
-            <div className="card p-2.5">
-              <div className="text-2xs font-bold text-muted-ink uppercase">Mua gần nhất</div>
-              <div className="font-semibold text-[13px] mt-1">
-                {data.last_order ? smartTime(data.last_order) : 'Chưa mua'}
-              </div>
-            </div>
-          </div>
-
-          {data.over_limit && (
-            <div className="card p-2.5 bg-red-50 border-danger/30 text-[13px] flex gap-2">
-              <AlertTriangle size={15} className="text-danger shrink-0 mt-0.5" aria-hidden="true" />
-              <span className="text-red-900">
-                Khách đã <b>vượt hạn mức công nợ</b>. Bán thêm ghi nợ sẽ bị hệ thống chặn.
-              </span>
-            </div>
-          )}
-
-          {data.unpaid_bills.length > 0 && (
-            <div>
-              <h3 className="text-[13px] font-bold mb-1.5">
-                Hoá đơn chưa trả đủ ({data.unpaid_bills.length})
-              </h3>
-              <div className="table-wrap max-h-40 overflow-y-auto">
-                <table className="data">
-                  <thead>
-                    <tr><th>Mã HĐ</th><th>Ngày</th><th className="text-right">Tổng</th>
-                      <th className="text-right">Đã trả</th><th className="text-right">Còn nợ</th></tr>
-                  </thead>
-                  <tbody>
-                    {data.unpaid_bills.map((s) => (
-                      <tr key={s.id} className="hoverable">
-                        <td className="font-mono">{s.code}</td>
-                        <td className="text-muted-ink">{date(s.ts)}</td>
-                        <td className="num">{money(s.total)}</td>
-                        <td className="num">{money(s.paid)}</td>
-                        <td className="num text-danger font-semibold">{money(s.remaining)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div>
-              <h3 className="text-[13px] font-bold mb-1.5">Mua gần đây</h3>
-              {data.recent_sales.length === 0
-                ? <Empty title="Chưa có hoá đơn" />
-                : (
-                  <div className="table-wrap max-h-52 overflow-y-auto">
-                    <table className="data">
-                      <thead>
-                        <tr><th>Mã HĐ</th><th>Ngày</th><th className="text-right">Số mặt</th>
-                          <th className="text-right">Tổng tiền</th></tr>
-                      </thead>
-                      <tbody>
-                        {data.recent_sales.map((s) => (
-                          <tr key={s.id} className="hoverable">
-                            <td className="font-mono">{s.code}</td>
-                            <td className="text-muted-ink whitespace-nowrap">{date(s.ts)}</td>
-                            <td className="num">{s.item_count}</td>
-                            <td className="num font-semibold">{money(s.total)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-            </div>
-
-            <div>
-              <h3 className="text-[13px] font-bold mb-1.5">Hàng khách hay mua</h3>
-              {data.top_products.length === 0
-                ? <Empty title="Chưa có dữ liệu" />
-                : (
-                  <div className="table-wrap max-h-52 overflow-y-auto">
-                    <table className="data">
-                      <thead>
-                        <tr><th>Tên hàng</th><th className="text-right">Đã mua</th><th>Lần cuối</th></tr>
-                      </thead>
-                      <tbody>
-                        {data.top_products.map((p, i) => (
-                          <tr key={i} className="hoverable">
-                            <td className="font-semibold">{p.name}</td>
-                            <td className="num">{fq(p.qty)} {p.unit_name}</td>
-                            <td className="text-muted-ink whitespace-nowrap">{date(p.last_ts)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-            </div>
-          </div>
-
-          {data.note && <div className="card p-2.5 text-[13px]"><b>Ghi chú: </b>{data.note}</div>}
-        </div>
+      {open && customerId && (
+        <CustomerProfile customerId={customerId} compact onChanged={onChanged} />
       )}
     </Modal>
   );

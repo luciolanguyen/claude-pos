@@ -378,6 +378,8 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
     setBusy(true);
     try {
       const res = await api.post(`/orders/${o.id}/deliver`, {
+        /* Giao tại quầy: khách đứng đó tự lấy, không vào bảng giao hàng */
+        mode: 'pickup',
         items: chosen.map((i) => ({ item_id: i.id, qty: qtys[i.id] })),
         paid: Number(paid) || 0,
         received: Number(paid) || 0,
