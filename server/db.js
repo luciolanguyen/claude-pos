@@ -171,15 +171,20 @@ addColumns('sale_return_items', {
 addColumns('draft_sales', { tab_no: 'INTEGER' });
 
 /* Tên chặng giao hàng cũ (đợt 11) gộp tiền vào trạng thái giao. Tài liệu
-   mới tách làm hai: chặng giao và tiền thu hộ. Đổi tên một lần, có cờ
-   đánh dấu nên chạy lại không sao. */
+   mới tách làm hai: chặng giao và tiền thu hộ.
+
+   Chạy MỖI LẦN khởi động, không chỉ một lần theo cờ: cả ba câu chạy lại vô
+   hại vì chỉ đụng dòng còn mang tên cũ. Nếu chỉ dựa vào cờ thì cơ sở dữ liệu
+   nào đã có cờ mà vẫn còn dòng tên cũ — ví dụ máy chủ bản cũ còn chạy và ghi
+   thêm sau khi cờ đã đặt — sẽ kẹt mãi ở tên cũ, bảng theo dõi giao hàng hiện
+   đơn đó không có chặng nào. Cờ giữ lại chỉ để biết đã từng nâng cấp. */
 {
+  db.exec(`UPDATE sales SET cod_status = 'collected', cod_collected = cod_amount
+           WHERE delivery_status = 'collected' AND cod_amount > 0 AND cod_status IS NULL`);
+  db.exec("UPDATE sales SET delivery_status = 'delivered' WHERE delivery_status = 'collected'");
+  db.exec("UPDATE sales SET delivery_status = 'failed' WHERE delivery_status IN ('returned','cancelled')");
   const done = db.prepare("SELECT value FROM settings WHERE key = 'migrated_delivery_v13'").get();
   if (!done) {
-    db.exec(`UPDATE sales SET cod_status = 'collected', cod_collected = cod_amount
-             WHERE delivery_status = 'collected' AND cod_amount > 0 AND cod_status IS NULL`);
-    db.exec("UPDATE sales SET delivery_status = 'delivered' WHERE delivery_status = 'collected'");
-    db.exec("UPDATE sales SET delivery_status = 'failed' WHERE delivery_status IN ('returned','cancelled')");
     db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES('migrated_delivery_v13', 'true')").run();
   }
 }
