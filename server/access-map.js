@@ -26,6 +26,14 @@ export const ACCESS_RULES = [
   ['POST', /^\/sales$/,                   'sale.pos'],
   ['POST', /^\/sales\/\d+\/pay$/,         'sale.pos'],
   ['PUT',  /^\/sales\/\d+\/delivery$/,    'sale.pos'],
+  /* Đối soát COD: người giao nộp tiền về quầy — việc của thu ngân */
+  ['PUT',  /^\/sales\/\d+\/cod$/,         'sale.pos'],
+  ['GET',  /^\/cod-receivables/,          'sale.view'],
+  /* Gõ PIN quản lý: thu ngân gọi được, vì chính thu ngân là người cần
+     duyệt. Khoá theo quyền bán hàng để biết ai đang thử, chặn gõ mò. */
+  ['POST', /^\/auth\/approve$/,            'sale.pos'],
+  ['GET',  /^\/pos\/policy$/,              null],
+  ['GET',  /^\/vouchers/,                  'sale.pos'],
   ['GET',  /^\/deliveries/,                'sale.view'],
   ['GET',  /^\/sales/,                    'sale.view'],
   ['*',    /^\/drafts/,                   'sale.pos'],

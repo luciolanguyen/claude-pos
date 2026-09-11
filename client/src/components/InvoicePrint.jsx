@@ -161,6 +161,9 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
         <tbody>
           <tr><td>Ngày:</td><td style={{ textAlign: 'right' }}>{datetime(sale.ts)}</td></tr>
           <tr><td>Khách:</td><td style={{ textAlign: 'right' }}>{sale.customer_name || 'Khách lẻ'}</td></tr>
+          {sale.buyer_name && (
+            <tr><td>Người mua hộ:</td><td style={{ textAlign: 'right' }}>{sale.buyer_name}{sale.buyer_phone ? ` - ${sale.buyer_phone}` : ''}</td></tr>
+          )}
           {sale.customer_phone && (
             <tr><td>ĐT:</td><td style={{ textAlign: 'right' }}>{sale.customer_phone}</td></tr>
           )}
@@ -209,6 +212,9 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
           </tr>
           <tr><td>Đã thanh toán ({PAYMENT_LABEL[sale.payment_method] || ''}):</td>
             <td style={{ textAlign: 'right' }}>{n(sale.paid)}</td></tr>
+          {sale.voucher_amount > 0 && (
+            <tr><td>(trong đó trừ phiếu đổi hàng)</td><td style={{ textAlign: 'right' }}>{n(sale.voucher_amount)}</td></tr>
+          )}
           {sale.change_given > 0 && (
             <tr><td>Tiền thối:</td><td style={{ textAlign: 'right' }}>{n(sale.change_given)}</td></tr>
           )}
@@ -315,6 +321,12 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
               {sale.customer_company || sale.customer_name || 'Khách lẻ'}
             </td>
           </tr>
+          {sale.buyer_name && (
+            <tr>
+              <td style={{ paddingBottom: 3 }}>Người mua hộ:</td>
+              <td style={{ paddingBottom: 3 }}>{sale.buyer_name}{sale.buyer_phone ? ` — ${sale.buyer_phone}` : ''}</td>
+            </tr>
+          )}
           {sale.customer_tax_code && (
             <tr><td style={{ paddingBottom: 3 }}>Mã số thuế:</td><td>{sale.customer_tax_code}</td></tr>
           )}

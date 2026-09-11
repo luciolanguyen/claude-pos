@@ -18,7 +18,7 @@ import { PageHeader, Page } from '../components/Layout';
 import CashVoucherPrint from '../components/CashVoucherPrint';
 
 export default function Cash() {
-  const { toast, loadMeta } = useApp();
+  const { toast, loadMeta, user } = useApp();
   const [rangeKey, setRangeKey] = useState('month');
   const r = useMemo(() => range(rangeKey), [rangeKey]);
   const [q, setQ] = useState('');
@@ -261,7 +261,8 @@ export default function Cash() {
                               label={`In ${t.direction === 'in' ? 'phiếu thu' : 'phiếu chi'} ${t.code}`}
                               onClick={() => openVoucher(t.id)}
                             />
-                            {!t.ref_type && (
+                            {/* Phiếu thu nợ đã xác nhận: chỉ chủ cửa hàng xoá được (tài liệu 05) — máy chủ cũng chặn */}
+                            {!t.ref_type && (t.category !== 'debt_in' || user?.role === 'owner') && (
                               <IconButton icon={Trash2} label={`Xoá phiếu ${t.code}`} size={14}
                                 className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(t)} />
                             )}

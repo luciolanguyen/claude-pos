@@ -283,6 +283,8 @@ function PosSettings() {
   const [allowNeg, setAllowNeg] = useState(settings?.allow_negative_stock === true);
   const [costMethod, setCostMethod] = useState(settings?.cost_method || 'average');
   const [busy, setBusy] = useState(false);
+  /* Ô số: để trống thì lưu rỗng, máy chủ tự dùng giá trị mặc định */
+  const numSet = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value === '' ? '' : Number(e.target.value) }));
 
   useEffect(() => {
     setForm(settings?.pos || {});
@@ -314,9 +316,47 @@ function PosSettings() {
         <Field label="Kho xuất hàng mặc định" htmlFor="pos-wh">
           <Select id="pos-wh" value={form.default_warehouse || ''}
             onChange={(e) => setForm((f) => ({ ...f, default_warehouse: Number(e.target.value) }))}>
-            {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            {meta.warehouses.filter((w) => !w.is_defect).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
           </Select>
         </Field>
+      </div>
+
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Chính sách bán hàng tại quầy</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Máy chủ soát lại các quy tắc này mỗi lần lưu hoá đơn, nên sửa trình duyệt cũng không lách được.
+          Vượt hạn mức thì quản lý gõ mã PIN để duyệt — đặt PIN cho chủ tiệm / quản lý ở mục Người dùng.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Số tab đơn hàng mở cùng lúc" hint="Mặc định 10. Máy tính tiền cũ nên để thấp cho đỡ ì." htmlFor="pos-maxtabs">
+            <Input id="pos-maxtabs" type="number" min="1" max="50" value={form.max_tabs ?? 10} onChange={numSet('max_tabs')} />
+          </Field>
+          <Field label="Thu ngân tự giảm giá tối đa (%)" hint="So với bảng giá, gộp cả giảm từng dòng và giảm cả đơn. Mặc định 10%." htmlFor="pos-maxdisc">
+            <Input id="pos-maxdisc" type="number" min="0" max="100" step="0.5"
+              value={form.cashier_max_discount_percent ?? 10} onChange={numSet('cashier_max_discount_percent')} />
+          </Field>
+          <Field label="Nhận đổi trả trong (ngày)" hint="Tính từ ngày mua. 0 = không giới hạn. Mặc định 7 ngày." htmlFor="pos-retdays">
+            <Input id="pos-retdays" type="number" min="0" value={form.return_days ?? 7} onChange={numSet('return_days')} />
+          </Field>
+          <Field label="Phí đổi trả mặc định" hint="Điền sẵn vào hộp đổi trả, thu ngân vẫn sửa được." htmlFor="pos-retfee">
+            <div className="flex gap-1.5">
+              <Select className="!w-24" aria-label="Cách tính phí đổi trả"
+                value={form.return_fee_type === 'percent' ? 'percent' : 'amount'}
+                onChange={(e) => setForm((f) => ({ ...f, return_fee_type: e.target.value }))}>
+                <option value="amount">đồng</option>
+                <option value="percent">%</option>
+              </Select>
+              <Input id="pos-retfee" type="number" min="0" className="flex-1"
+                value={form.return_fee_value ?? 0} onChange={numSet('return_fee_value')} />
+            </div>
+          </Field>
+          <Field label="Không bán nợ thêm khi có hoá đơn nợ quá (ngày)" hint="Đề xuất 30 ngày. Để 0 là tắt — mặc định đang tắt." htmlFor="pos-debtdays">
+            <Input id="pos-debtdays" type="number" min="0" value={form.max_debt_days ?? 0} onChange={numSet('max_debt_days')} />
+          </Field>
+          <Field label="Hạn dùng phiếu đổi hàng (ngày)" hint="Tính từ ngày cấp phiếu. Mặc định 90 ngày." htmlFor="pos-vdays">
+            <Input id="pos-vdays" type="number" min="1" value={form.voucher_days ?? 90} onChange={numSet('voucher_days')} />
+          </Field>
+        </div>
       </div>
 
       <div className="card p-4">
@@ -555,7 +595,10 @@ function Warehouses() {
                   {data.map((w) => (
                     <tr key={w.id} className="hoverable">
                       <td className="font-mono text-muted-ink">{w.code}</td>
-                      <td className="font-semibold">{w.name}</td>
+                      <td className="font-semibold">
+                        {w.name}
+                        {w.is_defect ? <Badge tone="bad" className="ml-1.5">Kho hàng lỗi — không bán</Badge> : null}
+                      </td>
                       <td className="text-muted-ink">{w.address || '—'}</td>
                       <td>{w.is_default ? <Badge tone="ok">Mặc định</Badge> : <span className="text-muted-ink">—</span>}</td>
                       <td className="text-right">
@@ -890,7 +933,10 @@ function UsersTab() {
                         {u.full_name}
                         {u.id === me?.id && <Badge tone="info" className="ml-1.5">Bạn</Badge>}
                       </td>
-                      <td><Badge tone={u.role === 'owner' ? 'ok' : 'mute'}>{ROLE_LABEL[u.role] || u.role}</Badge></td>
+                      <td>
+                        <Badge tone={u.role === 'owner' ? 'ok' : 'mute'}>{ROLE_LABEL[u.role] || u.role}</Badge>
+                        {u.has_pin ? <Badge tone="info" className="ml-1">Có PIN</Badge> : null}
+                      </td>
                       <td className="tabular text-muted-ink">{u.phone || '—'}</td>
                       <td>{u.active ? <Badge tone="ok">Đang dùng</Badge> : <Badge tone="mute">Đã khoá</Badge>}</td>
                       <td>
@@ -1014,6 +1060,8 @@ function PermissionMatrix({ open, onClose, permissions }) {
 
 function UserForm({ open, user, onClose, onSaved }) {
   const [form, setForm] = useState({ username: '', password: '', full_name: '', role: 'cashier', phone: '', active: 1 });
+  const [pin, setPin] = useState('');
+  const [clearPin, setClearPin] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -1022,19 +1070,28 @@ function UserForm({ open, user, onClose, onSaved }) {
     setForm(user
       ? { ...user, password: '' }
       : { username: '', password: '1234', full_name: '', role: 'cashier', phone: '', active: 1 });
+    setPin('');
+    setClearPin(false);
     setErr('');
   }, [open, user]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const canApprove = form.role === 'owner' || form.role === 'manager';
 
   const save = async () => {
     if (!form.full_name.trim()) { setErr('Bắt buộc nhập họ tên.'); return; }
     if (!user && !form.username.trim()) { setErr('Bắt buộc nhập tên đăng nhập.'); return; }
+    if (pin && !/^\d{4,8}$/.test(pin)) { setErr('Mã PIN phải là từ 4 đến 8 chữ số.'); return; }
+    const body = { ...form };
+    delete body.has_pin;
+    /* Không gửi trường pin là giữ nguyên; gửi chuỗi rỗng là xoá PIN */
+    if (clearPin) body.pin = '';
+    else if (pin) body.pin = pin;
     setBusy(true);
     setErr('');
     try {
-      if (user) await api.put(`/users/${user.id}`, form);
-      else await api.post('/users', form);
+      if (user) await api.put(`/users/${user.id}`, body);
+      else await api.post('/users', body);
       onSaved?.();
     } catch (e) {
       setErr(e.message);
@@ -1072,6 +1129,32 @@ function UserForm({ open, user, onClose, onSaved }) {
         <Field label="Số điện thoại">
           <Input value={form.phone || ''} onChange={set('phone')} inputMode="tel" />
         </Field>
+        {canApprove && (
+          <Field
+            label="Mã PIN duyệt tại quầy"
+            htmlFor="uf-pin"
+            hint="4–8 chữ số, mỗi người một mã. Dùng để duyệt giảm giá quá hạn mức và bán nợ vượt hạn mức ngay trên màn hình bán hàng. Như mật khẩu, đây là hàng rào chống làm nhầm trong tiệm, không phải lớp bảo mật."
+          >
+            <Input
+              id="uf-pin"
+              type="password"
+              inputMode="numeric"
+              autoComplete="new-password"
+              maxLength={8}
+              value={pin}
+              disabled={clearPin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+              placeholder={user?.has_pin ? 'Đã có PIN — để trống nếu không đổi' : 'Chưa có PIN'}
+            />
+            {user?.has_pin && (
+              <label className="flex items-center gap-1.5 mt-1.5 text-[13px] cursor-pointer">
+                <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer" checked={clearPin}
+                  onChange={(e) => { setClearPin(e.target.checked); if (e.target.checked) setPin(''); }} />
+                Xoá mã PIN của người này
+              </label>
+            )}
+          </Field>
+        )}
         {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>

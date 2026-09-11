@@ -16,7 +16,7 @@
 import { useState, useMemo } from 'react';
 import {
   Layers, Plus, Pencil, Trash2, ChevronRight, ChevronDown, CornerDownRight,
-  AlertTriangle, FolderTree, PackageSearch,
+  AlertTriangle, FolderTree, PackageSearch, Ban,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -80,6 +80,18 @@ export default function CategoryTree({ open, onClose, onChanged }) {
   const [blocked, setBlocked] = useState(null);   // nhóm không xoá được + lý do
 
   const roots = useMemo(() => buildTree(data), [data]);
+  const byId = useMemo(() => new Map((data || []).map((x) => [x.id, x])), [data]);
+
+  /** Nhóm cha gần nhất đang đặt "không nhận đổi trả" — nhóm con thừa hưởng cờ đó. */
+  const inheritedNoReturn = (c) => {
+    let p = c.parent_id ? byId.get(c.parent_id) : null;
+    let guard = 0;
+    while (p && guard++ < 50) {
+      if (p.no_return) return p.name;
+      p = p.parent_id ? byId.get(p.parent_id) : null;
+    }
+    return null;
+  };
 
   const done = () => { reload(); onChanged?.(); };
 
@@ -118,6 +130,18 @@ export default function CategoryTree({ open, onClose, onChanged }) {
       if (e.code === 'CATEGORY_NOT_EMPTY') setBlocked({ category: c, message: e.message });
       else toast(e.message, 'bad', 6000);
     }
+  };
+
+  /* Bật / tắt "không nhận đổi trả" (tài liệu 02). Đặt ở nhóm cha thì mọi
+     nhóm con cháu cũng không nhận — hàng tặng, hàng cắt theo mét, hàng đặt riêng. */
+  const toggleNoReturn = async (c) => {
+    try {
+      await api.put(`/categories/${c.id}`, {
+        name: c.name, parent_id: c.parent_id, sort_order: c.sort_order, no_return: c.no_return ? 0 : 1,
+      });
+      toast(c.no_return ? `Nhóm "${c.name}" nhận đổi trả trở lại` : `Nhóm "${c.name}" không nhận đổi trả nữa`, 'ok');
+      done();
+    } catch (e) { toast(e.message, 'bad', 6000); }
   };
 
   const toggle = (id) => setCollapsed((s) => {
@@ -161,8 +185,13 @@ export default function CategoryTree({ open, onClose, onChanged }) {
             </>
           ) : (
             <>
-              <span className={`flex-1 text-[13px] truncate ${c.level === 1 ? 'font-bold' : 'font-medium'}`}>
+              <span className={`flex-1 min-w-0 text-[13px] truncate ${c.level === 1 ? 'font-bold' : 'font-medium'}`}>
                 {c.name}
+                {c.no_return ? (
+                  <Badge tone="warn" className="ml-1.5">Không nhận đổi trả</Badge>
+                ) : inheritedNoReturn(c) ? (
+                  <span className="ml-1.5 text-2xs font-normal text-amber-700">không đổi trả (theo nhóm cha)</span>
+                ) : null}
               </span>
 
               {/* Số hàng: nhóm cha hiện số gộp cả nhánh, vì hàng thường nằm
@@ -179,6 +208,10 @@ export default function CategoryTree({ open, onClose, onChanged }) {
                     label={`Thêm nhóm con trong ${c.name}`}
                     onClick={() => { setAddingTo(c.id); setNewName(''); setCollapsed((s) => { const x = new Set(s); x.delete(c.id); return x; }); }} />
                 )}
+                <IconButton icon={Ban} size={13}
+                  label={c.no_return ? `Cho nhóm ${c.name} nhận đổi trả trở lại` : `Đặt nhóm ${c.name} không nhận đổi trả`}
+                  className={c.no_return ? '!text-warn' : ''}
+                  onClick={() => toggleNoReturn(c)} />
                 <IconButton icon={Pencil} size={13} label={`Đổi tên ${c.name}`}
                   onClick={() => { setEditId(c.id); setEditName(c.name); }} />
                 <IconButton icon={Trash2} size={13} label={`Xoá nhóm ${c.name}`}

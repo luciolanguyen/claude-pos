@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { all, get, run, customerDebt, supplierDebt, addCashTx, defaultCashAccount } from '../db.js';
+import { all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount } from '../db.js';
+import { planAllocation, writeAllocation } from '../debt.js';
 
 const r = Router();
 
@@ -171,6 +172,13 @@ r.get('/customers/:id', (req, res) => {
 
 r.post('/customers', (req, res) => {
   const b = req.body;
+  /* Lưu nhanh người mua hộ: khách định danh bằng số điện thoại (tài liệu 03).
+     Đã có hồ sơ cùng số thì dùng lại, không đẻ thêm một hồ sơ trùng. */
+  if (b.dedupe_phone && String(b.phone || '').trim()) {
+    const same = get('SELECT * FROM customers WHERE phone = ? AND active = 1 ORDER BY id LIMIT 1',
+      [String(b.phone).trim()]);
+    if (same) return res.json({ ...same, existing: true });
+  }
   if (!b.name?.trim()) return res.status(400).json({ error: 'Thiếu tên khách hàng' });
   const code = b.code?.trim() || genCode('customers', 'KH');
   if (get('SELECT id FROM customers WHERE code = ?', [code])) {
@@ -218,16 +226,33 @@ r.post('/customers/:id/pay', (req, res) => {
   if (amount <= 0) return res.status(400).json({ error: 'Số tiền phải lớn hơn 0' });
   const accountId = Number(req.body.account_id) || defaultCashAccount();
   if (!accountId) return res.status(400).json({ error: 'Chưa thiết lập quỹ tiền' });
-  /* Ghi rõ ai thu, để cuối ngày chủ tiệm đối chiếu được phiếu thu với
-     người đứng quầy — nhất là khi thu ngân cũng được phép thu nợ. */
-  const t = addCashTx({
-    accountId, direction: 'in', amount, category: 'debt_in',
-    partnerType: 'customer', partnerId: c.id, partnerName: c.name,
-    userId: req.body.user_id || req.user?.id || null,
-    note: req.body.note || `Khách ${c.name} trả nợ`,
-    ts: req.body.ts || null,
+
+  /* Thu nợ chỉ định hoá đơn (tài liệu 05): tích chọn hoá đơn nào thì trả vào
+     đúng hoá đơn đó, không chọn thì trả dần từ khoản cũ nhất (FIFO). */
+  const saleIds = Array.isArray(req.body.sale_ids) ? req.body.sale_ids : [];
+  const out = tx(() => {
+    /* Chia tiền TRƯỚC khi ghi phiếu thu — xem chú thích ở planAllocation:
+       làm sau thì một khoản tiền bị trừ hai lần */
+    const plan = planAllocation(c.id, amount, saleIds);
+    /* Ghi rõ ai thu, để cuối ngày chủ tiệm đối chiếu được phiếu thu với
+       người đứng quầy — nhất là khi thu ngân cũng được phép thu nợ. */
+    const t = addCashTx({
+      accountId, direction: 'in', amount, category: 'debt_in',
+      partnerType: 'customer', partnerId: c.id, partnerName: c.name,
+      userId: req.body.user_id || req.user?.id || null,
+      note: req.body.note || (plan.rows.length
+        ? `Khách ${c.name} trả nợ ${plan.rows.map((x) => x.code).join(', ')}`
+        : `Khách ${c.name} trả nợ`),
+      ts: req.body.ts || null,
+    });
+    writeAllocation(t.id, plan);
+    return {
+      ok: true, transaction: t,
+      allocations: plan.rows, to_opening: plan.to_opening, overpaid: plan.unallocated,
+      debt: customerDebt(c.id),
+    };
   });
-  res.json({ ok: true, transaction: t, debt: customerDebt(c.id) });
+  res.json(out);
 });
 
 export default r;

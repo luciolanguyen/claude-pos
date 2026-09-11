@@ -118,7 +118,7 @@ export const RANGES = [
 
 export const PAYMENT_LABEL = {
   cash: 'Tiền mặt', transfer: 'Chuyển khoản', card: 'Quẹt thẻ',
-  debt: 'Ghi nợ', mixed: 'Kết hợp',
+  debt: 'Ghi nợ', mixed: 'Kết hợp', cod: 'Thu hộ COD',
 };
 
 /* Hai cách tính giá vốn. Nói bằng lời người bán hàng hiểu, không dùng

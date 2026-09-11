@@ -17,6 +17,7 @@ import system from './routes/system.js';
 import orders from './routes/orders.js';
 import requisitions from './routes/requisitions.js';
 import drafts from './routes/drafts.js';
+import posExtras from './routes/pos-extras.js';
 import { permFor } from './access-map.js';
 import { whoami, isLoginRequired } from './guard.js';
 import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
@@ -86,7 +87,9 @@ app.use('/api', (req, res, next) => {
 /* Giá vốn: ai không có quyền xem thì cắt hẳn khỏi dữ liệu trả về, chứ không
    chỉ ẩn trên màn hình. Ẩn ở giao diện thì mở công cụ nhà phát triển ra là
    thấy, mà thợ phụ biết giá vốn thì chủ tiệm mất thế khi trả giá với mối. */
-const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin'];
+/* Giá nhập gần nhất cũng là giá vốn — lộ ra thì thu ngân biết tiệm lời bao nhiêu */
+const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
+  'last_purchase_price'];
 
 app.use('/api', (req, res, next) => {
   if (req.method !== 'GET') return next();
@@ -111,7 +114,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', catalog, partners, purchases, sales, orders, requisitions, drafts,
+app.use('/api', catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));

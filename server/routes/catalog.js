@@ -30,6 +30,7 @@ r.get('/categories', (req, res) => {
     const ids = categoryTreeIds(c.id);
     return {
       id: c.id, name: c.name, parent_id: c.parent_id, sort_order: c.sort_order,
+      no_return: c.no_return ? 1 : 0,
       level: c.level, path: c.path, has_children: c.has_children,
       product_count: counts.get(c.id) || 0,
       product_count_tree: ids.reduce((a, id) => a + (counts.get(id) || 0), 0),
@@ -70,8 +71,11 @@ r.put('/categories/:id', (req, res) => {
     }
   }
 
-  run('UPDATE categories SET name = ?, parent_id = ?, sort_order = ? WHERE id = ?',
-    [name.trim(), parent, sort_order, id]);
+  /* Cờ "không nhận đổi trả" không gửi lên thì giữ nguyên — đổi tên nhóm
+     không được vô tình bật tắt cờ này */
+  const noReturn = req.body.no_return === undefined ? cur.no_return : (req.body.no_return ? 1 : 0);
+  run('UPDATE categories SET name = ?, parent_id = ?, sort_order = ?, no_return = ? WHERE id = ?',
+    [name.trim(), parent, sort_order, noReturn, id]);
   res.json(get('SELECT * FROM categories WHERE id = ?', [id]));
 });
 
@@ -309,6 +313,13 @@ r.get('/products/pos', (req, res) => {
     SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.cost_price, p.vat_rate,
            p.track_stock, p.min_stock, p.category_id, p.brand, p.location, p.is_manufactured,
            c.name AS category_name,
+           /* Giá nhập gần nhất quy về đơn vị cơ bản — cho quản lý thấy biên lãi
+              thật khi sửa giá (tài liệu 06). Người không có quyền giá vốn thì
+              lớp chặn trong index.js cắt trường này đi. */
+           (SELECT CAST(ROUND(pi.price * 1.0 / COALESCE(NULLIF(pi.factor, 0), 1)) AS INTEGER)
+              FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+             WHERE pi.product_id = p.id AND pu.status = 'done'
+             ORDER BY pu.ts DESC, pi.id DESC LIMIT 1) AS last_purchase_price,
            COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0) AS stock
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
     WHERE p.active = 1 ORDER BY p.name`, [warehouseId]);

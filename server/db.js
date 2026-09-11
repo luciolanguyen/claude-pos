@@ -116,6 +116,74 @@ addColumns('sales', {
   shipper_name: 'TEXT',                               // ai cầm hàng đi, ghi tay cũng được
 });
 
+/* ------------------- Đợt 13: sáu tài liệu đặc tả POS ------------------- */
+
+/* Mã PIN của quản lý, để duyệt tại chỗ những việc thu ngân không tự làm
+   được: giảm giá quá hạn mức, bán nợ vượt hạn mức. Không bao giờ trả ra
+   ngoài qua API. */
+addColumns('users', { pin: 'TEXT' });
+
+/* Kho hàng lỗi: hàng khách trả mà hỏng thì vào đây, không bán được. */
+addColumns('warehouses', { is_defect: 'INTEGER NOT NULL DEFAULT 0' });
+
+/* Nhóm hàng không nhận đổi trả. Đánh dấu ở nhóm cha thì cả nhánh ăn theo. */
+addColumns('categories', { no_return: 'INTEGER NOT NULL DEFAULT 0' });
+
+addColumns('sales', {
+  /* Người mua hộ: khách chủ hưởng doanh số, người này chỉ đi mua giùm */
+  buyer_id: 'INTEGER',
+  buyer_name: 'TEXT',
+  buyer_phone: 'TEXT',
+  /* Thu hộ COD tách khỏi trạng thái giao hàng. Tiền còn ở người giao thì
+     là khoản phải thu của đối tác vận chuyển, KHÔNG phải nợ của khách. */
+  cod_status: 'TEXT',                          // NULL | pending | collected | cancelled
+  cod_collected: 'INTEGER NOT NULL DEFAULT 0',
+  shipper_user_id: 'INTEGER',                   // nhân viên tiệm đi giao
+  shipper_phone: 'TEXT',                        // shipper tự do
+  /* Phiếu đổi hàng dùng để trả tiền — không chạy qua quỹ */
+  voucher_amount: 'INTEGER NOT NULL DEFAULT 0',
+  /* Ai duyệt bằng mã PIN, và duyệt việc gì */
+  approved_by: 'INTEGER',
+  approval_note: 'TEXT',
+});
+
+addColumns('sale_items', {
+  /* Giá niêm yết lúc bán, để soát lại mức giảm giá thật so với bảng giá */
+  list_price: 'INTEGER NOT NULL DEFAULT 0',
+});
+
+addColumns('sale_returns', {
+  refund_method: 'TEXT',                        // cash | transfer | debt | voucher
+  voucher_id: 'INTEGER',
+  fee_type: "TEXT NOT NULL DEFAULT 'amount'",
+  fee_percent: 'REAL NOT NULL DEFAULT 0',
+  /* Đổi hàng mà tiền thừa cấn trừ vào nợ cũ: bao nhiêu thì ghi ở đây */
+  debt_offset: 'INTEGER NOT NULL DEFAULT 0',
+});
+
+addColumns('sale_return_items', {
+  sale_item_id: 'INTEGER',                      // dòng nào của hoá đơn gốc
+  condition: "TEXT NOT NULL DEFAULT 'good'",  // good | defect
+  warehouse_id: 'INTEGER',                      // hàng trả về kho nào
+});
+
+/* Số thứ tự "Đơn Hàng X" của hoá đơn tạm, để tab mới không lấy trùng số */
+addColumns('draft_sales', { tab_no: 'INTEGER' });
+
+/* Tên chặng giao hàng cũ (đợt 11) gộp tiền vào trạng thái giao. Tài liệu
+   mới tách làm hai: chặng giao và tiền thu hộ. Đổi tên một lần, có cờ
+   đánh dấu nên chạy lại không sao. */
+{
+  const done = db.prepare("SELECT value FROM settings WHERE key = 'migrated_delivery_v13'").get();
+  if (!done) {
+    db.exec(`UPDATE sales SET cod_status = 'collected', cod_collected = cod_amount
+             WHERE delivery_status = 'collected' AND cod_amount > 0 AND cod_status IS NULL`);
+    db.exec("UPDATE sales SET delivery_status = 'delivered' WHERE delivery_status = 'collected'");
+    db.exec("UPDATE sales SET delivery_status = 'failed' WHERE delivery_status IN ('returned','cancelled')");
+    db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES('migrated_delivery_v13', 'true')").run();
+  }
+}
+
 export const DB_FILE = DB_PATH;
 
 /* ------------------------------------------------------------------ */
@@ -481,16 +549,48 @@ export function defaultCashAccount(type = 'cash') {
 /* ------------------------------------------------------------------ */
 
 /** Công nợ khách hàng = nợ đầu kỳ + (bán chưa thu) - (trả hàng chưa hoàn) - (thu nợ). */
+/**
+ * Số tiền KHÁCH còn nợ trên một hoá đơn (dùng trong câu SQL).
+ *
+ *   - giao hàng thất bại: hàng quay về tiệm, khách không nợ gì;
+ *   - phần COD người giao chưa nộp về: đó là khoản phải thu của đối tác
+ *     vận chuyển, KHÔNG phải nợ của khách. Tính nó là nợ khách thì khách
+ *     lẻ không bao giờ đặt giao COD được, và cuối tháng tiệm đi đòi nhầm
+ *     người một khoản khách đã trả tận tay shipper.
+ */
+export const saleOwedSql = (a = 's') => `MAX(0, CASE
+    WHEN ${a}.delivery_status = 'failed' THEN 0
+    ELSE ${a}.total - ${a}.paid
+       - CASE WHEN ${a}.cod_status = 'pending' THEN ${a}.cod_amount - ${a}.cod_collected ELSE 0 END
+  END)`;
+
+/**
+ * Phần trả hàng được trừ vào nợ (dùng trong câu SQL).
+ *
+ *   - cấp phiếu đổi hàng: giá trị nằm ở phiếu, KHÔNG trừ nợ thêm;
+ *   - đổi hàng lấy món khác: phần đã bù vào hoá đơn mới không được trừ nợ
+ *     lần nữa — chỉ phần tiệm cấn trừ vào nợ cũ (debt_offset) mới tính.
+ *
+ * Trước đợt 13 chỗ đổi hàng tính HAI LẦN với khách có tên: đổi món 300
+ * nghìn lấy món 500 nghìn thì nợ bị ghi thấp đi 300 nghìn so với thật.
+ * Công thức này sửa luôn cả các phiếu đổi hàng cũ.
+ */
+export const returnCreditSql = (a = 'sr') => `(CASE
+    WHEN ${a}.refund_method = 'voucher' THEN 0
+    WHEN ${a}.exchange_sale_id IS NOT NULL THEN ${a}.debt_offset
+    ELSE ${a}.total - ${a}.refunded
+  END)`;
+
 export function customerDebt(customerId) {
   const c = get('SELECT opening_debt FROM customers WHERE id = ?', [customerId]);
   if (!c) return 0;
   const s = get(
-    `SELECT COALESCE(SUM(total - paid), 0) AS d FROM sales
-     WHERE customer_id = ? AND status = 'done'`,
+    `SELECT COALESCE(SUM(${saleOwedSql('s')}), 0) AS d FROM sales s
+     WHERE s.customer_id = ? AND s.status = 'done'`,
     [customerId]
   ).d;
   const r = get(
-    `SELECT COALESCE(SUM(total - refunded), 0) AS d FROM sale_returns WHERE customer_id = ?`,
+    `SELECT COALESCE(SUM(${returnCreditSql('sr')}), 0) AS d FROM sale_returns sr WHERE sr.customer_id = ?`,
     [customerId]
   ).d;
   const paid = get(

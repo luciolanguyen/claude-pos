@@ -19,8 +19,33 @@ r.put('/settings', (req, res) => {
 
 /* ========================== NGƯỜI DÙNG ============================= */
 
+/**
+ * Soát mã PIN gửi lên khi thêm / sửa người dùng.
+ *   undefined -> không đổi;  rỗng -> xoá PIN;  còn lại -> 4-8 chữ số, không trùng.
+ *
+ * Không cho trùng PIN giữa hai người: mã PIN còn dùng để biết AI là người
+ * duyệt. Hai người chung một mã thì sổ ghi "đã duyệt" mà không biết ai.
+ */
+function normPin(pin, userId) {
+  if (pin === undefined) return undefined;
+  const p = String(pin ?? '').trim();
+  if (!p) return null;
+  if (!/^\d{4,8}$/.test(p)) {
+    throw Object.assign(new Error('Mã PIN phải là từ 4 đến 8 chữ số.'), { status: 400 });
+  }
+  if (get('SELECT id FROM users WHERE pin = ? AND id <> ?', [p, Number(userId) || 0])) {
+    throw Object.assign(new Error(
+      'Mã PIN này đã có người khác dùng. Mỗi người một mã, để còn biết ai là người duyệt.'),
+    { status: 400 });
+  }
+  return p;
+}
+
+/* Không bao giờ trả mã PIN ra ngoài, chỉ báo có hay chưa có. */
 r.get('/users', (req, res) => {
-  res.json(all('SELECT id, username, full_name, role, phone, active, created_at FROM users ORDER BY id'));
+  res.json(all(`SELECT id, username, full_name, role, phone, active, created_at,
+                      (pin IS NOT NULL AND pin <> '') AS has_pin
+               FROM users ORDER BY id`));
 });
 
 r.post('/users', (req, res) => {
@@ -31,15 +56,22 @@ r.post('/users', (req, res) => {
   if (get('SELECT id FROM users WHERE username = ?', [b.username.trim()])) {
     return res.status(400).json({ error: 'Tên đăng nhập đã tồn tại' });
   }
+  let pin;
+  try { pin = normPin(b.pin, 0); } catch (e) { return res.status(400).json({ error: e.message }); }
   const info = run(
-    'INSERT INTO users(username, password, full_name, role, phone) VALUES(?, ?, ?, ?, ?)',
-    [b.username.trim(), b.password || '1234', b.full_name.trim(), b.role || 'cashier', b.phone || null]);
-  res.json(get('SELECT id, username, full_name, role, phone, active FROM users WHERE id = ?',
+    'INSERT INTO users(username, password, full_name, role, phone, pin) VALUES(?, ?, ?, ?, ?, ?)',
+    [b.username.trim(), b.password || '1234', b.full_name.trim(), b.role || 'cashier', b.phone || null,
+      pin ?? null]);
+  res.json(get(`SELECT id, username, full_name, role, phone, active,
+                       (pin IS NOT NULL AND pin <> '') AS has_pin FROM users WHERE id = ?`,
     [Number(info.lastInsertRowid)]));
 });
 
 r.put('/users/:id', (req, res) => {
   const b = req.body;
+  let pin;
+  try { pin = normPin(b.pin, req.params.id); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (pin !== undefined) run('UPDATE users SET pin = ? WHERE id = ?', [pin, req.params.id]);
   if (b.password) {
     run('UPDATE users SET full_name = ?, role = ?, phone = ?, active = ?, password = ? WHERE id = ?',
       [b.full_name, b.role, b.phone || null, b.active === 0 ? 0 : 1, b.password, req.params.id]);
@@ -47,7 +79,8 @@ r.put('/users/:id', (req, res) => {
     run('UPDATE users SET full_name = ?, role = ?, phone = ?, active = ? WHERE id = ?',
       [b.full_name, b.role, b.phone || null, b.active === 0 ? 0 : 1, req.params.id]);
   }
-  res.json(get('SELECT id, username, full_name, role, phone, active FROM users WHERE id = ?',
+  res.json(get(`SELECT id, username, full_name, role, phone, active,
+                       (pin IS NOT NULL AND pin <> '') AS has_pin FROM users WHERE id = ?`,
     [req.params.id]));
 });
 
@@ -88,6 +121,11 @@ const TABLES = [
   'carriers', 'product_boms', 'productions', 'production_items', 'draft_sales',
   'warranty_tickets', 'warranty_photos', 'warranty_logs', 'warranty_parts',
   'sale_orders', 'sale_order_items', 'sale_order_deliveries', 'sale_order_deposits',
+  /* Đợt 12 — trước đây quên khai nên sao lưu rồi phục hồi là mất sạch */
+  'product_suppliers', 'requisitions', 'requisition_items', 'requisition_item_suppliers',
+  'doc_drafts',
+  /* Đợt 13 */
+  'debt_allocations', 'vouchers', 'voucher_uses',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -149,7 +187,9 @@ r.post('/clear-transactions', (req, res) => {
   }
   tx(() => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
-    for (const t of ['sale_return_items', 'sale_returns', 'sale_items', 'sales',
+    /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
+    for (const t of ['voucher_uses', 'vouchers', 'debt_allocations',
+      'sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
       'stock_take_items', 'stock_takes', 'stock_transfer_items', 'stock_transfers',
       'production_items', 'productions', 'draft_sales', 'doc_drafts',
@@ -186,6 +226,7 @@ r.post('/reset-all', (req, res) => {
 
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
+    'voucher_uses', 'vouchers', 'debt_allocations',
     'activity_log', 'draft_sales', 'doc_drafts',
     /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
     'requisition_item_suppliers', 'requisition_items', 'requisitions',

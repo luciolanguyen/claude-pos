@@ -1,54 +1,58 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Search, Plus, Minus, Trash2, X, UserPlus, Printer, Percent, Package,
-  ShoppingCart, ArrowLeft, Wallet, CreditCard, HandCoins, FileText, Tag, Grid3x3,
-  Truck, Save, History, StickyNote, Eye, EyeOff, ChevronDown, FolderOpen, AlertTriangle,
-  ClipboardList, RefreshCcw, Undo2, MapPin,
+  Search, Plus, X, UserPlus, Printer, Percent, Package, ShoppingCart, ArrowLeft,
+  FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
+  ClipboardList, RefreshCcw, MapPin, ShieldCheck, Trash2,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal } from '../lib/store';
-import { money, n, qty as fq, match, datetime, date, smartTime, PAYMENT_LABEL } from '../lib/format';
+import { money, n, qty as fq, match, datetime, date, smartTime } from '../lib/format';
 import {
-  Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty,
-  Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
+  Button, IconButton, Input, Modal, Field, Empty, Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
+import DeliveryNotePrint from '../components/DeliveryNotePrint';
 import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
+import DeliveryInfoModal, {
+  normalizeDelivery, deliveryShipCharged, deliveryBody,
+} from '../components/PosDeliveryForm';
 import QuickReturnModal from '../components/PosQuickReturn';
+import ExchangeModal from '../components/PosExchange';
 import CashVoucherPrint from '../components/CashVoucherPrint';
 import CustomerForm from '../components/CustomerForm';
-import { categoryBranch } from '../components/CategoryTree';
+import { OrderBell, SaveAsOrderModal, PickOrderModal } from '../components/PosOrders';
+import { DebtButton, DebtCollectModal, CustomerDebtBanner } from '../components/PosDebt';
+import PaymentModal from '../components/PosPayment';
+import ProxyBuyer from '../components/PosBuyer';
+import { CartLine, OrderNote, MoneyCell, PercentCell, lineAmount } from '../components/PosCart';
+import { CategoryFilter, categoryFilterSet, LazyGrid } from '../components/PosCatalog';
 import {
-  OrderBell, SaveAsOrderModal, PickOrderModal, ExchangeModal,
-} from '../components/PosOrders';
-import {
-  DebtButton, DebtCollectModal, CustomerDebtBanner, CollectDebtRow,
-} from '../components/PosDebt';
+  usePosPolicy, PinApprovalModal, cartDiscountPercent, canSelfApprove,
+} from '../components/PosApproval';
+import { tabTitle, tabNoOf, smallestFree, normalizeTabs } from '../lib/posTabs';
 
-/* Chỉ chủ và quản lý mới được xem giá vốn khi bán. */
-const canSeeCost = (user) => user?.role === 'owner' || user?.role === 'manager';
+/* Người có quyền xem giá vốn mới thấy giá vốn và giá nhập gần nhất khi bán.
+   Máy chủ cũng gỡ hẳn các cột này khỏi dữ liệu trả cho người không có quyền. */
+const canSeeCost = (user, can) => !!can?.('cost.view') || user?.role === 'owner' || user?.role === 'manager';
 
-const newTab = (i, priceListId) => ({
+const newTab = (no, priceListId) => ({
   id: 'tab' + Date.now() + Math.random().toString(36).slice(2, 6),
-  title: `Hoá đơn ${i}`,
+  tabNo: no,
+  title: tabTitle(no),
   draftId: null,
   cart: [],
   customerId: null,
+  buyer: null,             // người mua hộ (tài liệu 03)
   priceListId,
   discountType: 'amount',
   discountValue: 0,
   note: '',
   isVat: false,
   delivery: null,
+  approval: null,          // phiếu duyệt giảm giá của quản lý — không bao giờ giữ mã PIN
 });
 
-const EMPTY_DELIVERY = {
-  name: '', phone: '', address: '', carrierId: null,
-  trackingCode: '', shipFee: 0, shipPayer: 'customer', codAmount: 0, note: '',
-};
-
-/* Ô hiển thị 1 sản phẩm trong lưới chọn hàng. */
 /**
  * Một ô hàng hoá trên lưới chọn.
  * inCart là tổng số lượng món này đang nằm trong giỏ (cộng cả các dòng có
@@ -110,13 +114,14 @@ function ProductTile({ p, priceListId, showCost, onPick, inCart = 0, bought = nu
         </span>
       </div>
       {showCost && (
-        <div className="text-2xs text-muted-ink tabular border-t border-line pt-0.5">
+        <div className="text-2xs text-muted-ink tabular border-t border-line pt-0.5 leading-snug">
           Vốn {n(p.cost_price)}
           {price > 0 && p.cost_price > 0 && (
             <span className="ml-1 text-emerald-700 font-semibold">
               +{Math.round((price - p.cost_price) / p.cost_price * 100)}%
             </span>
           )}
+          {p.last_purchase_price > 0 && <div>Nhập gần nhất {n(p.last_purchase_price)}</div>}
         </div>
       )}
     </button>
@@ -125,20 +130,41 @@ function ProductTile({ p, priceListId, showCost, onPick, inCart = 0, bought = nu
 
 export default function POS() {
   const {
-    meta, defaultWarehouse, defaultPriceList, user, store, settings, toast, loadMeta,
+    meta, defaultWarehouse, defaultPriceList, user, store, settings, toast, access, can,
   } = useApp();
+  const policy = usePosPolicy();
+  const selfApprove = canSelfApprove(user, access);
 
   const [warehouseId, setWarehouseId] = useState(null);
   const [tabs, setTabs] = useLocal('thpos.tabs', []);
   const [activeId, setActiveId] = useLocal('thpos.activeTab', null);
   const [search, setSearch] = useState('');
-  const [categoryId, setCategoryId] = useState('');
+  const [browseCat, setBrowseCat] = useState(null);         // nhóm đang đứng trên đường dẫn
+  const [pickedCats, setPickedCats] = useState([]);         // các nhóm đang tích chọn để lọc
   const [payOpen, setPayOpen] = useState(false);
   const [custOpen, setCustOpen] = useState(false);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);        // bảng theo dõi giao hàng
-  const [quickReturn, setQuickReturn] = useState(false);    // đổi trả không hoá đơn
+  const [quickReturn, setQuickReturn] = useState(false);    // trả hàng không hoá đơn
   const [voucher, setVoucher] = useState(null);             // phiếu thu vừa lập, để in
+  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [orderOpen, setOrderOpen] = useState(false);        // giỏ hàng -> đơn đặt
+  const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn đặt để giao
+  const [exchangeOpen, setExchangeOpen] = useState(false);  // đổi trả hàng
+  const [debtOpen, setDebtOpen] = useState(false);          // thu nợ khách đang chọn
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [priceHistOf, setPriceHistOf] = useState(null);
+  const [noteOf, setNoteOf] = useState(null);
+  const [printQueue, setPrintQueue] = useState([]);         // hoá đơn / phiếu giao chờ in lần lượt
+  const [provisional, setProvisional] = useState(null);
+  const [closing, setClosing] = useState(null);             // tab còn hàng, hỏi lại trước khi đóng
+  const [pinAsk, setPinAsk] = useState(null);               // đang hỏi PIN quản lý cho mức giảm giá
+  const [showCost, setShowCost] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const searchRef = useRef(null);
+  const gridRef = useRef(null);
+
+  const maySeeCost = canSeeCost(user, can);
 
   /* Lấy tờ phiếu thu vừa lập rồi mở hộp in. Không in được cũng không
      sao — tiền đã thu và đã ghi sổ rồi, chỉ là thiếu tờ giấy. */
@@ -150,45 +176,42 @@ export default function POS() {
       toast('Đã thu tiền xong, nhưng chưa lấy được phiếu để in. Vào Sổ quỹ in lại được.', 'warn', 7000);
     }
   };
-  const [draftsOpen, setDraftsOpen] = useState(false);
-  /* Ba việc mới làm ngay tại quầy: đặt hàng, giao đơn đã đặt, đổi trả */
-  const [orderOpen, setOrderOpen] = useState(false);       // giỏ hàng -> đơn đặt
-  const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn để giao
-  const [exchangeOpen, setExchangeOpen] = useState(false);   // đổi trả hàng
-  const [debtOpen, setDebtOpen] = useState(false);           // thu nợ khách
-  const [debtOf, setDebtOf] = useState(null);                // thu nợ đúng khách đang chọn
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [priceHistOf, setPriceHistOf] = useState(null);
-  const [noteOf, setNoteOf] = useState(null);
-  const [lastSale, setLastSale] = useState(null);
-  const [provisional, setProvisional] = useState(null);
-  const [showCost, setShowCost] = useState(false);
-  const [showGrid, setShowGrid] = useState(true);
-  const searchRef = useRef(null);
-
-  const maySeeCost = canSeeCost(user);
 
   useEffect(() => { if (defaultWarehouse && !warehouseId) setWarehouseId(defaultWarehouse); }, [defaultWarehouse, warehouseId]);
 
-  /* Luôn có ít nhất một tab */
+  /* Số "Đơn Hàng X" đang nằm trong danh sách lưu tạm (tài liệu 01) — tab mới
+     không được lấy trùng những số này */
+  const {
+    data: drafts, error: draftsError, reload: reloadDrafts, setData: setDrafts,
+  } = useFetch(() => api.drafts(), []);
+  const draftList = Array.isArray(drafts) ? drafts : [];
+  const draftNos = useMemo(
+    () => (Array.isArray(drafts) ? drafts : []).map((d) => Number(d.tab_no) || 0).filter(Boolean),
+    [drafts]);
+  const draftsReady = drafts !== null || !!draftsError;
+
+  /* Luôn có ít nhất một tab. Tab lưu trên máy từ trước (tên "Hoá đơn N")
+     thì đổi sang "Đơn Hàng N" và soát trùng số. */
   useEffect(() => {
-    if (!defaultPriceList) return;
+    if (!defaultPriceList || !draftsReady) return;
     if (!tabs.length) {
-      const t = newTab(1, defaultPriceList);
+      const t = newTab(smallestFree(draftNos), defaultPriceList);
       setTabs([t]);
       setActiveId(t.id);
-    } else if (!tabs.some((t) => t.id === activeId)) {
-      setActiveId(tabs[0].id);
+      return;
     }
-  }, [tabs, activeId, defaultPriceList, setTabs, setActiveId]);
+    const fixed = normalizeTabs(tabs);
+    if (fixed !== tabs) { setTabs(fixed); return; }
+    if (!tabs.some((t) => t.id === activeId)) setActiveId(tabs[0].id);
+  }, [tabs, activeId, defaultPriceList, draftsReady, draftNos, setTabs, setActiveId]);
 
   const tab = tabs.find((t) => t.id === activeId) || tabs[0] || null;
 
   /** Sửa tab đang mở. */
   const patchTab = useCallback((patch) => {
-    setTabs((prev) => prev.map((t) => t.id === activeId
+    setTabs((prev) => prev.map((t) => (t.id === activeId
       ? { ...t, ...(typeof patch === 'function' ? patch(t) : patch) }
-      : t));
+      : t)));
   }, [activeId, setTabs]);
 
   const { data: products, busy, reload } = useFetch(
@@ -216,6 +239,13 @@ export default function POS() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab?.customerId, customers]);
+
+  /* Chọn khách chủ trùng đúng người đang ghi là người mua hộ thì bỏ ô mua
+     hộ: tự mua cho mình thì không phải mua hộ */
+  useEffect(() => {
+    if (tab?.buyer?.id && tab.buyer.id === tab.customerId) patchTab({ buyer: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab?.customerId]);
 
   const customer = customers?.find((c) => c.id === tab?.customerId) || null;
 
@@ -246,7 +276,7 @@ export default function POS() {
     patchTab((t) => {
       const key = `${product.id}:${unit.id}`;
       if (t.cart.some((l) => l.key === key)) {
-        return { cart: t.cart.map((l) => l.key === key ? { ...l, qty: l.qty + 1 } : l) };
+        return { cart: t.cart.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l)) };
       }
       return {
         cart: [...t.cart, {
@@ -270,6 +300,7 @@ export default function POS() {
           track_stock: product.track_stock,
           stock: product.stock,
           cost_price: product.cost_price,
+          last_purchase_price: product.last_purchase_price,
         }],
       };
     });
@@ -289,7 +320,7 @@ export default function POS() {
   };
 
   const updateLine = (key, patch) =>
-    patchTab((t) => ({ cart: t.cart.map((l) => l.key === key ? { ...l, ...patch } : l) }));
+    patchTab((t) => ({ cart: t.cart.map((l) => (l.key === key ? { ...l, ...patch } : l)) }));
 
   const removeLine = (key) =>
     patchTab((t) => ({ cart: t.cart.filter((l) => l.key !== key) }));
@@ -302,39 +333,92 @@ export default function POS() {
       if (t.cart.some((l) => l.key === newKey && l.key !== line.key)) {
         return {
           cart: t.cart
-            .map((l) => l.key === newKey ? { ...l, qty: l.qty + line.qty } : l)
+            .map((l) => (l.key === newKey ? { ...l, qty: l.qty + line.qty } : l))
             .filter((l) => l.key !== line.key),
         };
       }
       return {
-        cart: t.cart.map((l) => l.key === line.key
+        cart: t.cart.map((l) => (l.key === line.key
           ? {
               ...l, key: newKey, unit_id: u.id, unit_name: u.unit_name, factor: u.factor,
               price: l.priceEdited ? l.price : (u.prices?.[t.priceListId] ?? l.price),
             }
-          : l),
+          : l)),
       };
     });
   };
 
+  /* ------------------ Giảm giá vượt hạn mức: hỏi PIN quản lý ------------------ */
+
+  /**
+   * Áp một thay đổi giá / giảm giá (tài liệu 06). Thu ngân giảm vượt hạn mức
+   * — so với bảng giá, gộp cả giảm dòng và giảm cả đơn — thì CHƯA áp, mở hộp
+   * PIN; quản lý duyệt xong mới áp. Phiếu duyệt giữ trên tab để gửi kèm hoá
+   * đơn, không bao giờ giữ mã PIN. Máy chủ soát lại lần nữa khi lưu.
+   */
+  const guardDiscount = (next, apply) => {
+    if (selfApprove) { apply(); return; }
+    const pct = cartDiscountPercent(next.cart || tab.cart, tab.priceListId, {
+      discountType: next.discountType ?? tab.discountType,
+      discountValue: next.discountValue ?? tab.discountValue,
+    });
+    const limit = policy.cashierMaxDiscountPercent;
+    const covered = tab.approval && tab.approval.expires > Date.now() && pct <= tab.approval.percent + 0.001;
+    if (pct <= limit + 0.001 || covered) { apply(); return; }
+    setPinAsk({
+      reason: `giảm giá ${pct}%`,
+      detail: (
+        <>
+          Đơn này sẽ giảm <b>{pct}%</b> so với bảng giá, vượt hạn mức <b>{limit}%</b> thu ngân được
+          tự giảm. Quản lý nhập mã PIN thì giá mới mới được áp.
+        </>
+      ),
+      onOk: (res) => {
+        apply();
+        patchTab({
+          approval: {
+            token: res.token,
+            approver: res.approver?.full_name || '',
+            percent: pct,
+            expires: Date.now() + (Number(res.expires_in) || 1800) * 1000 - 60 * 1000,
+          },
+        });
+      },
+    });
+  };
+
+  const commitLine = (key, patch) => {
+    const cart = tab.cart.map((l) => (l.key === key ? { ...l, ...patch } : l));
+    guardDiscount({ cart }, () => updateLine(key, patch));
+  };
+
+  const commitOrder = (patch) => guardDiscount(patch, () => patchTab(patch));
+
+  /** Cơ chế A: sửa Thành tiền thấp hơn thì tự tính ngược ra tiền giảm. */
+  const setLineAmount = (l, value) => {
+    const gross = Math.round(l.qty * l.price);
+    const v = Math.max(0, Math.round(Number(value) || 0));
+    if (v > gross) {
+      toast('Thành tiền không cao hơn số lượng × đơn giá được. Muốn bán giá cao hơn thì sửa ô đơn giá.', 'warn', 6000);
+    }
+    commitLine(l.key, { discountType: 'amount', discountValue: v >= gross ? 0 : gross - v });
+  };
+
   const clearTab = () => patchTab({
     cart: [], discountType: 'amount', discountValue: 0,
-    note: '', customerId: null, isVat: false, delivery: null,
+    note: '', customerId: null, buyer: null, isVat: false, delivery: null, approval: null,
   });
 
   /* ------------------------------- Tính tiền ------------------------------ */
 
-  const lineAmount = (l) => {
-    const gross = Math.round(l.qty * l.price);
-    const disc = l.discountType === 'percent'
-      ? Math.round(gross * (Number(l.discountValue) || 0) / 100)
-      : Math.round(Number(l.discountValue) || 0);
-    return { gross, disc: Math.min(disc, gross), amount: gross - Math.min(disc, gross) };
-  };
-
   const totals = useMemo(() => {
-    if (!tab) return { subtotal: 0, vat: 0, total: 0, count: 0, discount: 0, cogs: 0, lineDiscount: 0 };
-    let subtotal = 0, vat = 0, cogs = 0, lineDiscount = 0;
+    if (!tab) {
+      return { subtotal: 0, vat: 0, total: 0, count: 0, discount: 0, cogs: 0, lineDiscount: 0, shipCharged: 0 };
+    }
+    let subtotal = 0;
+    let vat = 0;
+    let cogs = 0;
+    let lineDiscount = 0;
     for (const l of tab.cart) {
       const { disc, amount } = lineAmount(l);
       lineDiscount += disc;
@@ -348,8 +432,7 @@ export default function POS() {
         : Math.round(Number(tab.discountValue) || 0),
       subtotal
     );
-    const shipCharged = tab.delivery?.shipPayer === 'customer'
-      ? Math.round(Number(tab.delivery.shipFee) || 0) : 0;
+    const shipCharged = deliveryShipCharged(tab.delivery);
     return {
       subtotal, vat, discount, lineDiscount, cogs, shipCharged,
       total: Math.max(0, subtotal - discount + vat + shipCharged),
@@ -357,37 +440,37 @@ export default function POS() {
     };
   }, [tab]);
 
+  /* Mức giảm hiện tại so với bảng giá — để nhắc thu ngân trước khi tới bước
+     thanh toán (đổi số lượng cũng làm % giảm thay đổi) */
+  const cartPct = useMemo(
+    () => (tab ? cartDiscountPercent(tab.cart, tab.priceListId, tab) : 0), [tab]);
+
   /* ---------------------------- Lọc danh sách hàng ---------------------- */
+
+  const catSet = useMemo(
+    () => categoryFilterSet(meta.categories, pickedCats, browseCat),
+    [meta.categories, pickedCats, browseCat]);
 
   const filtered = useMemo(() => {
     if (!products) return [];
     let list = products;
-    /* Chọn nhóm cha thì lấy cả hàng của nhóm con cháu — hàng thường
-       nằm ở nhóm lá, so đúng một id là ra danh sách trống. */
-    if (categoryId) {
-      const branch = categoryBranch(meta.categories, categoryId);
-      if (branch) list = list.filter((p) => branch.has(p.category_id));
-    }
+    /* Chọn nhóm cha thì lấy cả hàng của nhóm con cháu; chọn nhiều nhóm thì
+       lấy hàng thuộc một trong các nhóm (xem PosCatalog.jsx) */
+    if (catSet) list = list.filter((p) => catSet.has(p.category_id));
     if (search.trim()) {
       list = list.filter((p) =>
         match(p.name, search) || match(p.alias || '', search) || match(p.sku, search) ||
         (p.barcode || '').includes(search.trim()) || match(p.brand || '', search));
     }
 
-    /* Chọn khách rồi thì ĐƯA HÀNG KHÁCH TỪNG MUA LÊN ĐẦU.
-
-       Khách quen của tiệm điện gần như lần nào cũng lấy đúng mấy món đó —
-       thợ điện thì dây với aptomat, nhà thầu thì ống với đèn. Bắt thu ngân
-       cuộn qua cả trăm ô để tìm lại đúng món cũ là bắt làm việc thừa.
-
-       Chỉ đổi THỨ TỰ, không lọc bớt: món chưa mua bao giờ vẫn còn nguyên
-       ở dưới, vì khách hoàn toàn có thể hỏi món mới. */
+    /* Chọn khách rồi thì ĐƯA HÀNG KHÁCH TỪNG MUA LÊN ĐẦU. Chỉ đổi THỨ TỰ,
+       không lọc bớt: món chưa mua bao giờ vẫn còn nguyên ở dưới. */
     if (priceHist && Object.keys(priceHist).length) {
       const seen = (p) => (priceHist[p.id] ? 1 : 0);
       list = [...list].sort((a, b) => seen(b) - seen(a));
     }
     return list;
-  }, [products, categoryId, search, priceHist, meta.categories]);
+  }, [products, catSet, search, priceHist]);
 
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
@@ -405,26 +488,38 @@ export default function POS() {
 
   /* ------------------------------ Quản lý tab ---------------------------- */
 
+  const limitMsg = `Đã đạt giới hạn số lượng tab tối đa (${policy.maxTabs} tab). Vui lòng xử lý hoặc lưu tạm các tab cũ trước khi mở tab mới!`;
+
+  /** Mở tab "Đơn Hàng X" — X nhỏ nhất chưa dùng ở tab đang mở lẫn đơn lưu tạm. */
   const addTab = () => {
-    const nums = tabs.map((t) => Number((t.title.match(/\d+/) || [])[0]) || 0);
-    const next = Math.max(0, ...nums) + 1;
-    const t = newTab(next, defaultPriceList);
+    if (tabs.length >= policy.maxTabs) { toast(limitMsg, 'warn', 7000); return; }
+    const t = newTab(smallestFree([...tabs.map(tabNoOf), ...draftNos]), defaultPriceList);
     setTabs((prev) => [...prev, t]);
     setActiveId(t.id);
     setSearch('');
   };
 
+  /**
+   * Bỏ một tab khỏi màn hình. Hết sạch tab thì mở ngay tab mới mang số nhỏ
+   * nhất còn trống.
+   * @param reserved  số vừa đưa vào lưu tạm mà danh sách chưa kịp tải lại
+   */
+  const dropTab = (id, reserved = []) => {
+    const next = tabs.filter((x) => x.id !== id);
+    if (!next.length) {
+      const t = newTab(smallestFree([...draftNos, ...reserved]), defaultPriceList);
+      setTabs([t]);
+      setActiveId(t.id);
+      return;
+    }
+    setTabs(next);
+    if (id === activeId) setActiveId(next[0].id);
+  };
+
   const closeTab = (id) => {
     const t = tabs.find((x) => x.id === id);
-    if (t?.cart.length && !window.confirm(
-      `"${t.title}" đang có ${t.cart.length} mặt hàng chưa thanh toán.\n\n` +
-      'Đóng tab này sẽ mất giỏ hàng. Nếu muốn giữ lại, bấm Huỷ rồi dùng nút "Lưu tạm".'
-    )) return;
-    setTabs((prev) => {
-      const next = prev.filter((x) => x.id !== id);
-      if (id === activeId) setActiveId(next[0]?.id ?? null);
-      return next;
-    });
+    if (t?.cart.length) { setClosing(t); return; }
+    dropTab(id);
   };
 
   /* ------------------------------ Phím tắt ------------------------------- */
@@ -440,16 +535,22 @@ export default function POS() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, payOpen, custOpen, tabs]);
+  }, [tab, payOpen, custOpen, tabs, policy.maxTabs, draftNos]);
 
   /* ------------------------------ Lưu tạm -------------------------------- */
 
+  /**
+   * Lưu tạm rồi ĐÓNG tab ngay (tài liệu 01) cho gọn màn hình. Đơn mang theo
+   * số "Đơn Hàng X" của nó; tab mới mở sau đó không lấy trùng số này.
+   */
   const saveDraft = async () => {
     if (!tab?.cart.length) { toast('Giỏ hàng đang trống, chưa có gì để lưu.', 'warn'); return; }
+    const no = tabNoOf(tab);
     try {
       const res = await api.post('/drafts', {
         id: tab.draftId || undefined,
         title: tab.title,
+        tab_no: no,
         customer_id: tab.customerId,
         user_id: user?.id,
         warehouse_id: warehouseId,
@@ -458,10 +559,17 @@ export default function POS() {
         item_count: tab.cart.length,
         payload: {
           cart: tab.cart, discountType: tab.discountType, discountValue: tab.discountValue,
-          note: tab.note, isVat: tab.isVat, delivery: tab.delivery,
+          note: tab.note, isVat: tab.isVat, delivery: tab.delivery, buyer: tab.buyer,
         },
       });
-      patchTab({ draftId: res.id });
+      /* Giữ ngay số của đơn vừa lưu, đừng đợi tải lại danh sách: tab mới mở
+         liền sau đây mà chưa biết số này thì lấy trùng */
+      setDrafts((prev) => [
+        ...(Array.isArray(prev) ? prev : []).filter((d) => d.id !== res.id),
+        { ...res, tab_no: no },
+      ]);
+      dropTab(tab.id, [no]);
+      reloadDrafts();
       toast(`Đã lưu tạm "${tab.title}" — mọi máy trong tiệm đều mở tiếp được.`, 'ok', 5000);
     } catch (e) {
       toast(e.message, 'bad');
@@ -469,40 +577,69 @@ export default function POS() {
   };
 
   /**
-   * Mở tiếp một hoá đơn tạm.
-   * Danh sách hoá đơn tạm KHÔNG kèm giỏ hàng (payload) cho nhẹ, nên phải
-   * gọi riêng lấy chi tiết. Đọc thẳng d.payload thì mở ra giỏ rỗng.
+   * Mở lại một đơn lưu tạm (tài liệu 01, mục 4):
+   *   1. đủ số tab tối đa thì từ chối;
+   *   2. số của đơn đang bị một tab khác chiếm thì đổi tab đó sang số nhỏ
+   *      nhất còn trống, đơn mở ra giữ nguyên số cũ;
+   *   3. đơn rời khỏi danh sách lưu tạm, tiêu điểm chuyển sang tab vừa mở.
    */
   const openDraft = async (d) => {
-    let full = d;
+    if (tabs.length >= policy.maxTabs) { toast(limitMsg, 'warn', 7000); return; }
+    let full;
     try {
       full = await api.draft(d.id);
     } catch (e) {
-      toast('Không mở được hoá đơn tạm: ' + e.message, 'bad', 6000);
+      toast('Không mở được đơn lưu tạm: ' + e.message, 'bad', 6000);
       return;
     }
     const p = full.payload || {};
     if (!p.cart?.length) {
-      toast('Hoá đơn tạm này không còn dòng hàng nào.', 'bad', 6000);
+      toast('Đơn lưu tạm này không còn dòng hàng nào.', 'bad', 6000);
       return;
     }
+
+    /* Xoá khỏi danh sách TRƯỚC khi mở: xoá hỏng mà vẫn mở thì hai máy có thể
+       cùng bán một đơn */
+    try {
+      await api.del(`/drafts/${full.id}`);
+    } catch (e) {
+      toast('Chưa mở được đơn lưu tạm: ' + e.message, 'bad', 6000);
+      return;
+    }
+
+    const otherDraftNos = draftList
+      .filter((x) => x.id !== full.id)
+      .map((x) => Number(x.tab_no) || 0)
+      .filter(Boolean);
+    const want = Number(full.tab_no) > 0
+      ? Number(full.tab_no)
+      : smallestFree([...tabs.map(tabNoOf), ...otherDraftNos]);
+
+    let next = tabs;
+    const clash = tabs.find((t) => tabNoOf(t) === want);
+    if (clash) {
+      const moved = smallestFree([...tabs.map(tabNoOf), ...otherDraftNos, want]);
+      next = tabs.map((t) => (t.id === clash.id ? { ...t, tabNo: moved, title: tabTitle(moved) } : t));
+      toast(`Tab "${tabTitle(want)}" trên màn hình đổi thành "${tabTitle(moved)}" để nhường số cho đơn lưu tạm.`,
+        'info', 6000);
+    }
+
     const t = {
-      id: 'tab' + Date.now(),
-      title: full.title || `Hoá đơn tạm ${full.code}`,
-      draftId: full.id,
-      cart: p.cart || [],
+      ...newTab(want, full.price_list_id || defaultPriceList),
+      cart: p.cart,
       customerId: full.customer_id,
-      priceListId: full.price_list_id || defaultPriceList,
+      buyer: p.buyer || null,
       discountType: p.discountType || 'amount',
       discountValue: p.discountValue || 0,
       note: p.note || '',
       isVat: !!p.isVat,
       delivery: p.delivery || null,
     };
-    setTabs((prev) => [...prev, t]);
+    setTabs([...next, t]);
     setActiveId(t.id);
+    setDrafts((prev) => (Array.isArray(prev) ? prev : []).filter((x) => x.id !== full.id));
     setDraftsOpen(false);
-    toast(`Đã mở "${t.title}"`, 'ok');
+    toast(`Đã mở lại "${t.title}"`, 'ok');
   };
 
   /* ------------------------------ Thanh toán ----------------------------- */
@@ -524,6 +661,9 @@ export default function POS() {
       serial: l.serial || null,
     })),
     customer_id: tab.customerId,
+    buyer_id: tab.buyer?.id || null,
+    buyer_name: tab.buyer?.name || null,
+    buyer_phone: tab.buyer?.phone || null,
     warehouse_id: warehouseId,
     user_id: user?.id,
     price_list_id: tab.priceListId,
@@ -531,28 +671,20 @@ export default function POS() {
     discount: tab.discountType === 'amount' ? tab.discountValue : 0,
     discount_percent: tab.discountType === 'percent' ? tab.discountValue : 0,
     is_vat_invoice: tab.isVat ? 1 : 0,
-    note: tab.note,
-    ...(tab.delivery ? {
-      delivery_name: tab.delivery.name,
-      delivery_phone: tab.delivery.phone,
-      delivery_address: tab.delivery.address,
-      carrier_id: tab.delivery.carrierId,
-      tracking_code: tab.delivery.trackingCode,
-      ship_fee: Number(tab.delivery.shipFee) || 0,
-      ship_payer: tab.delivery.shipPayer,
-      cod_amount: Number(tab.delivery.codAmount) || 0,
-      delivery_note: tab.delivery.note,
-    } : {}),
+    note: String(tab.note || '').slice(0, 255),
+    ...(tab.approval?.token ? { approval_token: tab.approval.token } : {}),
+    ...(tab.delivery ? deliveryBody(tab.delivery) : {}),
     ...extra,
   });
 
   const submit = async (payload) => {
-    const { collect_debt: collectDebt = 0, ...rest } = payload;
+    const { collect_debt: collectDebt = 0, _print: printPref = null, ...rest } = payload;
+    /* Lỗi ở bước này (thiếu hàng, cần PIN...) thì ném ra cho hộp thanh toán
+       báo. Qua được bước này là hoá đơn ĐÃ LƯU — mọi việc sau đó hỏng cũng
+       không được ném lỗi, kẻo thu ngân tưởng chưa lưu mà bấm lại lần nữa. */
     const res = await api.post('/sales', buildBody(rest));
 
-    /* Nợ cũ thu thành phiếu thu riêng, chạy SAU khi hoá đơn đã lưu chắc.
-       Nếu bước này hỏng thì hoá đơn vẫn còn — báo cho thu ngân biết để thu
-       lại bằng nút Thu nợ, chứ không huỷ luôn hoá đơn vừa bán. */
+    /* Nợ cũ thu thành phiếu thu riêng, chạy SAU khi hoá đơn đã lưu chắc */
     if (collectDebt > 0 && tab.customerId) {
       try {
         await api.post(`/customers/${tab.customerId}/pay`, {
@@ -568,22 +700,30 @@ export default function POS() {
       }
     }
 
-    const full = await api.sale(res.id);
-    setLastSale(full);
-    if (tab.draftId) { try { await api.del(`/drafts/${tab.draftId}`); } catch { /* đã xoá */ } }
-    // Đóng tab vừa thanh toán, còn 1 tab thì làm sạch thay vì đóng
-    setTabs((prev) => {
-      if (prev.length === 1) {
-        return [{ ...newTab(1, defaultPriceList), id: prev[0].id, title: prev[0].title }];
+    /* In theo lựa chọn: hoá đơn đầy đủ, phiếu giao cho shipper, hoặc cả hai.
+       In LẦN LƯỢT từng tờ — hai vùng in cùng lúc sẽ in chồng lên nhau. */
+    const queue = [];
+    try {
+      if (!printPref || printPref.invoice) {
+        queue.push({ kind: 'invoice', key: `i${res.id}`, sale: await api.sale(res.id) });
       }
-      const next = prev.filter((t) => t.id !== activeId);
-      setActiveId(next[0]?.id ?? null);
-      return next;
-    });
+      if (printPref?.note) {
+        queue.push({ kind: 'note', key: `n${res.id}`, note: await api.get(`/deliveries/${res.id}`) });
+      }
+    } catch {
+      toast(`Hoá đơn ${res.code} đã lưu nhưng chưa tải được để in — vào Hoá đơn hoặc Theo dõi giao để in lại.`,
+        'warn', 8000);
+    }
+    setPrintQueue(queue);
+
+    if (tab.draftId) { try { await api.del(`/drafts/${tab.draftId}`); } catch { /* đã xoá */ } }
+    dropTab(tab.id);
     setPayOpen(false);
     reload();
     reloadCustomers();          // để dòng cảnh báo nợ cập nhật ngay
-    toast(`Đã lưu hoá đơn ${res.code}`, 'ok');
+    toast(res.cod_amount > 0
+      ? `Đã lưu hoá đơn ${res.code} — thu hộ ${money(res.cod_amount)} chờ đối soát`
+      : `Đã lưu hoá đơn ${res.code}`, 'ok', 5000);
     return res;
   };
 
@@ -594,6 +734,8 @@ export default function POS() {
     customer_name: customer?.name || 'Khách lẻ',
     customer_phone: customer?.phone,
     customer_address: customer?.address,
+    buyer_name: tab.buyer?.name,
+    buyer_phone: tab.buyer?.phone,
     user_name: user?.full_name,
     warehouse_name: meta.warehouses.find((w) => w.id === warehouseId)?.name,
     subtotal: totals.subtotal,
@@ -620,6 +762,14 @@ export default function POS() {
   if (!warehouseId || !tab) return <Spinner />;
 
   const priceListName = meta.priceLists.find((p) => p.id === tab.priceListId)?.name;
+  const printing = printQueue[0] || null;
+  const nextPrint = () => setPrintQueue((q) => q.slice(1));
+  const approvalLive = tab.approval && tab.approval.expires > Date.now() ? tab.approval : null;
+  const discountOver = !selfApprove && tab.cart.length > 0
+    && cartPct > policy.cashierMaxDiscountPercent + 0.001
+    && !(approvalLive && cartPct <= approvalLive.percent + 0.001);
+  const barBtn = `px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
+                  transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]`;
 
   return (
     <div className="h-screen flex flex-col bg-surface">
@@ -653,7 +803,7 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
-        <DebtButton onOpen={() => { setDebtOf(null); setDebtOpen(true); }} />
+        <DebtButton customer={customer} onOpen={() => setDebtOpen(true)} />
 
         {maySeeCost && (
           <button
@@ -663,7 +813,8 @@ export default function POS() {
                         ${showCost
                           ? 'bg-amber-500/20 border-amber-400/40 text-amber-200'
                           : 'bg-white/10 border-white/15 text-slate-300 hover:text-white'}`}
-            title="Chỉ chủ và quản lý thấy được nút này"
+            title="Hiện giá vốn và giá nhập gần nhất — chỉ người có quyền xem giá vốn thấy nút này"
+            aria-pressed={showCost}
           >
             {showCost ? <Eye size={14} aria-hidden="true" /> : <EyeOff size={14} aria-hidden="true" />}
             Giá vốn
@@ -691,12 +842,13 @@ export default function POS() {
         </button>
       </header>
 
-      {/* ---------------------------- Thanh tab hoá đơn ---------------------- */}
+      {/* ---------------------------- Thanh tab đơn hàng --------------------- */}
       <div className="bg-slate-800 flex items-stretch gap-0.5 px-2 shrink-0 overflow-x-auto no-print"
-        role="tablist" aria-label="Các hoá đơn đang mở">
+        role="tablist" aria-label="Các đơn hàng đang mở">
         {tabs.map((t) => {
           const active = t.id === activeId;
           const count = t.cart.length;
+          const closable = tabs.length > 1 || count > 0;
           return (
             <div key={t.id} className="flex items-stretch shrink-0">
               <button
@@ -710,6 +862,10 @@ export default function POS() {
                               : 'text-slate-300 hover:text-white hover:bg-white/10'}`}
               >
                 {t.draftId && <Save size={11} className="text-emerald-500 shrink-0" aria-hidden="true" />}
+                {t.delivery && (
+                  <Truck size={12} className={`shrink-0 ${active ? 'text-amber-600' : 'text-amber-300'}`}
+                    aria-label="Đơn giao hàng" />
+                )}
                 {t.title}
                 {count > 0 && (
                   <span className={`text-2xs px-1 rounded tabular ${active ? 'bg-accent-soft text-emerald-900' : 'bg-white/20'}`}>
@@ -717,7 +873,7 @@ export default function POS() {
                   </span>
                 )}
               </button>
-              {tabs.length > 1 && (
+              {closable && (
                 <button
                   onClick={() => closeTab(t.id)}
                   aria-label={`Đóng ${t.title}`}
@@ -732,79 +888,55 @@ export default function POS() {
         })}
         <button
           onClick={addTab}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1"
-          aria-label="Mở thêm hoá đơn mới (F7)"
-          title="Mở thêm hoá đơn mới (F7)"
+          className={`px-2.5 h-9 hover:text-white hover:bg-white/10 rounded-t transition-colors duration-150
+                      cursor-pointer shrink-0 flex items-center gap-1
+                      ${tabs.length >= policy.maxTabs ? 'text-slate-500' : 'text-slate-300'}`}
+          aria-label={`Mở thêm đơn hàng mới (F7) — đang mở ${tabs.length}/${policy.maxTabs} tab`}
+          title={`Mở thêm đơn hàng mới (F7) — đang mở ${tabs.length}/${policy.maxTabs} tab`}
         >
           <Plus size={15} aria-hidden="true" />
+          {tabs.length >= policy.maxTabs - 2 && (
+            <span className="text-2xs tabular">{tabs.length}/{policy.maxTabs}</span>
+          )}
           <span className="kbd !bg-white/15 !text-slate-300 !border-white/20 hidden sm:inline">F7</span>
         </button>
         <div className="flex-1" />
-        <button
-          onClick={() => setExchangeOpen(true)}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
-          title="Khách đổi hàng, có hoá đơn cũ"
-        >
+        <button onClick={() => setExchangeOpen(true)} className={barBtn} aria-label="Đổi trả hàng"
+          title="Khách đổi hoặc trả hàng — có hoá đơn thì quét hoá đơn, không có thì chọn Trả hàng nhanh">
           <RefreshCcw size={14} aria-hidden="true" />
           <span className="hidden sm:inline">Đổi trả hàng</span>
         </button>
-        <button
-          onClick={() => setQuickReturn(true)}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
-          title="Khách trả hàng nhưng không giữ hoá đơn"
-        >
-          <Undo2 size={14} aria-hidden="true" />
-          <span className="hidden sm:inline">Trả không hoá đơn</span>
-        </button>
-        <button
-          onClick={() => setBoardOpen(true)}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
-          title="Xem các đơn đang trên đường giao"
-        >
+        <button onClick={() => setBoardOpen(true)} className={barBtn} aria-label="Theo dõi giao hàng"
+          title="Theo dõi đơn giao và đối soát tiền thu hộ">
           <MapPin size={14} aria-hidden="true" />
           <span className="hidden sm:inline">Theo dõi giao</span>
         </button>
-        <button
-          onClick={() => setPickOrderOpen(true)}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
-        >
+        <button onClick={() => setPickOrderOpen(true)} className={barBtn} aria-label="Giao đơn đặt hàng">
           <Truck size={14} aria-hidden="true" />
           <span className="hidden sm:inline">Giao đơn đặt</span>
         </button>
-        <button
-          onClick={() => setDraftsOpen(true)}
-          className="px-2.5 h-9 text-slate-300 hover:text-white hover:bg-white/10 rounded-t
-                     transition-colors duration-150 cursor-pointer shrink-0 flex items-center gap-1.5 text-[13px]"
-        >
+        <button onClick={() => setDraftsOpen(true)} className={barBtn} aria-label={`Đơn lưu tạm — ${draftList.length} đơn`}>
           <FolderOpen size={14} aria-hidden="true" />
-          <span className="hidden sm:inline">Hoá đơn tạm</span>
+          <span className="hidden sm:inline">Đơn lưu tạm</span>
+          {draftList.length > 0 && <span className="text-2xs px-1 rounded bg-white/20 tabular">{draftList.length}</span>}
         </button>
       </div>
 
       <div className="flex-1 flex min-h-0">
         {/* ------------------------- Lưới chọn hàng ------------------------ */}
         <section className={`flex-1 min-w-0 flex flex-col ${showGrid ? '' : 'hidden lg:flex'}`}>
-          <div className="px-3 py-2 border-b border-line bg-card flex items-center gap-2 overflow-x-auto shrink-0">
-            <button onClick={() => setCategoryId('')}
-              className={`btn btn-sm shrink-0 ${categoryId === '' ? 'btn-secondary' : 'btn-outline'}`}>
-              Tất cả <span className="text-2xs opacity-70">({products?.length || 0})</span>
-            </button>
-            {/* Chỉ hiện ngành hàng cấp 1: bấm vào là ra cả hàng của các
-                nhóm con bên dưới, nên không cần bày hết mọi cấp ra đây */}
-            {meta.categories.filter((c) => (c.level || 1) === 1).map((c) => (
-              <button key={c.id} onClick={() => setCategoryId(String(c.id))}
-                className={`btn btn-sm shrink-0 ${categoryId === String(c.id) ? 'btn-secondary' : 'btn-outline'}`}>
-                {c.name}
-              </button>
-            ))}
-          </div>
+          <CategoryFilter
+            categories={meta.categories}
+            browseId={browseCat}
+            onBrowse={setBrowseCat}
+            selected={pickedCats}
+            onToggle={(id) => setPickedCats((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
+            onClear={() => { setPickedCats([]); setBrowseCat(null); }}
+            shown={filtered.length}
+            total={products?.length || 0}
+          />
 
-          <div className="flex-1 overflow-y-auto p-3">
+          <div ref={gridRef} className="flex-1 overflow-y-auto p-3">
             {busy ? <Spinner label="Đang tải hàng hoá..." />
               : filtered.length === 0 ? (
                 <Empty
@@ -812,8 +944,10 @@ export default function POS() {
                   title="Không có hàng nào khớp"
                   message={search
                     ? `Không tìm thấy "${search}". Thử gõ tên khác, tên phụ, hoặc bỏ bớt bộ lọc nhóm hàng.`
-                    : 'Nhóm hàng này chưa có sản phẩm.'}
-                  action={search && <Button onClick={() => setSearch('')}>Xoá từ khoá</Button>}
+                    : 'Nhóm hàng đang chọn chưa có sản phẩm.'}
+                  action={search
+                    ? <Button onClick={() => setSearch('')}>Xoá từ khoá</Button>
+                    : catSet ? <Button onClick={() => { setPickedCats([]); setBrowseCat(null); }}>Bỏ lọc nhóm</Button> : null}
                 />
               ) : (
                 <>
@@ -828,14 +962,18 @@ export default function POS() {
                       </span>
                     </div>
                   )}
-                <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-                  {filtered.map((p) => (
-                    <ProductTile key={p.id} p={p} priceListId={tab.priceListId}
-                      showCost={maySeeCost && showCost} onPick={addToCart}
-                      inCart={inCartQty.get(p.id) || 0}
-                      bought={priceHist?.[p.id]?.[0] || null} />
-                  ))}
-                </div>
+                  <LazyGrid
+                    items={filtered}
+                    rootRef={gridRef}
+                    resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${browseCat || ''}|${tab.customerId || ''}`}
+                    className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+                    renderItem={(p) => (
+                      <ProductTile key={p.id} p={p} priceListId={tab.priceListId}
+                        showCost={maySeeCost && showCost} onPick={addToCart}
+                        inCart={inCartQty.get(p.id) || 0}
+                        bought={priceHist?.[p.id]?.[0] || null} />
+                    )}
+                  />
                 </>
               )}
           </div>
@@ -874,11 +1012,15 @@ export default function POS() {
                 {priceListName && <Badge tone="info">{priceListName}</Badge>}
               </div>
             )}
-            {/* Nhắc đòi nợ ngay lúc còn gặp mặt khách, không đợi tới lúc thanh toán */}
-            <CustomerDebtBanner
+            <ProxyBuyer
               customer={customer}
-              onCollect={() => { setDebtOf(customer.id); setDebtOpen(true); }}
+              customers={customers || []}
+              value={tab.buyer}
+              onChange={(b) => patchTab({ buyer: b })}
+              onCreated={reloadCustomers}
             />
+            {/* Nhắc đòi nợ ngay lúc còn gặp mặt khách, không đợi tới lúc thanh toán */}
+            <CustomerDebtBanner customer={customer} onCollect={() => setDebtOpen(true)} />
           </div>
 
           {/* Các dòng hàng */}
@@ -891,170 +1033,30 @@ export default function POS() {
               />
             ) : (
               <ul className="divide-y divide-line">
-                {tab.cart.map((l) => {
-                  const { gross, disc, amount } = lineAmount(l);
-                  const overStock = l.track_stock && l.qty * l.factor > l.stock;
-                  const hist = priceHist[l.product_id];
-                  const profit = amount - Math.round(l.qty * l.factor * (l.cost_price || 0));
-
-                  return (
-                    <li key={l.key} className="p-2.5 hover:bg-muted/40 transition-colors duration-100">
-                      <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[13px] font-semibold leading-snug">{l.name}</div>
-                          <div className="text-2xs text-muted-ink font-mono">{l.sku}</div>
-                        </div>
-                        {hist?.length > 0 && (
-                          <button
-                            onClick={() => setPriceHistOf(l)}
-                            className="btn btn-sm !min-h-[26px] !px-1.5 btn-outline shrink-0"
-                            title={`Giá đã bán cho khách này: ${hist.map((h) => n(h.price)).join(' · ')}`}
-                          >
-                            <History size={12} aria-hidden="true" />
-                            <span className="text-2xs tabular">{n(hist[0].price)}</span>
-                          </button>
-                        )}
-                        <IconButton
-                          icon={StickyNote}
-                          label={`Ghi chú và bảo hành cho ${l.name}`}
-                          size={13}
-                          className={l.note || l.warrantyMonths > 0 ? '!text-info' : ''}
-                          onClick={() => setNoteOf(l)}
-                        />
-                        <IconButton icon={Trash2} label={`Bỏ ${l.name} khỏi giỏ`} size={14}
-                          className="!text-danger hover:!bg-red-50" onClick={() => removeLine(l.key)} />
-                      </div>
-
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <div className="flex items-center border border-line rounded overflow-hidden shrink-0">
-                          <button className="w-7 h-7 flex items-center justify-center hover:bg-muted
-                                             transition-colors duration-100 cursor-pointer"
-                            aria-label="Giảm số lượng"
-                            onClick={() => updateLine(l.key, { qty: Math.max(0.01, l.qty - 1) })}>
-                            <Minus size={13} aria-hidden="true" />
-                          </button>
-                          <input
-                            type="number" step="any" min="0"
-                            className="w-14 h-7 text-center text-[13px] tabular font-mono border-x border-line
-                                       focus:outline-none focus:bg-accent-soft/50"
-                            aria-label={`Số lượng ${l.name}`}
-                            value={l.qty}
-                            onFocus={(e) => e.target.select()}
-                            onChange={(e) => updateLine(l.key, { qty: e.target.value === '' ? '' : Number(e.target.value) })}
-                            onBlur={(e) => { if (!Number(e.target.value)) updateLine(l.key, { qty: 1 }); }}
-                          />
-                          <button className="w-7 h-7 flex items-center justify-center hover:bg-muted
-                                             transition-colors duration-100 cursor-pointer"
-                            aria-label="Tăng số lượng"
-                            onClick={() => updateLine(l.key, { qty: l.qty + 1 })}>
-                            <Plus size={13} aria-hidden="true" />
-                          </button>
-                        </div>
-
-                        {l.units.length > 1 ? (
-                          <select className="field field-sm !w-auto shrink-0 text-2xs"
-                            value={l.unit_id}
-                            onChange={(e) => changeUnit(l, e.target.value)}
-                            aria-label={`Đơn vị tính của ${l.name}`}>
-                            {l.units.map((u) => <option key={u.id} value={u.id}>{u.unit_name}</option>)}
-                          </select>
-                        ) : (
-                          <span className="text-2xs text-muted-ink px-1 shrink-0">{l.unit_name}</span>
-                        )}
-
-                        <input
-                          className="field field-sm num flex-1 min-w-0"
-                          inputMode="numeric"
-                          aria-label={`Đơn giá ${l.name}`}
-                          value={n(l.price)}
-                          onFocus={(e) => e.target.select()}
-                          onChange={(e) => {
-                            const v = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
-                            updateLine(l.key, { price: v, priceEdited: true });
-                          }}
-                        />
-                      </div>
-
-                      {/* Giảm giá dòng: chọn % hoặc số tiền */}
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <span className="text-2xs text-muted-ink w-12 shrink-0">Giảm</span>
-                        <div className="flex rounded border border-line overflow-hidden shrink-0">
-                          {[['amount', 'đ'], ['percent', '%']].map(([k, lb]) => (
-                            <button
-                              key={k}
-                              onClick={() => updateLine(l.key, { discountType: k, discountValue: 0 })}
-                              className={`w-7 h-7 text-2xs font-bold transition-colors duration-100 cursor-pointer
-                                          ${l.discountType === k ? 'bg-primary text-white' : 'hover:bg-muted'}`}
-                              aria-label={k === 'amount' ? 'Giảm theo số tiền' : 'Giảm theo phần trăm'}
-                              aria-pressed={l.discountType === k}
-                            >
-                              {lb}
-                            </button>
-                          ))}
-                        </div>
-                        {l.discountType === 'percent' ? (
-                          <input
-                            type="number" min="0" max="100" step="0.5"
-                            className="field field-sm num !w-16"
-                            aria-label={`Phần trăm giảm giá ${l.name}`}
-                            value={l.discountValue}
-                            onFocus={(e) => e.target.select()}
-                            onChange={(e) => updateLine(l.key, { discountValue: Math.min(100, Number(e.target.value) || 0) })}
-                          />
-                        ) : (
-                          <input
-                            className="field field-sm num !w-24"
-                            inputMode="numeric"
-                            aria-label={`Số tiền giảm ${l.name}`}
-                            value={n(l.discountValue)}
-                            onFocus={(e) => e.target.select()}
-                            onChange={(e) => updateLine(l.key, {
-                              discountValue: parseInt(e.target.value.replace(/\D/g, ''), 10) || 0,
-                            })}
-                          />
-                        )}
-                        {disc > 0 && (
-                          <span className="text-2xs text-danger tabular">-{n(disc)}</span>
-                        )}
-                        <div className="flex-1" />
-                        <span className="text-sm font-bold tabular font-mono">{money(amount)}</span>
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 mt-1">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          {l.factor > 1 && (
-                            <span className="text-2xs text-muted-ink tabular">
-                              = {fq(l.qty * l.factor)} {l.base_unit}
-                            </span>
-                          )}
-                          {overStock && <Badge tone="bad">Vượt tồn ({fq(l.stock)} {l.base_unit})</Badge>}
-                          {l.note && (
-                            <span className="text-2xs text-info truncate max-w-[180px]">
-                              Ghi chú: {l.note}
-                            </span>
-                          )}
-                          {l.warrantyMonths > 0 && (
-                            <Badge tone="ok">BH {l.warrantyMonths} tháng</Badge>
-                          )}
-                          {l.serial && (
-                            <span className="text-2xs text-muted-ink font-mono">SN {l.serial}</span>
-                          )}
-                        </div>
-                        {maySeeCost && showCost && (
-                          <span className={`text-2xs tabular shrink-0 ${profit < 0 ? 'text-danger font-bold' : 'text-muted-ink'}`}>
-                            Vốn {n(Math.round(l.qty * l.factor * (l.cost_price || 0)))} · lãi {n(profit)}
-                          </span>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
+                {tab.cart.map((l) => (
+                  <CartLine
+                    key={l.key}
+                    l={l}
+                    hist={priceHist[l.product_id]}
+                    showCost={maySeeCost && showCost}
+                    onQty={(q) => updateLine(l.key, { qty: q })}
+                    onUnit={(unitId) => changeUnit(l, unitId)}
+                    onPrice={(v) => commitLine(l.key, { price: v, priceEdited: true })}
+                    onAmount={(v) => setLineAmount(l, v)}
+                    onDiscount={(type, value) => commitLine(l.key, { discountType: type, discountValue: value })}
+                    onRemove={() => removeLine(l.key)}
+                    onHistory={() => setPriceHistOf(l)}
+                    onNote={() => setNoteOf(l)}
+                  />
+                ))}
               </ul>
             )}
           </div>
 
           {/* Tổng tiền + nút */}
           <div className="border-t border-line p-2.5 shrink-0 bg-card">
+            <OrderNote value={tab.note} onChange={(v) => patchTab({ note: v })} />
+
             <div className="space-y-1 mb-2.5">
               <div className="flex items-center justify-between text-[13px]">
                 <span className="text-muted-ink">
@@ -1066,7 +1068,7 @@ export default function POS() {
                 <span className="tabular font-mono font-semibold">{money(totals.subtotal)}</span>
               </div>
 
-              {/* Giảm giá toàn đơn: % hoặc số tiền */}
+              {/* Giảm giá toàn đơn: % hoặc số tiền — ghi nhận khi rời ô */}
               <div className="flex items-center justify-between gap-2 text-[13px]">
                 <span className="text-muted-ink flex items-center gap-1">
                   <Percent size={12} aria-hidden="true" /> Giảm cả đơn
@@ -1087,17 +1089,13 @@ export default function POS() {
                     ))}
                   </div>
                   {tab.discountType === 'percent' ? (
-                    <input
-                      type="number" min="0" max="100" step="0.5"
-                      className="field field-sm num !w-20"
-                      aria-label="Phần trăm giảm cả đơn"
-                      value={tab.discountValue}
-                      onFocus={(e) => e.target.select()}
-                      onChange={(e) => patchTab({ discountValue: Math.min(100, Number(e.target.value) || 0) })}
-                    />
+                    <PercentCell value={tab.discountValue} className="!w-20"
+                      label="Phần trăm giảm cả đơn"
+                      onCommit={(v) => commitOrder({ discountValue: v })} />
                   ) : (
-                    <MoneyInput size="sm" className="!w-28" value={tab.discountValue}
-                      onChange={(v) => patchTab({ discountValue: v })} />
+                    <MoneyCell value={tab.discountValue} className="!w-28"
+                      label="Số tiền giảm cả đơn"
+                      onCommit={(v) => commitOrder({ discountValue: v })} />
                   )}
                 </div>
               </div>
@@ -1126,9 +1124,25 @@ export default function POS() {
               {totals.shipCharged > 0 && (
                 <div className="flex items-center justify-between text-[13px]">
                   <span className="text-muted-ink flex items-center gap-1">
-                    <Truck size={12} aria-hidden="true" /> Phí giao hàng
+                    <Truck size={12} aria-hidden="true" /> Phí vận chuyển
                   </span>
                   <span className="tabular font-mono">{money(totals.shipCharged)}</span>
+                </div>
+              )}
+
+              {approvalLive && (
+                <div className="flex items-center gap-1.5 text-2xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-1">
+                  <ShieldCheck size={12} className="shrink-0" aria-hidden="true" />
+                  <span>{approvalLive.approver || 'Quản lý'} đã duyệt giảm tới {approvalLive.percent}%</span>
+                </div>
+              )}
+              {discountOver && (
+                <div className="flex items-start gap-1.5 text-2xs text-amber-900 bg-amber-50 border border-warn/30 rounded px-1.5 py-1" role="status">
+                  <AlertTriangle size={12} className="shrink-0 mt-px" aria-hidden="true" />
+                  <span>
+                    Đơn đang giảm {cartPct}% so với bảng giá, vượt hạn mức {policy.cashierMaxDiscountPercent}% —
+                    lúc thanh toán cần quản lý nhập PIN.
+                  </span>
                 </div>
               )}
 
@@ -1158,12 +1172,15 @@ export default function POS() {
                 Đặt hàng
               </button>
               <button onClick={() => setDeliveryOpen(true)}
-                className={`btn btn-sm flex-col !gap-0.5 !py-1.5 text-2xs ${tab.delivery ? 'btn-soft' : 'btn-outline'}`}>
+                className={`btn btn-sm flex-col !gap-0.5 !py-1.5 text-2xs ${tab.delivery ? 'btn-soft' : 'btn-outline'}`}
+                aria-pressed={!!tab.delivery}
+                title={tab.delivery ? 'Đơn này đang giao hàng — bấm để sửa' : 'Giao hàng cho khách'}>
                 <Truck size={14} aria-hidden="true" />
-                Giao hàng
+                {tab.delivery ? 'Đang giao' : 'Giao hàng'}
               </button>
               <button onClick={saveDraft} disabled={!tab.cart.length}
-                className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs">
+                className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs"
+                title="Lưu đơn này vào danh sách lưu tạm và đóng tab">
                 <Save size={14} aria-hidden="true" />
                 Lưu tạm
               </button>
@@ -1181,7 +1198,7 @@ export default function POS() {
 
             <Button variant="primary" size="lg" className="w-full"
               disabled={!tab.cart.length} onClick={() => setPayOpen(true)}>
-              Thanh toán
+              {tab.delivery ? 'Thanh toán đơn giao' : 'Thanh toán'}
               <span className="kbd !bg-white/20 !text-white !border-white/25 ml-1">F4</span>
             </Button>
           </div>
@@ -1195,32 +1212,41 @@ export default function POS() {
         onClose={() => setPayOpen(false)}
         totals={totals}
         customer={customer}
-        note={tab.note}
-        setNote={(v) => patchTab({ note: v })}
         onSubmit={submit}
-        accounts={meta.accounts}
-        delivery={tab.delivery}
+        delivery={tab.delivery ? normalizeDelivery(tab.delivery) : null}
+        onEditDelivery={() => { setPayOpen(false); setDeliveryOpen(true); }}
       />
 
-      <DeliveryModal
+      <DeliveryInfoModal
         open={deliveryOpen}
         onClose={() => setDeliveryOpen(false)}
         value={tab.delivery}
         customer={customer}
         carriers={carriers || []}
-        total={totals.total}
-        onSave={(d) => { patchTab({ delivery: d }); setDeliveryOpen(false); }}
-        onClear={() => { patchTab({ delivery: null }); setDeliveryOpen(false); }}
+        goodsTotal={totals.total - totals.shipCharged}
+        canPay={tab.cart.length > 0}
+        onSave={(d) => {
+          patchTab({ delivery: d });
+          setDeliveryOpen(false);
+          toast('Đã lưu thông tin giao — nút Thanh toán sẽ in theo lựa chọn vừa chọn.', 'ok', 5000);
+        }}
+        onPayPrint={(d) => { patchTab({ delivery: d }); setDeliveryOpen(false); setPayOpen(true); }}
+        onClear={() => {
+          patchTab({ delivery: null });
+          setDeliveryOpen(false);
+          toast('Đã huỷ thông tin giao — đơn trở lại thành bán tại quầy.', 'ok');
+        }}
       />
 
       <DraftsModal
         open={draftsOpen}
         onClose={() => setDraftsOpen(false)}
         onOpen={openDraft}
+        onChanged={reloadDrafts}
         openIds={tabs.map((t) => t.draftId).filter(Boolean)}
       />
 
-      {/* --- Đặt hàng và đổi trả ngay tại quầy --- */}
+      {/* --- Đặt hàng, đổi trả, thu nợ ngay tại quầy --- */}
 
       <SaveAsOrderModal
         open={orderOpen}
@@ -1238,9 +1264,9 @@ export default function POS() {
       />
 
       <DebtCollectModal
-        open={debtOpen}
-        customerId={debtOf}
-        onClose={() => { setDebtOpen(false); setDebtOf(null); }}
+        open={debtOpen && !!tab.customerId}
+        customerId={tab.customerId}
+        onClose={() => setDebtOpen(false)}
         onDone={(res) => { reloadCustomers(); showVoucher(res?.transaction?.id); }}
       />
 
@@ -1248,7 +1274,9 @@ export default function POS() {
         open={exchangeOpen}
         onClose={() => setExchangeOpen(false)}
         products={products || []}
-        onDone={reload}
+        policy={policy}
+        onQuickReturn={() => { setExchangeOpen(false); setQuickReturn(true); }}
+        onDone={() => { reload(); reloadCustomers(); }}
       />
 
       <DeliveryBoard open={boardOpen} onClose={() => setBoardOpen(false)} />
@@ -1258,10 +1286,38 @@ export default function POS() {
         onClose={() => setQuickReturn(false)}
         products={products || []}
         priceListId={tab.priceListId}
-        warehouseId={tab.warehouseId}
+        warehouseId={warehouseId}
         customerId={tab.customerId}
         customers={customers || []}
+        policy={policy}
         onDone={() => { reload(); reloadCustomers(); }}
+      />
+
+      <PinApprovalModal
+        open={!!pinAsk}
+        reason={pinAsk?.reason}
+        detail={pinAsk?.detail}
+        onClose={() => setPinAsk(null)}
+        onApproved={(res) => {
+          const ask = pinAsk;
+          setPinAsk(null);
+          ask?.onOk?.(res);
+          toast(`${res.approver?.full_name || 'Quản lý'} đã duyệt`, 'ok');
+        }}
+      />
+
+      <Confirm
+        open={!!closing}
+        onClose={() => setClosing(null)}
+        onConfirm={() => { dropTab(closing.id); setClosing(null); }}
+        title="Đóng tab đang có hàng?"
+        confirmText="Đóng tab, bỏ giỏ hàng"
+        message={closing && (
+          <>
+            "{closing.title}" đang có <b>{closing.cart.length} mặt hàng</b> chưa thanh toán. Đóng tab là mất
+            giỏ hàng này — muốn giữ lại thì bấm Huỷ rồi dùng nút <b>Lưu tạm</b>.
+          </>
+        )}
       />
 
       {voucher && <CashVoucherPrint voucher={voucher} onClose={() => setVoucher(null)} />}
@@ -1271,8 +1327,9 @@ export default function POS() {
         customer={customer}
         onClose={() => setPriceHistOf(null)}
         onApply={(price) => {
-          updateLine(priceHistOf.key, { price, priceEdited: true });
+          const key = priceHistOf.key;
           setPriceHistOf(null);
+          commitLine(key, { price, priceEdited: true });
           toast('Đã áp giá lần trước', 'ok');
         }}
       />
@@ -1300,9 +1357,12 @@ export default function POS() {
         }}
       />
 
-      {lastSale && (
-        <InvoicePrint sale={lastSale} store={store} invoice={settings?.invoice || {}}
-          onClose={() => setLastSale(null)} />
+      {printing?.kind === 'invoice' && (
+        <InvoicePrint key={printing.key} sale={printing.sale} store={store}
+          invoice={settings?.invoice || {}} onClose={nextPrint} />
+      )}
+      {printing?.kind === 'note' && (
+        <DeliveryNotePrint key={printing.key} note={printing.note} onClose={nextPrint} />
       )}
       {provisional && (
         <InvoicePrint sale={provisional} store={store} invoice={settings?.invoice || {}}
@@ -1594,7 +1654,7 @@ function CustomerQuickModal({ open, customerId, onClose }) {
 
 /* ==================================================================== */
 
-function DraftsModal({ open, onClose, onOpen, openIds }) {
+function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
   const { toast } = useApp();
   const { data, busy, reload } = useFetch(() => api.get('/drafts'), [], { skip: !open });
   const [deleting, setDeleting] = useState(null);
@@ -1608,7 +1668,8 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
       await api.del(`/drafts/${deleting.id}`);
       setDeleting(null);
       reload();
-      toast('Đã xoá hoá đơn tạm', 'ok');
+      onChanged?.();
+      toast('Đã xoá đơn lưu tạm', 'ok');
     } catch (e) {
       toast(e.message, 'bad', 6000);
     } finally {
@@ -1620,8 +1681,8 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Hoá đơn tạm"
-      subtitle="Đơn đang bán dở, lưu trên máy chủ nên máy nào trong tiệm cũng mở tiếp được"
+      title="Đơn lưu tạm"
+      subtitle="Đơn đang bán dở, lưu trên máy chủ nên máy nào trong tiệm cũng mở tiếp được. Mở lại thì đơn rời khỏi danh sách này."
       size="lg"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
@@ -1649,7 +1710,7 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
                   const isOpen = openIds.includes(d.id);
                   return (
                     <tr key={d.id} className="hoverable">
-                      <td className="font-semibold">{d.title || '(chưa đặt tên)'}</td>
+                      <td className="font-semibold">{d.tab_no ? tabTitle(d.tab_no) : (d.title || '(chưa đặt tên)')}</td>
                       <td className="font-mono text-muted-ink">{d.code}</td>
                       <td>{d.customer_name || 'Khách lẻ'}</td>
                       <td className="num">{d.item_count}</td>
@@ -1686,311 +1747,6 @@ function DraftsModal({ open, onClose, onOpen, openIds }) {
             {' '}Không lấy lại được.</>
         )}
       />
-    </Modal>
-  );
-}
-
-/* ==================================================================== */
-
-function DeliveryModal({ open, onClose, value, customer, carriers, total, onSave, onClear }) {
-  const [d, setD] = useState(EMPTY_DELIVERY);
-
-  useEffect(() => {
-    if (!open) return;
-    setD(value || {
-      ...EMPTY_DELIVERY,
-      name: customer?.name || '',
-      phone: customer?.phone || '',
-      address: customer?.address || '',
-      codAmount: total,
-    });
-  }, [open, value, customer, total]);
-
-  const set = (k) => (e) => setD((p) => ({ ...p, [k]: e?.target ? e.target.value : e }));
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Thông tin giao hàng"
-      subtitle="Ghi lại người nhận, nhà xe và mã vận đơn để tra khi khách hỏi"
-      size="md"
-      footer={<>
-        {value && <Button variant="danger" onClick={onClear}>Bỏ giao hàng</Button>}
-        <div className="flex-1" />
-        <Button onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" onClick={() => onSave(d)}>Lưu thông tin giao</Button>
-      </>}
-    >
-      <div className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Người nhận" htmlFor="dv-name">
-            <Input id="dv-name" value={d.name} onChange={set('name')} placeholder="Tên người nhận hàng" />
-          </Field>
-          <Field label="Số điện thoại người nhận" htmlFor="dv-phone">
-            <Input id="dv-phone" value={d.phone} onChange={set('phone')} inputMode="tel" />
-          </Field>
-        </div>
-
-        <Field label="Địa chỉ giao" htmlFor="dv-addr">
-          <Textarea id="dv-addr" rows={2} value={d.address} onChange={set('address')}
-            placeholder="Số nhà, ấp/khu phố, xã/phường, huyện/tỉnh" />
-        </Field>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Đơn vị vận chuyển" hint="Thêm nhà xe mới ở Thiết lập" htmlFor="dv-carrier">
-            <Select id="dv-carrier" value={d.carrierId || ''}
-              onChange={(e) => setD((p) => ({ ...p, carrierId: e.target.value ? Number(e.target.value) : null }))}>
-              <option value="">— Tự giao / khách tự lấy —</option>
-              {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-          </Field>
-          <Field label="Mã vận đơn" htmlFor="dv-track">
-            <Input id="dv-track" value={d.trackingCode} onChange={set('trackingCode')}
-              placeholder="Số vận đơn nhà xe cấp" />
-          </Field>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Phí giao hàng" htmlFor="dv-fee">
-            <MoneyInput id="dv-fee" value={d.shipFee}
-              onChange={(v) => setD((p) => ({ ...p, shipFee: v }))} />
-          </Field>
-          <Field label="Ai chịu phí" htmlFor="dv-payer">
-            <Select id="dv-payer" value={d.shipPayer} onChange={set('shipPayer')}>
-              <option value="customer">Khách trả (cộng vào hoá đơn)</option>
-              <option value="shop">Cửa hàng chịu</option>
-            </Select>
-          </Field>
-        </div>
-
-        <Field label="Tiền thu hộ (COD)" hint="Số tiền nhà xe thu giúp khi giao hàng" htmlFor="dv-cod">
-          <MoneyInput id="dv-cod" value={d.codAmount}
-            onChange={(v) => setD((p) => ({ ...p, codAmount: v }))} />
-        </Field>
-
-        <Field label="Ghi chú giao hàng" htmlFor="dv-note">
-          <Textarea id="dv-note" rows={2} value={d.note} onChange={set('note')}
-            placeholder="Ví dụ: gọi trước khi giao, giao giờ hành chính" />
-        </Field>
-      </div>
-    </Modal>
-  );
-}
-
-/* ==================================================================== */
-/* Hộp thanh toán                                                        */
-/* ==================================================================== */
-
-function PaymentModal({ open, onClose, totals, customer, note, setNote, onSubmit, accounts, delivery }) {
-  const [method, setMethod] = useState('cash');
-  const [received, setReceived] = useState(0);
-  const [transferAmount, setTransferAmount] = useState(0);
-  const [debtAmount, setDebtAmount] = useState(0);
-  const [collectDebt, setCollectDebt] = useState(0);   // thu luôn nợ cũ của khách
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-
-  useEffect(() => {
-    if (!open) return;
-    setMethod('cash');
-    setReceived(totals.total);
-    setTransferAmount(0);
-    setDebtAmount(0);
-    setCollectDebt(0);
-    setErr('');
-  }, [open, totals.total]);
-
-  const paid = method === 'cash' ? Math.min(received, totals.total)
-    : method === 'transfer' ? totals.total
-      : method === 'debt' ? Math.max(0, totals.total - debtAmount)
-        : Math.min(received + transferAmount, totals.total);
-  const change = method === 'cash' ? Math.max(0, received - totals.total) : 0;
-  const remaining = Math.max(0, totals.total - paid);
-
-  const QUICK = [
-    totals.total,
-    Math.ceil(totals.total / 10000) * 10000,
-    Math.ceil(totals.total / 50000) * 50000,
-    Math.ceil(totals.total / 100000) * 100000,
-    Math.ceil(totals.total / 500000) * 500000,
-  ].filter((v, i, a) => v > 0 && a.indexOf(v) === i).slice(0, 5);
-
-  const submit = async () => {
-    setErr('');
-    if (remaining > 0 && !customer) {
-      setErr('Đơn còn nợ lại nên bắt buộc phải chọn khách hàng để theo dõi công nợ.');
-      return;
-    }
-    setBusy(true);
-    try {
-      await onSubmit({
-        collect_debt: collectDebt,
-        payment_method: remaining > 0 ? 'debt' : method === 'mixed' ? 'mixed' : method,
-        paid,
-        received: method === 'cash' ? received : paid,
-        cash_amount: method === 'cash' ? Math.min(received, totals.total)
-          : method === 'mixed' ? Math.min(received, totals.total - transferAmount)
-            : method === 'debt' ? Math.max(0, totals.total - debtAmount) : 0,
-        transfer_amount: method === 'transfer' ? totals.total : method === 'mixed' ? transferAmount : 0,
-      });
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && e.target.tagName !== 'TEXTAREA') {
-        e.preventDefault();
-        submit();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, paid, method, received, transferAmount, debtAmount, customer]);
-
-  const METHODS = [
-    { key: 'cash', label: 'Tiền mặt', icon: Wallet },
-    { key: 'transfer', label: 'Chuyển khoản', icon: CreditCard },
-    { key: 'debt', label: 'Ghi nợ', icon: HandCoins },
-    { key: 'mixed', label: 'Kết hợp', icon: Tag },
-  ];
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Thanh toán"
-      subtitle={customer ? `Khách hàng: ${customer.name}` : 'Khách lẻ'}
-      size="md"
-      footer={<>
-        <Button onClick={onClose}>Quay lại</Button>
-        <Button variant="primary" size="lg" onClick={submit} loading={busy} icon={Printer}>
-          Hoàn tất &amp; In hoá đơn
-        </Button>
-      </>}
-    >
-      <div className="space-y-4">
-        <div className="bg-accent-soft/60 rounded-lg p-3 text-center">
-          <div className="text-2xs font-bold text-emerald-900/70 uppercase tracking-wide">Khách phải trả</div>
-          <div className="text-3xl font-display font-bold text-emerald-900 tabular mt-0.5">
-            {money(totals.total)}
-          </div>
-          {totals.shipCharged > 0 && (
-            <div className="text-2xs text-emerald-900/70 mt-0.5">
-              đã gồm {money(totals.shipCharged)} phí giao hàng
-            </div>
-          )}
-        </div>
-
-        {delivery && (
-          <div className="card p-2.5 text-[13px] flex gap-2">
-            <Truck size={15} className="text-muted-ink shrink-0 mt-0.5" aria-hidden="true" />
-            <div className="min-w-0">
-              <div className="font-semibold">Giao cho {delivery.name || 'khách'}</div>
-              <div className="text-muted-ink truncate">{delivery.address}</div>
-              {delivery.codAmount > 0 && (
-                <div className="text-2xs text-muted-ink">Thu hộ COD {money(delivery.codAmount)}</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div>
-          <span className="label">Hình thức thanh toán</span>
-          <div className="grid grid-cols-4 gap-1.5">
-            {METHODS.map((m) => (
-              <button key={m.key} onClick={() => setMethod(m.key)}
-                className={`btn btn-touch flex-col !gap-0.5 !py-2 text-2xs
-                            ${method === m.key ? 'btn-secondary' : 'btn-outline'}`}>
-                <m.icon size={16} aria-hidden="true" />
-                {m.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {(method === 'cash' || method === 'mixed') && (
-          <Field label="Tiền khách đưa" htmlFor="pay-received">
-            <MoneyInput id="pay-received" size="lg" value={received} onChange={setReceived} autoFocus />
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {QUICK.map((v) => (
-                <button key={v} onClick={() => setReceived(v)}
-                  className={`btn btn-sm ${received === v ? 'btn-soft' : 'btn-outline'}`}>
-                  {n(v)}
-                </button>
-              ))}
-            </div>
-          </Field>
-        )}
-
-        {method === 'mixed' && (
-          <Field label="Trong đó chuyển khoản" htmlFor="pay-transfer">
-            <MoneyInput id="pay-transfer" value={transferAmount} onChange={setTransferAmount} />
-          </Field>
-        )}
-
-        {method === 'debt' && (
-          <Field label="Khách trả trước bao nhiêu"
-            hint="Để 0 nếu khách nợ toàn bộ. Phần còn lại ghi vào công nợ."
-            htmlFor="pay-partial">
-            <MoneyInput id="pay-partial" size="lg" value={totals.total - debtAmount}
-              onChange={(v) => setDebtAmount(Math.max(0, totals.total - v))} autoFocus />
-          </Field>
-        )}
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="card p-2.5">
-            <div className="text-2xs font-bold text-muted-ink uppercase">Tiền thối lại</div>
-            <div className="text-lg font-display font-bold tabular mt-0.5">{money(change)}</div>
-          </div>
-          <div className="card p-2.5">
-            <div className="text-2xs font-bold text-muted-ink uppercase">Còn nợ lại</div>
-            <div className={`text-lg font-display font-bold tabular mt-0.5 ${remaining > 0 ? 'text-danger' : ''}`}>
-              {money(remaining)}
-            </div>
-          </div>
-        </div>
-
-        {remaining > 0 && customer?.debt_limit > 0 && (
-          <p className="text-2xs text-warn font-semibold">
-            Nợ hiện tại của khách: {money(customer.debt)} / hạn mức {money(customer.debt_limit)}
-          </p>
-        )}
-
-        {/* Khách vừa mua vừa trả nợ cũ — gộp hai việc vào một lần đứng quầy */}
-        <CollectDebtRow customer={customer} value={collectDebt} onChange={setCollectDebt} />
-
-        {collectDebt > 0 && (
-          <div className="card p-2.5 bg-accent-soft/25 border-accent">
-            <div className="flex items-baseline justify-between">
-              <span className="text-[13px] font-semibold">Tổng khách đưa</span>
-              <span className="text-lg font-display font-bold tabular">
-                {money(paid + collectDebt)}
-              </span>
-            </div>
-            <div className="text-2xs text-muted-ink tabular mt-0.5">
-              {money(paid)} tiền hàng + {money(collectDebt)} nợ cũ
-            </div>
-          </div>
-        )}
-
-        <Field label="Ghi chú hoá đơn" htmlFor="pay-note">
-          <Textarea id="pay-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
-            placeholder="Ví dụ: giao hàng chiều mai, lắp đặt tại nhà..." />
-        </Field>
-
-        {err && (
-          <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">
-            {err}
-          </p>
-        )}
-      </div>
     </Modal>
   );
 }

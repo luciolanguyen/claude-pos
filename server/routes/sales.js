@@ -2,6 +2,11 @@ import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, costOf,
   addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
+import {
+  posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
+} from '../policy.js';
+import { debtBreakdown, overdueInvoices } from '../debt.js';
+import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
 
 const r = Router();
 
@@ -12,9 +17,12 @@ r.get('/sales', (req, res) => {
   const where = [];
   const params = [];
   if (q.trim()) {
-    where.push('(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)');
+    /* Tìm song song ở khách chủ VÀ người mua hộ (tài liệu 03): khách gọi
+       hỏi "hôm trước con tôi ra mua" thì phải ra được hoá đơn đó. */
+    where.push(`(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ?
+                 OR s.buyer_name LIKE ? OR s.buyer_phone LIKE ?)`);
     const like = `%${q.trim()}%`;
-    params.push(like, like, like);
+    params.push(like, like, like, like, like);
   }
   if (customer_id) { where.push('s.customer_id = ?'); params.push(customer_id); }
   if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }
@@ -74,6 +82,19 @@ r.get('/sales/:id', (req, res) => {
     SELECT si.*, p.sku, p.base_unit, p.barcode
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?`, [s.id]);
+  /* Giá khách THỰC TRẢ và số còn trả được của từng dòng — để hộp đổi trả
+     tính tiền hoàn ngay trên màn hình, khớp đúng số máy chủ sẽ ghi */
+  const returned = returnedByLine(s.id, s.items);
+  const policy = posPolicy();
+  for (const it of s.items) {
+    it.net_unit_price = netUnitPrice(s, it);
+    it.returned_qty = returned.get(it.id) || 0;
+    it.returnable_qty = Math.max(0, it.qty - it.returned_qty);
+    it.no_return_category = noReturnCategoryOf(it.product_id);
+  }
+  s.age_days = get(`SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER) AS d`, [s.ts]).d;
+  s.return_days = policy.returnDays;
+  s.return_expired = policy.returnDays > 0 && s.age_days > policy.returnDays;
   s.returns = all('SELECT id, code, ts, total FROM sale_returns WHERE sale_id = ?', [s.id]);
   s.store = getSettings().store || {};
   res.json(s);
@@ -98,6 +119,11 @@ export function createSale(b) {
 
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!warehouseId) throw badRequest('Chưa thiết lập kho');
+  /* Kho hàng lỗi chỉ để chứa hàng khách trả bị hỏng (tài liệu 02) — không bán ra */
+  if (get('SELECT is_defect FROM warehouses WHERE id = ?', [warehouseId])?.is_defect) {
+    throw badRequest('Kho hàng lỗi chỉ chứa hàng khách trả bị hỏng, không bán ra được. Chọn kho đang bán.',
+      'DEFECT_WAREHOUSE');
+  }
 
   const settings = getSettings();
   const allowNegative = settings.allow_negative_stock === true;
@@ -118,9 +144,27 @@ export function createSale(b) {
     }
   }
 
-  // Kiểm tra hạn mức công nợ
-  // Ước tính tổng để kiểm tra hạn mức nợ — phải tính cùng cách với lúc lưu,
-  // nếu không đơn giảm giá theo % sẽ bị chặn oan.
+  /* ------------------------------------------------------------------ *
+   * Các chặn cần duyệt — soát TRƯỚC khi mở tx, khỏi ghi dở rồi lùi.
+   *
+   * _actor do route gắn vào sau khi trải thân yêu cầu (máy khách không tự
+   * khai được):
+   *   undefined  gọi nội bộ, ví dụ giao đơn đặt hàng — không soát giảm giá
+   *   null       tiệm tắt đăng nhập — một máy dùng chung, coi như toàn quyền
+   *   {role}     người đang đăng nhập
+   * ------------------------------------------------------------------ */
+  const policy = posPolicy();
+  const actor = b._actor;
+  const fromRoute = actor !== undefined;
+  const isApprover = actor === null || isApproverRole(actor?.role);
+  const approval = peekApproval(b.approval_token);
+  const approvalNotes = [];
+  const needApproval = (message, code) =>
+    Object.assign(badRequest(message, code), { needs_approval: true });
+  const fmt = (v) => Math.round(v).toLocaleString('vi-VN');
+
+  /* Ước tính tổng để soát — phải tính cùng cách với lúc lưu, nếu không đơn
+     giảm giá theo % sẽ bị chặn oan. */
   const lineTotal = (it) => {
     const gross = Math.round(Number(it.qty) * Math.round(Number(it.price) || 0));
     const disc = it.discount_type === 'percent'
@@ -132,16 +176,68 @@ export function createSale(b) {
   const orderDisc0 = b.discount_type === 'percent'
     ? Math.round(sub0 * (Number(b.discount_percent) || 0) / 100)
     : Math.round(Number(b.discount) || 0);
-  const total0 = sub0 - Math.min(orderDisc0, sub0) +
+  const vat0 = b.is_vat_invoice
+    ? items.reduce((a, it) => a + Math.round(lineTotal(it) * (Number(it.vat_rate) || 0) / 100), 0)
+    : 0;
+  const total0 = sub0 - Math.min(orderDisc0, sub0) + vat0 +
     (b.ship_payer === 'customer' ? Math.round(Number(b.ship_fee) || 0) : 0);
-  if (b.customer_id) {
+
+  /* Giao hàng: phần khách chưa trả ngay là tiền THU HỘ (COD), không phải nợ
+     của khách (tài liệu 04). Chỉ khi quầy nói rõ đơn giao này ghi nợ
+     (cod_mode = false) thì phần còn lại mới vào công nợ. */
+  const hasDelivery = !!(b.delivery_address || b.carrier_id || b.tracking_code
+    || b.shipper_name || b.shipper_user_id);
+  const codMode = hasDelivery && b.cod_mode !== false;
+  const paid0 = Math.max(0, Math.round(Number(b.paid) || 0));
+  const voucherAsked = String(b.voucher_code || '').trim()
+    ? Math.max(0, Math.round(Number(b.voucher_amount) || 0)) : 0;
+  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked);
+
+  /* 1. Giảm giá quá hạn mức thu ngân tự quyết (tài liệu 06).
+        So với BẢNG GIÁ, không so với ô giảm giá — sửa tay đơn giá xuống
+        rồi để ô giảm giá bằng 0 cũng là giảm. */
+  if (fromRoute && !isApprover) {
+    const exp = discountExposure(items, b.price_list_id, b);
+    if (exp.max_percent > policy.cashierMaxDiscountPercent + 0.001) {
+      if (!approval) {
+        throw needApproval(
+          `Đơn này giảm ${exp.max_percent}% so với bảng giá, vượt hạn mức `
+          + `${policy.cashierMaxDiscountPercent}% thu ngân được tự giảm. Cần quản lý nhập mã PIN để duyệt.`,
+          'DISCOUNT_LIMIT');
+      }
+      approvalNotes.push(`giảm giá ${exp.max_percent}%`);
+    }
+  }
+
+  if (b.customer_id && newDebt > 0) {
     const c = get('SELECT name, debt_limit FROM customers WHERE id = ?', [b.customer_id]);
-    if (c?.debt_limit > 0) {
-      const willOwe = customerDebt(b.customer_id) + (total0 - Math.round(Number(b.paid) || 0));
-      if (willOwe > c.debt_limit) {
+
+    /* 2. Còn hoá đơn nợ quá hạn thì không bán nợ thêm, bắt trả đủ (tài liệu 05).
+          Chặn cứng, không mở bằng PIN: muốn bán nợ tiếp thì thu nợ cũ trước. */
+    if (fromRoute && policy.maxDebtDays > 0) {
+      const od = overdueInvoices(b.customer_id, policy.maxDebtDays);
+      if (od.length) {
+        const oldest = od[0];
         throw badRequest(
-          `Công nợ của "${c.name}" sẽ là ${willOwe.toLocaleString('vi-VN')} đ, vượt hạn mức ${c.debt_limit.toLocaleString('vi-VN')} đ.`
-          , 'DEBT_LIMIT');
+          `"${c?.name}" còn ${od.length} hoá đơn nợ quá ${policy.maxDebtDays} ngày `
+          + `(cũ nhất ${oldest.code}, ${oldest.age_days} ngày, còn nợ ${fmt(oldest.remaining)} đ). `
+          + 'Đơn mới phải trả đủ tiền, không bán nợ thêm được.', 'OVERDUE_BLOCK');
+      }
+    }
+
+    /* 3. Vượt hạn mức nợ: khoá lại, quản lý nhập PIN mới mở (tài liệu 05) */
+    if (c?.debt_limit > 0) {
+      const willOwe = customerDebt(b.customer_id) + newDebt;
+      if (willOwe > c.debt_limit) {
+        const message = `Công nợ của "${c.name}" sẽ là ${fmt(willOwe)} đ, vượt hạn mức ${fmt(c.debt_limit)} đ.`;
+        if (!fromRoute) throw badRequest(message, 'DEBT_LIMIT');
+        /* Kể cả chủ tiệm cũng phải gõ PIN: bán vượt hạn mức là một ngoại lệ
+           có chủ đích, phải để lại dấu ai cho phép — không để lọt qua chỉ vì
+           người đứng quầy lúc đó có vai trò cao. */
+        if (!approval) {
+          throw needApproval(`${message} Cần quản lý nhập mã PIN để cho bán nợ vượt hạn mức.`, 'DEBT_LIMIT');
+        }
+        approvalNotes.push(`bán nợ vượt hạn mức (${fmt(willOwe)}/${fmt(c.debt_limit)} đ)`);
       }
     }
   }
@@ -179,8 +275,23 @@ export function createSale(b) {
       // Phí ship khách chịu thì cộng vào tiền khách phải trả
       const shipCharged = b.ship_payer === 'customer' ? shipFee : 0;
       const total = subtotal - discount + vatAmount + shipCharged;
-      const paid = Math.max(0, Math.min(Math.round(Number(b.paid) || 0), total));
-      const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paid);
+      /* Tiền khách đưa (tiền mặt + chuyển khoản), chưa kể phiếu đổi hàng */
+      const paidMoney = Math.max(0, Math.min(Math.round(Number(b.paid) || 0), total));
+
+      /* Phiếu đổi hàng trả vào phần còn thiếu. Soát trước khi ghi hoá đơn;
+         trừ phiếu thật sự ở dưới, sau khi hoá đơn đã có số. */
+      const voucherCode = String(b.voucher_code || '').trim();
+      let voucherUse = 0;
+      if (voucherCode) {
+        const v = lookupVoucher(voucherCode);
+        if (!v) throw badRequest(`Không tìm thấy phiếu đổi hàng "${voucherCode}"`, 'VOUCHER_NOT_FOUND');
+        if (!v.usable) throw badRequest(`Phiếu ${v.code}: ${v.why_not}`, 'VOUCHER_UNUSABLE');
+        const asked = b.voucher_amount === undefined || b.voucher_amount === null || b.voucher_amount === ''
+          || Number.isNaN(Number(b.voucher_amount)) ? v.balance : Math.round(Number(b.voucher_amount));
+        voucherUse = Math.max(0, Math.min(asked, v.balance, total - paidMoney));
+      }
+      const paid = paidMoney + voucherUse;
+      const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paidMoney);
       const code = b.code?.trim() || nextCode('sales', 'HD');
 
       // Number(undefined) là NaN, mà ?? không bắt NaN — phải kiểm tra trước khi ép kiểu
@@ -188,10 +299,27 @@ export function createSale(b) {
         v === undefined || v === null || v === '' || Number.isNaN(Number(v))
           ? fallback
           : Math.round(Number(v));
-      const cashAmount = num(b.cash_amount, b.payment_method === 'cash' ? paid : 0);
-      const transferAmount = num(b.transfer_amount, b.payment_method === 'transfer' ? paid : 0);
+      const cashAmount = num(b.cash_amount, b.payment_method === 'cash' ? paidMoney : 0);
+      const transferAmount = num(b.transfer_amount, b.payment_method === 'transfer' ? paidMoney : 0);
 
-      const hasDelivery = !!(b.delivery_address || b.carrier_id || b.tracking_code);
+      /* Thu hộ COD: phần còn lại của đơn giao. Treo ở đối tác vận chuyển tới
+         lúc đối soát, không cộng vào nợ của khách. */
+      const codAmount = codMode ? Math.max(0, total - paid) : 0;
+
+      /* Người mua hộ. Chọn hồ sơ có sẵn thì chụp lại tên, số điện thoại lúc
+         bán, để về sau người đó đổi số vẫn tra ra đúng ai đã đi mua. */
+      let buyerId = Number(b.buyer_id) || null;
+      let buyerName = String(b.buyer_name || '').trim() || null;
+      let buyerPhone = String(b.buyer_phone || '').trim() || null;
+      if (buyerId) {
+        const bu = get('SELECT name, phone FROM customers WHERE id = ?', [buyerId]);
+        if (bu) { buyerName = bu.name; buyerPhone = bu.phone || buyerPhone; } else buyerId = null;
+      }
+      if (buyerId && buyerId === Number(b.customer_id)) {
+        buyerId = null; buyerName = null; buyerPhone = null;   // tự mua cho mình thì không phải mua hộ
+      }
+
+      const approvedBy = approvalNotes.length && approval ? approval.approver.id : null;
 
       const info = run(`
         INSERT INTO sales(code, ts, customer_id, warehouse_id, user_id, price_list_id,
@@ -199,19 +327,34 @@ export function createSale(b) {
                           vat_amount, total, cogs, paid, change_given,
                           payment_method, cash_amount, transfer_amount, status, is_vat_invoice, note,
                           delivery_name, delivery_phone, delivery_address, carrier_id, tracking_code,
-                          ship_fee, ship_payer, cod_amount, delivery_status, delivery_note)
+                          ship_fee, ship_payer, cod_amount, delivery_status, delivery_note,
+                          cod_status, shipper_name, shipper_user_id, shipper_phone,
+                          buyer_id, buyer_name, buyer_phone, voucher_amount,
+                          approved_by, approval_note)
         VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?)`,
         [code, b.ts || null, b.customer_id || null, warehouseId, b.user_id || null,
           b.price_list_id || null, subtotal, discount, discountType, discountPercent,
           vatAmount, total, cogs, paid, changeGiven,
           b.payment_method || 'cash', cashAmount, transferAmount,
-          b.is_vat_invoice ? 1 : 0, b.note || null,
+          b.is_vat_invoice ? 1 : 0, String(b.note || '').slice(0, 255) || null,
           b.delivery_name || null, b.delivery_phone || null, b.delivery_address || null,
           b.carrier_id || null, b.tracking_code || null,
-          shipFee, b.ship_payer || 'shop', Math.round(Number(b.cod_amount) || 0),
-          hasDelivery ? (b.delivery_status || 'pending') : null, b.delivery_note || null]);
+          shipFee, b.ship_payer || 'shop', codAmount,
+          hasDelivery ? (b.delivery_status || 'pending') : null, b.delivery_note || null,
+          codAmount > 0 ? 'pending' : null,
+          String(b.shipper_name || '').trim() || null, Number(b.shipper_user_id) || null,
+          String(b.shipper_phone || '').trim() || null,
+          buyerId, buyerName, buyerPhone, voucherUse,
+          approvedBy, approvedBy ? approvalNotes.join('; ') : null]);
       const saleId = Number(info.lastInsertRowid);
+
+      if (voucherUse > 0) {
+        redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });
+      }
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
@@ -222,17 +365,20 @@ export function createSale(b) {
               [b.ts || null, wm]).d
           : null;
 
+        /* Giá niêm yết lúc bán — để soát lại mức giảm thật so với bảng giá */
+        const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id);
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
-                                    warranty_months, warranty_until, serial)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    warranty_months, warranty_until, serial, list_price)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, it.product_id, it.name_snapshot || '', it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._discount,
             it.discount_type === 'percent' ? 'percent' : 'amount',
             Number(it.discount_percent) || 0,
             Number(it.vat_rate) || 0, it._unitCost, it._amount, it.note || null,
-            wm, wUntil, it.serial?.trim() || null]);
+            wm, wUntil, it.serial?.trim() || null,
+            listPrice ?? Math.round(Number(it.price) || 0)]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,
@@ -261,15 +407,24 @@ export function createSale(b) {
           note: `Thu chuyển khoản hoá đơn ${code}`, ts: b.ts || null,
         });
       }
-      return { id: saleId, code, total, paid, change_given: changeGiven };
+      return {
+        id: saleId, code, total, paid, change_given: changeGiven,
+        cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy,
+      };
   });
 }
 
 r.post('/sales', (req, res) => {
   try {
-    res.json(createSale(req.body));
+    /* _actor lấy từ phiên đăng nhập và gắn SAU khi trải thân yêu cầu — để
+       máy khách không tự khai mình là chủ tiệm được */
+    const out = createSale({ ...req.body, _actor: req.user ?? null });
+    if (out.approved_by) consumeApproval(req.body?.approval_token);
+    res.json(out);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message, code: e.code });
+    res.status(e.status || 400).json({
+      error: e.message, code: e.code, needs_approval: e.needs_approval === true,
+    });
   }
 });
 
@@ -380,6 +535,77 @@ r.get('/sale-returns/:id', (req, res) => {
   res.json(sr);
 });
 
+/** Nhóm "không nhận đổi trả" của mặt hàng — dò cả nhóm cha, nhóm ông. */
+function noReturnCategoryOf(productId) {
+  let cat = get(`SELECT c.id, c.name, c.parent_id, c.no_return
+                 FROM products p JOIN categories c ON c.id = p.category_id
+                 WHERE p.id = ?`, [productId]);
+  const seen = new Set();
+  while (cat && !seen.has(cat.id)) {
+    if (cat.no_return) return cat.name;
+    seen.add(cat.id);
+    cat = cat.parent_id
+      ? get('SELECT id, name, parent_id, no_return FROM categories WHERE id = ?', [cat.parent_id])
+      : null;
+  }
+  return null;
+}
+
+/**
+ * Kho hàng lỗi. Chưa có thì tạo — hàng hỏng khách trả phải có chỗ để, và
+ * chỗ đó không được là kho đang bán, nếu không màn hình bán hàng lại bán
+ * món hỏng đó cho khách khác.
+ */
+export function ensureDefectWarehouse() {
+  const w = get('SELECT id FROM warehouses WHERE is_defect = 1 AND active = 1 ORDER BY id LIMIT 1');
+  if (w) return w.id;
+  let code = 'LOI';
+  for (let n = 2; get('SELECT id FROM warehouses WHERE code = ?', [code]); n++) code = `LOI${n}`;
+  return Number(run(`INSERT INTO warehouses(code, name, is_default, active, is_defect)
+                     VALUES(?, 'Kho hàng lỗi (không bán)', 0, 1, 1)`, [code]).lastInsertRowid);
+}
+
+/** Số tiền khách thực trả cho cả dòng hoá đơn (xem netUnitPrice). */
+function netLineValue(sale, line) {
+  const share = sale.subtotal > 0 ? Math.round(sale.discount * line.amount / sale.subtotal) : 0;
+  const vat = sale.is_vat_invoice ? Math.round(line.amount * (Number(line.vat_rate) || 0) / 100) : 0;
+  return line.amount - share + vat;
+}
+
+/**
+ * Giá KHÁCH THỰC TRẢ cho một đơn vị trên dòng hoá đơn gốc.
+ *
+ * Không lấy đơn giá niêm yết: khách được giảm 10% thì trả hàng cũng chỉ
+ * được hoàn 90%. Trước đây hoàn theo đơn giá gốc — khách mua giảm giá rồi
+ * đem trả là lời ngay phần chênh, tiệm hoàn nhiều hơn số đã thu.
+ *
+ * Tính cả phần giảm giá toàn đơn chia theo tỷ lệ tiền của dòng, và thuế
+ * GTGT nếu hoá đơn có xuất VAT. Phí giao hàng không hoàn.
+ */
+export function netUnitPrice(sale, line) {
+  return line.qty > 0 ? Math.round(netLineValue(sale, line) / line.qty) : 0;
+}
+
+/** Mỗi dòng của hoá đơn đã được trả bao nhiêu (theo đơn vị của dòng). */
+function returnedByLine(saleId, lines) {
+  const done = new Map();
+  for (const row of all(`
+    SELECT sri.sale_item_id, sri.product_id, sri.unit_name, SUM(sri.qty) AS q
+    FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+    WHERE sr.sale_id = ?
+    GROUP BY sri.sale_item_id, sri.product_id, sri.unit_name`, [saleId])) {
+    /* Phiếu trả cũ (trước đợt 13) chưa ghi dòng gốc — gán vào dòng đầu tiên
+       cùng mặt hàng, cùng đơn vị */
+    const line = row.sale_item_id
+      ? lines.find((l) => l.id === row.sale_item_id)
+      : lines.find((l) => l.product_id === row.product_id && l.unit_name === row.unit_name);
+    if (line) done.set(line.id, (done.get(line.id) || 0) + Number(row.q));
+  }
+  return done;
+}
+
+const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher'];
+
 /**
  * Lập phiếu khách trả hàng. Dùng chung cho màn hình Hoá đơn và cho việc
  * đổi hàng tại quầy, nên tách khỏi tay xử lý HTTP.
@@ -389,53 +615,158 @@ r.get('/sale-returns/:id', (req, res) => {
 export function createSaleReturn(b) {
   const items = Array.isArray(b.items) ? b.items.filter((i) => Number(i.qty) > 0) : [];
   if (!items.length) throw badRequest('Phiếu trả hàng phải có ít nhất 1 mặt hàng');
-  const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
+  const policy = posPolicy();
+
+  const sale = b.sale_id ? get('SELECT * FROM sales WHERE id = ?', [b.sale_id]) : null;
+  if (b.sale_id && !sale) throw badRequest('Không tìm thấy hoá đơn gốc', 'SALE_NOT_FOUND');
+  if (sale && sale.status !== 'done') throw badRequest(`Hoá đơn ${sale.code} đã bị huỷ`, 'SALE_CANCELLED');
+
+  /* Quá hạn đổi trả thì chặn (tài liệu 02). Trả không hoá đơn thì không biết
+     ngày mua nên không soát được — chỗ đó dựa vào lý do bắt buộc phải ghi. */
+  if (sale && policy.returnDays > 0) {
+    const age = get(`SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER) AS d`, [sale.ts]).d;
+    if (age > policy.returnDays) {
+      throw badRequest(
+        `Hoá đơn ${sale.code} mua cách đây ${age} ngày, đã quá hạn đổi trả ${policy.returnDays} ngày.`,
+        'RETURN_EXPIRED');
+    }
+  }
+
+  /* Trả theo hoá đơn: giá lấy từ hoá đơn gốc, KHÔNG tin giá gửi lên */
+  if (sale) {
+    const lines = all('SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id', [sale.id]);
+    const done = returnedByLine(sale.id, lines);
+    for (const it of items) {
+      const line = it.sale_item_id
+        ? lines.find((l) => l.id === Number(it.sale_item_id))
+        : lines.find((l) => l.product_id === Number(it.product_id) && l.unit_name === it.unit_name);
+      if (!line) {
+        throw badRequest(`Mặt hàng khách trả không có trong hoá đơn ${sale.code}.`, 'NOT_IN_SALE');
+      }
+      const already = done.get(line.id) || 0;
+      const left = line.qty - already;
+      if (Number(it.qty) > left + 1e-9) {
+        throw badRequest(
+          `"${line.name_snapshot}": hoá đơn ${sale.code} bán ${line.qty} ${line.unit_name}, `
+          + `đã trả ${already}, chỉ còn trả được ${left}.`, 'RETURN_QTY_EXCEEDED');
+      }
+      it.sale_item_id = line.id;
+      it.product_id = line.product_id;
+      it.unit_name = line.unit_name;
+      it.factor = line.factor;
+      it.unit_cost = line.unit_cost;
+      it.price = netUnitPrice(sale, line);
+      /* Trả trọn dòng một lần thì lấy đúng số tiền của dòng, khỏi lệch vài
+         đồng do làm tròn đơn giá */
+      it._exact = already === 0 && Math.abs(Number(it.qty) - line.qty) < 1e-9
+        ? netLineValue(sale, line) : null;
+      done.set(line.id, already + Number(it.qty));
+    }
+  }
+
+  /* Nhóm hàng không nhận đổi trả. Soát SAU khi đã khớp dòng hoá đơn gốc: trả
+     theo hoá đơn thì máy khách chỉ gửi số dòng (sale_item_id), còn mã mặt
+     hàng phải lấy từ hoá đơn ra — soát trước là soát trên mã rỗng. */
+  for (const it of items) {
+    if (!Number(it.product_id)) {
+      throw badRequest('Dòng trả hàng chưa chọn mặt hàng.', 'MISSING_PRODUCT');
+    }
+    const blocked = noReturnCategoryOf(it.product_id);
+    if (blocked) {
+      const p = get('SELECT name FROM products WHERE id = ?', [it.product_id]);
+      throw badRequest(`"${p?.name || 'Mặt hàng'}" thuộc nhóm "${blocked}" — nhóm này không nhận đổi trả.`,
+        'NO_RETURN_CATEGORY');
+    }
+  }
+
+  const baseWarehouse = Number(b.warehouse_id) || sale?.warehouse_id
+    || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
+  const customerId = Number(b.customer_id) || sale?.customer_id || null;
+  const method = REFUND_METHODS.includes(b.refund_method) ? b.refund_method : null;
+  if (method === 'debt' && !customerId) {
+    throw badRequest('Cấn trừ vào công nợ thì phải có khách hàng.', 'DEBT_NEEDS_CUSTOMER');
+  }
 
   return tx(() => {
-      let subtotal = 0;
-      for (const it of items) {
-        it._amount = Math.round(Number(it.qty) * Math.round(Number(it.price) || 0));
-        subtotal += it._amount;
-      }
-      const fee = Math.round(Number(b.fee) || 0);
-      const total = subtotal - fee;
-      const refunded = Math.min(Math.round(Number(b.refunded) || 0), Math.max(total, 0));
-      const code = nextCode('sale_returns', 'TH');
+    const defectWh = items.some((i) => i.condition === 'defect') ? ensureDefectWarehouse() : null;
 
-      const info = run(`
-        INSERT INTO sale_returns(code, ts, sale_id, customer_id, warehouse_id, user_id,
-                                 subtotal, fee, total, refunded, reason, note)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [code, b.ts || null, b.sale_id || null, b.customer_id || null, warehouseId,
-          b.user_id || null, subtotal, fee, total, refunded, b.reason || null, b.note || null]);
-      const returnId = Number(info.lastInsertRowid);
+    let subtotal = 0;
+    for (const it of items) {
+      it._amount = it._exact ?? Math.round(Number(it.qty) * Math.round(Number(it.price) || 0));
+      subtotal += it._amount;
+    }
+    /* Phí đổi trả: cố định hoặc theo % giá trị hàng trả */
+    const feeType = b.fee_type === 'percent' ? 'percent' : 'amount';
+    const feePercent = feeType === 'percent' ? Math.max(0, Number(b.fee_percent) || 0) : 0;
+    const fee = feeType === 'percent'
+      ? Math.round(subtotal * feePercent / 100)
+      : Math.max(0, Math.round(Number(b.fee) || 0));
+    const total = subtotal - fee;
 
-      for (const it of items) {
-        const factor = Number(it.factor) || 1;
-        const unitCost = Number(it.unit_cost) || costOf(it.product_id);
-        run(`INSERT INTO sale_return_items(return_id, product_id, unit_name, factor, qty, price, unit_cost, amount)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-          [returnId, it.product_id, it.unit_name, factor, Number(it.qty),
-            Math.round(Number(it.price) || 0), unitCost, it._amount]);
-        moveStock({
-          productId: it.product_id, warehouseId, qtyChange: Number(it.qty) * factor,
-          unitCost, refType: 'sale_return', refId: returnId, refCode: code,
-          note: `Khách trả ${it.qty} ${it.unit_name}`, ts: b.ts || null,
-        });
-      }
+    /* Tiền mặt / chuyển khoản mới chi ra quỹ. Cấn trừ nợ và phiếu đổi hàng
+       thì không đụng tới quỹ. */
+    const moneyBack = method === 'debt' || method === 'voucher'
+      ? 0
+      : Math.min(Math.max(0, Math.round(Number(b.refunded) || 0)), Math.max(total, 0));
+    const code = nextCode('sale_returns', 'TH');
 
-      if (refunded > 0) {
-        const accountId = Number(b.account_id) || defaultCashAccount();
-        const cust = b.customer_id ? get('SELECT name FROM customers WHERE id = ?', [b.customer_id]) : null;
-        if (accountId) addCashTx({
-          accountId, direction: 'out', amount: refunded, category: 'sale_return',
-          partnerType: 'customer', partnerId: b.customer_id || null,
-          partnerName: cust?.name || 'Khách lẻ',
-          refType: 'sale_return', refId: returnId, refCode: code,
-          note: `Hoàn tiền trả hàng ${code}`, ts: b.ts || null,
-        });
-      }
-    return { id: returnId, code, total, subtotal, fee, refunded };
+    const info = run(`
+      INSERT INTO sale_returns(code, ts, sale_id, customer_id, warehouse_id, user_id,
+                               subtotal, fee, total, refunded, reason, note,
+                               refund_method, fee_type, fee_percent)
+      VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [code, b.ts || null, sale?.id || null, customerId, baseWarehouse,
+      b.user_id || null, subtotal, fee, total, moneyBack, b.reason || null, b.note || null,
+      method, feeType, feePercent]);
+    const returnId = Number(info.lastInsertRowid);
+
+    for (const it of items) {
+      const factor = Number(it.factor) || 1;
+      const unitCost = Number(it.unit_cost) || costOf(it.product_id);
+      const condition = it.condition === 'defect' ? 'defect' : 'good';
+      /* Hàng đạt chuẩn về kho đang bán; hàng lỗi vào kho hàng lỗi, không bán */
+      const wh = condition === 'defect' ? defectWh : baseWarehouse;
+      run(`INSERT INTO sale_return_items(return_id, product_id, unit_name, factor, qty, price,
+                                         unit_cost, amount, sale_item_id, condition, warehouse_id)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [returnId, it.product_id, it.unit_name, factor, Number(it.qty),
+        Math.round(Number(it.price) || 0), unitCost, it._amount,
+        it.sale_item_id || null, condition, wh]);
+      moveStock({
+        productId: it.product_id, warehouseId: wh, qtyChange: Number(it.qty) * factor,
+        unitCost, refType: 'sale_return', refId: returnId, refCode: code,
+        note: condition === 'defect'
+          ? `Khách trả ${it.qty} ${it.unit_name} — hàng lỗi, không bán`
+          : `Khách trả ${it.qty} ${it.unit_name}`,
+        ts: b.ts || null,
+      });
+    }
+
+    const cust = customerId ? get('SELECT name FROM customers WHERE id = ?', [customerId]) : null;
+    let voucher = null;
+    if (moneyBack > 0) {
+      const accountId = Number(b.account_id)
+        || (method === 'transfer' ? (defaultCashAccount('bank') || defaultCashAccount('cash')) : defaultCashAccount());
+      if (accountId) addCashTx({
+        accountId, direction: 'out', amount: moneyBack, category: 'sale_return',
+        partnerType: 'customer', partnerId: customerId,
+        partnerName: cust?.name || 'Khách lẻ',
+        refType: 'sale_return', refId: returnId, refCode: code,
+        userId: b.user_id || null,
+        note: `Hoàn tiền trả hàng ${code}`, ts: b.ts || null,
+      });
+    }
+    if (method === 'voucher' && total > 0) {
+      voucher = createVoucher({
+        amount: total, customerId, sourceType: 'sale_return', sourceId: returnId, sourceCode: code,
+        userId: b.user_id || null, note: `Cấp khi trả hàng ${code}`,
+      });
+      run('UPDATE sale_returns SET voucher_id = ? WHERE id = ?', [voucher.id, returnId]);
+    }
+    return {
+      id: returnId, code, total, subtotal, fee, refunded: moneyBack,
+      refund_method: method, voucher, defect_warehouse_id: defectWh,
+    };
   });
 }
 
@@ -461,12 +792,14 @@ r.post('/sale-returns', (req, res) => {
  * ==================================================================== */
 
 r.post('/sale-exchanges', (req, res) => {
-  const b = req.body;
+  /* _actor gắn sau khi trải thân yêu cầu — máy khách không tự khai quyền được */
+  const b = { ...req.body, _actor: req.user ?? null };
   const backItems = Array.isArray(b.return_items) ? b.return_items.filter((i) => Number(i.qty) > 0) : [];
   const newItems = Array.isArray(b.new_items) ? b.new_items.filter((i) => Number(i.qty) > 0) : [];
   if (!backItems.length) {
     return res.status(400).json({ error: 'Chưa chọn món khách trả lại' });
   }
+  const method = REFUND_METHODS.includes(b.refund_method) ? b.refund_method : 'cash';
 
   try {
     const out = tx(() => {
@@ -478,38 +811,70 @@ r.post('/sale-exchanges', (req, res) => {
         user_id: b.user_id || null,
         items: backItems,
         fee: b.fee || 0,
-        refunded: 0,          // chưa hoàn tiền vội, còn chờ bù trừ bên dưới
+        fee_type: b.fee_type,
+        fee_percent: b.fee_percent,
+        refunded: 0,          // chưa hoàn vội, còn chờ bù trừ bên dưới
         reason: b.reason || 'Đổi hàng',
         note: b.note || null,
       });
-      const credit = Math.max(0, ret.total);   // tiền khách được trừ
+      const credit = Math.max(0, ret.total);   // A trừ phí: tiền khách được trừ
+      const customerId = get('SELECT customer_id FROM sale_returns WHERE id = ?', [ret.id]).customer_id;
+      const cust = customerId ? get('SELECT name FROM customers WHERE id = ?', [customerId]) : null;
+      const partnerName = cust?.name || 'Khách lẻ';
 
-      // Không lấy món mới nào: thành phiếu trả hàng thường, hoàn tiền luôn
+      /**
+       * Tiệm còn nợ khách một khoản sau bù trừ: trả bằng cách nào.
+       *   cash / transfer  chi ra quỹ
+       *   debt             trừ vào công nợ cũ của khách, không chi tiền
+       *   voucher          cấp phiếu đổi hàng, không chi tiền — tránh hụt két
+       */
+      const settle = (amount, exchangeSaleId) => {
+        if (amount <= 0) return { refunded: 0 };
+        if (method === 'debt') {
+          if (!customerId) throw badRequest('Cấn trừ vào công nợ thì phải có khách hàng.', 'DEBT_NEEDS_CUSTOMER');
+          run('UPDATE sale_returns SET refund_method = ?, debt_offset = ? WHERE id = ?', ['debt', amount, ret.id]);
+          return { refunded: 0, debt_offset: amount };
+        }
+        if (method === 'voucher') {
+          const v = createVoucher({
+            amount, customerId, sourceType: 'sale_return', sourceId: ret.id, sourceCode: ret.code,
+            userId: b.user_id || null,
+            note: exchangeSaleId ? `Tiền thừa khi đổi hàng ${ret.code}` : `Cấp khi trả hàng ${ret.code}`,
+          });
+          run('UPDATE sale_returns SET refund_method = ?, voucher_id = ? WHERE id = ?', ['voucher', v.id, ret.id]);
+          return { refunded: 0, voucher: v };
+        }
+        const accountId = Number(b.account_id)
+          || (method === 'transfer' ? (defaultCashAccount('bank') || defaultCashAccount('cash')) : defaultCashAccount());
+        if (accountId) addCashTx({
+          accountId, direction: 'out', amount, category: 'sale_return',
+          partnerType: 'customer', partnerId: customerId, partnerName,
+          refType: 'sale_return', refId: ret.id, refCode: ret.code, userId: b.user_id || null,
+          note: exchangeSaleId ? `Hoàn phần chênh khi đổi hàng ${ret.code}` : `Hoàn tiền trả hàng ${ret.code}`,
+          ts: b.ts || null,
+        });
+        run('UPDATE sale_returns SET refunded = ?, refund_method = ? WHERE id = ?', [amount, method, ret.id]);
+        return { refunded: amount };
+      };
+
+      // Không lấy món mới nào: thành phiếu trả hàng thường
       if (!newItems.length) {
-        /* Không truyền refund thì hoàn hết. Phải kiểm tra trước khi ép kiểu:
-           Number(undefined) ra NaN mà ?? không bắt NaN, nên viết
-           "Number(b.refund) ?? credit" sẽ ra NaN và khách không được hoàn đồng nào. */
+        /* Hoàn tiền mặt thì cho hoàn bớt (b.refund). Không truyền thì hoàn hết.
+           Phải kiểm tra trước khi ép kiểu: Number(undefined) ra NaN mà ?? không
+           bắt NaN, nên "Number(b.refund) ?? credit" ra NaN và khách không được
+           hoàn đồng nào. */
         const asked = b.refund === undefined || b.refund === null || b.refund === ''
           || Number.isNaN(Number(b.refund))
           ? credit
           : Math.round(Number(b.refund));
-        const refund = Math.max(0, Math.min(asked, credit));
-        if (refund > 0) {
-          const accountId = Number(b.account_id) || defaultCashAccount();
-          const cust = b.customer_id ? get('SELECT name FROM customers WHERE id = ?', [b.customer_id]) : null;
-          if (accountId) addCashTx({
-            accountId, direction: 'out', amount: refund, category: 'sale_return',
-            partnerType: 'customer', partnerId: b.customer_id || null,
-            partnerName: cust?.name || 'Khách lẻ',
-            refType: 'sale_return', refId: ret.id, refCode: ret.code,
-            userId: b.user_id || null, note: `Hoàn tiền trả hàng ${ret.code}`, ts: b.ts || null,
-          });
-          run('UPDATE sale_returns SET refunded = ? WHERE id = ?', [refund, ret.id]);
-        }
+        const amount = method === 'cash' || method === 'transfer'
+          ? Math.max(0, Math.min(asked, credit)) : credit;
+        const done = settle(amount, null);
         return {
           return_id: ret.id, return_code: ret.code, credit,
           sale_id: null, sale_code: null, sale_total: 0,
-          customer_pays: 0, shop_refunds: refund,
+          customer_pays: 0, shop_refunds: done.refunded || 0,
+          refund_method: method, voucher: done.voucher || null, debt_offset: done.debt_offset || 0,
         };
       }
 
@@ -517,7 +882,7 @@ r.post('/sale-exchanges', (req, res) => {
       // Lập hoá đơn mới trước để biết tổng chính xác, rồi mới chia tiền
       const sale = createSale({
         ts: b.ts || null,
-        customer_id: b.customer_id || null,
+        customer_id: customerId,
         warehouse_id: b.warehouse_id,
         price_list_id: b.price_list_id || null,
         user_id: b.user_id || null,
@@ -526,48 +891,44 @@ r.post('/sale-exchanges', (req, res) => {
         discount: b.discount || 0,
         discount_percent: b.discount_percent || 0,
         is_vat_invoice: b.is_vat_invoice ? 1 : 0,
-        // Phần trừ từ hàng trả lại tính là đã trả, nhưng không ghi vào quỹ
-        paid: 0,
+        /* Báo trước phần sẽ bù trừ để soát hạn mức nợ cho đúng. Tiền này
+           không vào quỹ (cash_amount và transfer_amount đều 0); số đã trả
+           của hoá đơn ghi lại chính xác ngay bên dưới. */
+        paid: credit + paidExtra,
         received: 0,
         payment_method: b.payment_method || 'cash',
         cash_amount: 0,
         transfer_amount: 0,
         note: `Đổi hàng theo phiếu ${ret.code}${b.note ? ' — ' + b.note : ''}`,
+        approval_token: b.approval_token,
+        _actor: b._actor,
       });
 
       const used = Math.min(credit, sale.total);          // phần bù trừ
       const customerPays = Math.max(0, sale.total - credit);
-      const shopRefunds = Math.max(0, credit - sale.total);
+      const shopOwes = Math.max(0, credit - sale.total);
 
       // Ghi nhận phần bù trừ + phần khách trả thêm vào hoá đơn mới
       const cashIn = Math.min(paidExtra, customerPays);
       run('UPDATE sales SET paid = ? WHERE id = ?', [used + cashIn, sale.id]);
+      /* Nối phiếu trả với hoá đơn mới: công nợ dựa vào mối nối này để KHÔNG
+         trừ nợ thêm lần nữa phần đã bù vào hoá đơn mới. Thiếu mối nối là
+         khách vừa được trừ tiền hàng mới, vừa được trừ nợ — tính hai lần. */
+      run('UPDATE sale_returns SET exchange_sale_id = ? WHERE id = ?', [sale.id, ret.id]);
 
-      const cust = b.customer_id ? get('SELECT name FROM customers WHERE id = ?', [b.customer_id]) : null;
-      const partnerName = cust?.name || 'Khách lẻ';
       const accountId = Number(b.account_id) || defaultCashAccount();
-
       if (cashIn > 0 && accountId) {
         const isTransfer = b.payment_method === 'transfer';
         run('UPDATE sales SET cash_amount = ?, transfer_amount = ? WHERE id = ?',
           [isTransfer ? 0 : cashIn, isTransfer ? cashIn : 0, sale.id]);
         addCashTx({
           accountId, direction: 'in', amount: cashIn, category: 'sale',
-          partnerType: 'customer', partnerId: b.customer_id || null, partnerName,
+          partnerType: 'customer', partnerId: customerId, partnerName,
           refType: 'sale', refId: sale.id, refCode: sale.code, userId: b.user_id || null,
           note: `Khách bù thêm khi đổi hàng ${sale.code}`, ts: b.ts || null,
         });
       }
-      if (shopRefunds > 0) {
-        if (accountId) addCashTx({
-          accountId, direction: 'out', amount: shopRefunds, category: 'sale_return',
-          partnerType: 'customer', partnerId: b.customer_id || null, partnerName,
-          refType: 'sale_return', refId: ret.id, refCode: ret.code, userId: b.user_id || null,
-          note: `Hoàn phần chênh khi đổi hàng ${ret.code}`, ts: b.ts || null,
-        });
-        run('UPDATE sale_returns SET refunded = ? WHERE id = ?', [shopRefunds, ret.id]);
-      }
-      run('UPDATE sale_returns SET exchange_sale_id = ? WHERE id = ?', [sale.id, ret.id]);
+      const done = settle(shopOwes, sale.id);
 
       return {
         return_id: ret.id, return_code: ret.code, credit,
@@ -576,12 +937,19 @@ r.post('/sale-exchanges', (req, res) => {
         customer_pays: customerPays,
         paid_now: cashIn,
         still_owed: Math.max(0, customerPays - cashIn),
-        shop_refunds: shopRefunds,
+        shop_refunds: done.refunded || 0,
+        refund_method: shopOwes > 0 ? method : null,
+        voucher: done.voucher || null,
+        debt_offset: done.debt_offset || 0,
+        approved_by: sale.approved_by || null,
       };
     });
+    if (out.approved_by) consumeApproval(b.approval_token);
     res.json(out);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message, code: e.code });
+    res.status(e.status || 400).json({
+      error: e.message, code: e.code, needs_approval: e.needs_approval === true,
+    });
   }
 });
 
@@ -591,7 +959,7 @@ r.post('/sale-exchanges', (req, res) => {
 
 r.get('/drafts', (req, res) => {
   res.json(all(`
-    SELECT d.id, d.code, d.ts, d.updated_at, d.title, d.customer_id, d.total, d.item_count,
+    SELECT d.id, d.code, d.ts, d.updated_at, d.title, d.tab_no, d.customer_id, d.total, d.item_count,
            d.warehouse_id, d.price_list_id,
            c.name AS customer_name, u.full_name AS user_name
     FROM draft_sales d
@@ -613,27 +981,30 @@ r.post('/drafts', (req, res) => {
   const payload = JSON.stringify(b.payload ?? {});
   const total = Math.round(Number(b.total) || 0);
   const itemCount = Number(b.item_count) || 0;
+  /* Số "Đơn Hàng X" — giữ lại để tab mới mở trên màn hình bán hàng không lấy
+     trùng số với một đơn đang lưu tạm (tài liệu 01) */
+  const tabNo = Number(b.tab_no) > 0 ? Math.round(Number(b.tab_no)) : null;
 
   if (b.id) {
     const exists = get('SELECT id FROM draft_sales WHERE id = ?', [b.id]);
     if (exists) {
-      run(`UPDATE draft_sales SET title = ?, customer_id = ?, user_id = ?, warehouse_id = ?,
+      run(`UPDATE draft_sales SET title = ?, tab_no = ?, customer_id = ?, user_id = ?, warehouse_id = ?,
              price_list_id = ?, total = ?, item_count = ?, payload = ?,
              updated_at = datetime('now','localtime')
            WHERE id = ?`,
-        [b.title || null, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
+        [b.title || null, tabNo, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
           b.price_list_id || null, total, itemCount, payload, b.id]);
-      return res.json(get('SELECT id, code, title, updated_at FROM draft_sales WHERE id = ?', [b.id]));
+      return res.json(get('SELECT id, code, title, tab_no, updated_at FROM draft_sales WHERE id = ?', [b.id]));
     }
   }
   const code = nextCode('draft_sales', 'HDT');
   const info = run(`
-    INSERT INTO draft_sales(code, title, customer_id, user_id, warehouse_id, price_list_id,
+    INSERT INTO draft_sales(code, title, tab_no, customer_id, user_id, warehouse_id, price_list_id,
                             total, item_count, payload)
-    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [code, b.title || null, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [code, b.title || null, tabNo, b.customer_id || null, b.user_id || null, b.warehouse_id || null,
       b.price_list_id || null, total, itemCount, payload]);
-  res.json(get('SELECT id, code, title, updated_at FROM draft_sales WHERE id = ?',
+  res.json(get('SELECT id, code, title, tab_no, updated_at FROM draft_sales WHERE id = ?',
     [Number(info.lastInsertRowid)]));
 });
 
@@ -698,11 +1069,14 @@ r.get('/customers/:id/quick', (req, res) => {
     FROM sales s
     WHERE s.customer_id = ? AND s.status = 'done'
     ORDER BY s.id DESC LIMIT 10`, [c.id]);
-  c.unpaid_bills = all(`
-    SELECT s.id, s.code, s.ts, s.total, s.paid, (s.total - s.paid) AS remaining
-    FROM sales s
-    WHERE s.customer_id = ? AND s.status = 'done' AND s.total > s.paid
-    ORDER BY s.ts LIMIT 20`, [c.id]);
+  /* Hoá đơn còn nợ theo từng hoá đơn, cũ nhất trước (FIFO) */
+  c.unpaid_bills = (debtBreakdown(c.id)?.invoices || [])
+    .filter((i) => i.remaining > 0)
+    .slice(0, 20)
+    .map((i) => ({
+      id: i.id, code: i.code, ts: i.ts, total: i.total, paid: i.paid,
+      remaining: i.remaining, age_days: i.age_days,
+    }));
   c.top_products = all(`
     SELECT si.product_id, si.name_snapshot AS name, si.unit_name,
            SUM(si.qty) AS qty, MAX(s.ts) AS last_ts
@@ -724,94 +1098,124 @@ r.get('/customers/:id/quick', (req, res) => {
 /* ==================================================================== */
 
 /**
- * Các chặng của một đơn giao hàng, theo đúng thứ tự ngoài đời:
+ * Hai vòng đời TÁCH RỜI của một đơn giao (tài liệu 04):
  *
- *   pending   hàng đã xuất hoá đơn, còn nằm ở tiệm chờ người tới lấy
- *   shipping  shipper đã cầm hàng đi
- *   delivered khách đã nhận được hàng
- *   collected tiền đã về tới tiệm            <- chặng cuối của đơn thu hộ
- *   returned  giao không được, hàng quay về tiệm
- *   cancelled bỏ giao
+ *   Chặng giao     pending    Chờ lấy hàng
+ *   (delivery_     shipping   Đang giao hàng
+ *    status)       delivered  Giao thành công
+ *                  failed     Thất bại / chuyển hoàn
  *
- * Tách "đã giao" khỏi "đã thu tiền" là chuyện bắt buộc với đơn thu hộ:
- * khách cầm hàng rồi nhưng tiền còn nằm trong túi shipper, tiệm vẫn đang
- * bị nợ. Gộp hai chặng làm một là mất dấu khoản tiền đó.
+ *   Tiền thu hộ    pending    Chờ đối soát COD
+ *   (cod_status)   collected  Đã thu tiền thành công
+ *                  cancelled  Giao thất bại, không thu
+ *
+ * Đợt 11 gộp tiền vào chặng giao ("đã thu tiền" là chặng cuối). Tách ra vì
+ * hai việc xảy ra ở hai chỗ: hàng tới tay khách là việc của người giao,
+ * tiền về két là việc đối soát — đơn giao thành công hôm nay có khi tuần
+ * sau người giao mới nộp tiền. Tiền nộp về đi qua PUT /sales/:id/cod.
  */
-export const DELIVERY_STATUSES = ['pending', 'shipping', 'delivered', 'collected', 'returned', 'cancelled'];
+export const DELIVERY_STATUSES = ['pending', 'shipping', 'delivered', 'failed'];
 
-/** Cột mốc thời gian tương ứng với từng chặng, để biết đơn đi mấy ngày rồi. */
-const STAMP_OF = { shipping: 'shipped_at', delivered: 'delivered_at', collected: 'collected_at' };
+/** Cột mốc thời gian của từng chặng, để biết đơn đi mấy ngày rồi. */
+const STAMP_OF = { shipping: 'shipped_at', delivered: 'delivered_at' };
 
-/** Danh sách đơn đang giao — bảng theo dõi ở quầy. */
+/** Danh sách đơn giao — bảng theo dõi ở quầy. */
 r.get('/deliveries', (req, res) => {
-  const { status = '', q = '', carrier_id, from, to, active } = req.query;
+  const { status = '', cod = '', q = '', carrier_id, from, to, active } = req.query;
   const where = ['s.delivery_status IS NOT NULL', "s.status = 'done'"];
   const params = [];
   if (status) { where.push('s.delivery_status = ?'); params.push(status); }
-  /* Mặc định chỉ hiện đơn CHƯA xong: đơn đã thu tiền hoặc đã bỏ thì không
-     còn phải trông nữa, để lẫn vào chỉ làm rối bảng theo dõi. */
-  if (active === '1') where.push("s.delivery_status IN ('pending','shipping','delivered')");
+  if (cod) { where.push('s.cod_status = ?'); params.push(cod); }
+  /* "Chưa xong" = hàng chưa tới tay khách, HOẶC tới rồi mà tiền thu hộ chưa
+     về. Đơn giao thành công mà còn chờ đối soát vẫn phải trông, không thì
+     tiền nằm ở người giao cả tuần mà không ai nhắc. */
+  if (active === '1') {
+    where.push(`(s.delivery_status IN ('pending','shipping')
+                 OR (s.cod_status = 'pending' AND s.delivery_status <> 'failed'))`);
+  }
   if (carrier_id) { where.push('s.carrier_id = ?'); params.push(carrier_id); }
   if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(s.ts) <= date(?)'); params.push(to); }
   if (q.trim()) {
     where.push(`(s.code LIKE ? OR s.delivery_name LIKE ? OR s.delivery_phone LIKE ?
-                 OR s.delivery_address LIKE ? OR s.tracking_code LIKE ? OR s.shipper_name LIKE ?)`);
+                 OR s.delivery_address LIKE ? OR s.tracking_code LIKE ? OR s.shipper_name LIKE ?
+                 OR s.shipper_phone LIKE ?)`);
     const like = `%${q.trim()}%`;
-    params.push(like, like, like, like, like, like);
+    params.push(like, like, like, like, like, like, like);
   }
   const w = 'WHERE ' + where.join(' AND ');
   const { page, size, offset } = pageParams(req.query, 20);
 
   const agg = get(`
     SELECT COUNT(*) AS n,
-           COALESCE(SUM(CASE WHEN s.delivery_status IN ('pending','shipping','delivered')
-                             THEN s.total - s.paid END), 0) AS pending_money
+           COALESCE(SUM(CASE WHEN s.cod_status = 'pending' AND s.delivery_status <> 'failed'
+                             THEN s.cod_amount - s.cod_collected END), 0) AS pending_money
     FROM sales s ${w}`, params);
 
   const rows = all(`
-    SELECT s.id, s.code, s.ts, s.total, s.paid, s.cod_amount, s.ship_fee, s.ship_payer,
+    SELECT s.id, s.code, s.ts, s.total, s.paid, s.ship_fee, s.ship_payer,
            s.delivery_status, s.delivery_name, s.delivery_phone, s.delivery_address,
-           s.tracking_code, s.delivery_note, s.shipper_name,
+           s.tracking_code, s.delivery_note,
+           s.shipper_name, s.shipper_phone, s.shipper_user_id, su.full_name AS shipper_user_name,
            s.shipped_at, s.delivered_at, s.collected_at,
+           s.cod_amount, s.cod_collected, s.cod_status,
+           CASE WHEN s.cod_status = 'pending' THEN s.cod_amount - s.cod_collected ELSE 0 END AS cod_left,
            s.carrier_id, ca.name AS carrier_name,
            c.name AS customer_name, c.phone AS customer_phone,
            u.full_name AS user_name,
-           s.total - s.paid AS owed,
            CAST(julianday('now','localtime') - julianday(s.ts) AS INTEGER) AS days_out
     FROM sales s
     LEFT JOIN carriers ca ON ca.id = s.carrier_id
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN users u ON u.id = s.user_id
+    LEFT JOIN users su ON su.id = s.shipper_user_id
     ${w}
     ORDER BY s.id DESC LIMIT ${size} OFFSET ${offset}`, params);
 
-  /* Đếm theo từng chặng để hiện con số trên các thẻ lọc */
+  /* Đếm theo từng chặng và từng trạng thái tiền — con số trên các thẻ lọc */
   const counts = {};
   for (const row of all(`
     SELECT s.delivery_status AS st, COUNT(*) AS n FROM sales s
     WHERE s.delivery_status IS NOT NULL AND s.status = 'done'
     GROUP BY s.delivery_status`)) counts[row.st] = row.n;
+  const codCounts = {};
+  for (const row of all(`
+    SELECT s.cod_status AS st, COUNT(*) AS n FROM sales s
+    WHERE s.delivery_status IS NOT NULL AND s.status = 'done' AND s.cod_status IS NOT NULL
+    GROUP BY s.cod_status`)) codCounts[row.st] = row.n;
 
-  res.json({ rows, total: agg.n, page, page_size: size, counts, pending_money: agg.pending_money });
+  res.json({
+    rows, total: agg.n, page, page_size: size,
+    counts, cod_counts: codCounts, pending_money: agg.pending_money,
+  });
 });
 
 /**
- * Chuyển chặng của một đơn giao.
+ * Đổi chặng giao hàng. KHÔNG đụng tới tiền — tiền đi qua PUT /sales/:id/cod.
  *
- * Chuyện tiền: sang chặng "đã thu tiền" mà hoá đơn còn thiếu thì shipper
- * vừa mang tiền về — phải ghi phiếu thu và trừ nợ ngay tại đây. Nếu chỉ
- * đổi chữ trạng thái, đơn coi như giao xong nhưng sổ vẫn treo nợ khách,
- * và cuối tháng chủ tiệm đi đòi một khoản đã thu rồi.
+ * Giao thất bại thì huỷ khoản thu hộ (khách không nhận hàng thì không có gì
+ * để thu). Hàng quay về KHÔNG tự cộng lại kho: hoá đơn vẫn còn đó, người có
+ * quyền huỷ hoá đơn phải huỷ để nhập lại kho — việc đó sinh chứng từ riêng,
+ * không để một cú đổi trạng thái âm thầm làm thay.
  */
 r.put('/sales/:id/delivery', (req, res) => {
   const b = req.body;
   const sale = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
   if (!sale) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
+  if (sale.status !== 'done') return res.status(400).json({ error: `Hoá đơn ${sale.code} đã bị huỷ` });
 
   const next = b.delivery_status === undefined ? sale.delivery_status : (b.delivery_status || null);
   if (next && !DELIVERY_STATUSES.includes(next)) {
-    return res.status(400).json({ error: 'Trạng thái giao hàng không hợp lệ: ' + next });
+    return res.status(400).json({
+      error: `Chặng giao hàng không hợp lệ: ${next}. `
+        + 'Tiền thu hộ đối soát ở mục riêng, không còn là một chặng giao.',
+    });
+  }
+  if (next === 'failed' && sale.cod_collected > 0) {
+    return res.status(400).json({
+      error: `Người giao đã nộp về ${sale.cod_collected.toLocaleString('vi-VN')} đ tiền thu hộ của đơn này. `
+        + 'Hoàn lại số tiền đó trước rồi mới đánh dấu giao thất bại.',
+    });
   }
 
   try {
@@ -820,45 +1224,27 @@ r.put('/sales/:id/delivery', (req, res) => {
       const stamp = changed && STAMP_OF[next] ? STAMP_OF[next] : null;
 
       /* Giữ nguyên trường nào không gửi lên — màn hình theo dõi chỉ đổi
-         trạng thái, không nên xoá mất mã vận đơn đã nhập từ trước. */
+         chặng, không nên xoá mất mã vận đơn đã nhập từ trước. */
       const keep = (v, old) => (v === undefined ? old : (v || null));
 
       run(`UPDATE sales SET delivery_status = ?, tracking_code = ?, carrier_id = ?,
-             delivery_note = ?, shipper_name = ?
+             delivery_note = ?, shipper_name = ?, shipper_user_id = ?, shipper_phone = ?
              ${stamp ? `, ${stamp} = COALESCE(${stamp}, datetime('now','localtime'))` : ''}
            WHERE id = ?`,
-        [next, keep(b.tracking_code, sale.tracking_code), keep(b.carrier_id, sale.carrier_id),
-          keep(b.delivery_note, sale.delivery_note), keep(b.shipper_name, sale.shipper_name),
-          sale.id]);
+      [next, keep(b.tracking_code, sale.tracking_code), keep(b.carrier_id, sale.carrier_id),
+        keep(b.delivery_note, sale.delivery_note), keep(b.shipper_name, sale.shipper_name),
+        keep(b.shipper_user_id, sale.shipper_user_id), keep(b.shipper_phone, sale.shipper_phone),
+        sale.id]);
 
-      let receipt = null;
-      const owed = sale.total - sale.paid;
-      /* Tiền về tiệm: ghi phiếu thu và trừ nợ. Chỉ làm khi thật sự còn
-         thiếu — đơn đã trả trước rồi thì chuyển chặng không sinh tiền. */
-      if (changed && next === 'collected' && owed > 0 && b.skip_payment !== true) {
-        const amount = Math.min(
-          b.amount === undefined || b.amount === null || b.amount === ''
-            || Number.isNaN(Number(b.amount))
-            ? owed
-            : Math.round(Number(b.amount)),
-          owed);
-        if (amount > 0) {
-          const accountId = Number(b.account_id) || defaultCashAccount();
-          if (!accountId) throw Object.assign(new Error('Chưa thiết lập quỹ tiền'), { status: 400 });
-          const cust = sale.customer_id
-            ? get('SELECT name FROM customers WHERE id = ?', [sale.customer_id]) : null;
-          receipt = addCashTx({
-            accountId, direction: 'in', amount, category: 'sale',
-            partnerType: 'customer', partnerId: sale.customer_id || null,
-            partnerName: cust?.name || sale.delivery_name || 'Khách lẻ',
-            refType: 'sale', refId: sale.id, refCode: sale.code,
-            userId: b.user_id || req.user?.id || null,
-            note: `Shipper nộp tiền đơn giao ${sale.code}`,
-          });
-          run('UPDATE sales SET paid = paid + ? WHERE id = ?', [amount, sale.id]);
-        }
+      if (changed && next === 'failed' && sale.cod_status === 'pending') {
+        run("UPDATE sales SET cod_status = 'cancelled' WHERE id = ?", [sale.id]);
       }
-      return { ok: true, receipt, sale: get('SELECT * FROM sales WHERE id = ?', [sale.id]) };
+      /* Lỡ tay đánh thất bại rồi sửa lại: khôi phục khoản thu hộ */
+      if (changed && sale.delivery_status === 'failed' && next !== 'failed'
+          && sale.cod_status === 'cancelled' && sale.cod_amount > sale.cod_collected) {
+        run("UPDATE sales SET cod_status = 'pending' WHERE id = ?", [sale.id]);
+      }
+      return { ok: true, sale: get('SELECT * FROM sales WHERE id = ?', [sale.id]) };
     });
     res.json(out);
   } catch (e) {
@@ -870,18 +1256,22 @@ r.put('/sales/:id/delivery', (req, res) => {
 r.get('/deliveries/:id', (req, res) => {
   const sale = get(`
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone,
-           ca.name AS carrier_name, u.full_name AS user_name
+           ca.name AS carrier_name, u.full_name AS user_name, su.full_name AS shipper_user_name
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN carriers ca ON ca.id = s.carrier_id
     LEFT JOIN users u ON u.id = s.user_id
+    LEFT JOIN users su ON su.id = s.shipper_user_id
     WHERE s.id = ?`, [req.params.id]);
   if (!sale) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   sale.items = all(`
     SELECT si.*, p.base_unit
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ? ORDER BY si.id`, [sale.id]);
-  sale.owed = sale.total - sale.paid;
+  /* Số tiền người giao phải thu của khách = phần thu hộ còn lại. Đơn ghi nợ
+     hoặc đã trả đủ tại quầy thì người giao không thu gì. */
+  sale.cod_left = sale.cod_status === 'pending' ? sale.cod_amount - sale.cod_collected : 0;
+  sale.owed = sale.cod_left;
   res.json(sale);
 });
 
@@ -893,21 +1283,18 @@ r.get('/customer-debts', (req, res) => {
   for (const c of rows) {
     const debt = customerDebt(c.id);
     if (debt === 0 && req.query.all !== '1') continue;
+    /* Hoá đơn còn nợ tính theo TỪNG hoá đơn (đã trừ tiền thu gán vào nó),
+       không phải "total > paid" — hoá đơn khách trả nợ rồi mà vẫn đếm là
+       còn nợ thì tuổi nợ cứ tăng mãi, khách bị chặn mua nợ oan. */
+    const open = (debtBreakdown(c.id)?.invoices || []).filter((i) => i.remaining > 0);
     out.push({
       id: c.id, code: c.code, name: c.name, phone: c.phone,
       opening_debt: c.opening_debt, debt_limit: c.debt_limit, debt,
       over_limit: c.debt_limit > 0 && debt > c.debt_limit,
-      unpaid_bills: get(
-        "SELECT COUNT(*) AS n FROM sales WHERE customer_id = ? AND status = 'done' AND total > paid",
-        [c.id]).n,
-      oldest_unpaid: get(
-        "SELECT MIN(ts) AS ts FROM sales WHERE customer_id = ? AND status = 'done' AND total > paid",
-        [c.id]).ts,
+      unpaid_bills: open.length,
+      oldest_unpaid: open[0]?.ts || null,
       // Nợ lâu nhất bao nhiêu ngày — để màn hình bán hàng tô đỏ khoản nợ dai
-      oldest_days: get(
-        `SELECT CAST(julianday('now','localtime') - julianday(MIN(ts)) AS INTEGER) AS d
-         FROM sales WHERE customer_id = ? AND status = 'done' AND total > paid`,
-        [c.id]).d || 0,
+      oldest_days: open[0]?.age_days || 0,
     });
   }
   res.json(out);

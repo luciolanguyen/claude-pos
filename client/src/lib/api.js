@@ -29,6 +29,9 @@ async function request(method, path, body) {
     const err = new Error(data?.error || `Lỗi ${res.status}`);
     err.status = res.status;
     err.code = data?.code;
+    /* Máy chủ báo việc này cần quản lý gõ PIN duyệt — hộp thoại dựa vào cờ
+       này để mở ô nhập PIN thay vì chỉ báo lỗi */
+    err.needsApproval = data?.needs_approval === true;
     throw err;
   }
   return data;
@@ -132,6 +135,17 @@ export const api = {
   order: (id) => request('GET', `/orders/${id}`),
   ordersSummary: () => request('GET', '/orders-summary'),
   ordersShortage: () => request('GET', '/orders-shortage'),
+
+  /* --- Chính sách bán hàng, duyệt PIN, công nợ theo hoá đơn (đợt 13) --- */
+  posPolicy: () => request('GET', '/pos/policy'),
+  approve: (pin, reason) => request('POST', '/auth/approve', { pin, reason }),
+  creditStatus: (id) => request('GET', `/customers/${id}/credit-status`),
+  customerLedger: (id) => request('GET', `/customers/${id}/ledger`),
+  customerBuyers: (id) => request('GET', `/customers/${id}/buyers`),
+  proxyStats: (id) => request('GET', `/customers/${id}/proxy-stats`),
+  voucher: (code) => request('GET', `/vouchers/${encodeURIComponent(code)}`),
+  codReceivables: () => request('GET', '/cod-receivables'),
+  reconcileCod: (id, body) => request('PUT', `/sales/${id}/cod`, body),
 
   /* --- Hệ thống --- */
   me: () => request('GET', '/me'),

@@ -104,7 +104,7 @@ export default function Sales() {
           <SearchInput
             value={q}
             onChange={(v) => { setQ(v); setParams(v ? { q: v } : {}); }}
-            placeholder="Tìm mã hoá đơn, tên khách, số điện thoại..."
+            placeholder="Tìm mã hoá đơn, tên / SĐT khách hoặc người mua hộ..."
             className="w-full sm:w-80"
           />
           <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
@@ -177,6 +177,11 @@ export default function Sales() {
                         <td>
                           <div className="truncate max-w-[180px]">{s.customer_name || 'Khách lẻ'}</div>
                           {s.customer_phone && <div className="text-2xs text-muted-ink">{s.customer_phone}</div>}
+                          {s.buyer_name && (
+                            <div className="text-2xs text-violet-700 truncate max-w-[180px]">
+                              Mua hộ: {s.buyer_name}{s.buyer_phone ? ` · ${s.buyer_phone}` : ''}
+                            </div>
+                          )}
                         </td>
                         <td className="num">{s.item_count}</td>
                         <td className="num font-semibold">{money(s.total)}</td>
@@ -261,6 +266,11 @@ export default function Sales() {
                 <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Khách hàng</div>
                 <div className="font-semibold">{detail.customer_name || 'Khách lẻ'}</div>
                 {detail.customer_phone && <div className="text-muted-ink">{detail.customer_phone}</div>}
+                {detail.buyer_name && (
+                  <div className="text-violet-700 mt-0.5">
+                    Người mua hộ: <b>{detail.buyer_name}</b>{detail.buyer_phone ? ` · ${detail.buyer_phone}` : ''}
+                  </div>
+                )}
                 {detail.customer_address && <div className="text-muted-ink">{detail.customer_address}</div>}
                 {detail.customer_tax_code && <div className="text-muted-ink">MST: {detail.customer_tax_code}</div>}
               </div>
@@ -270,6 +280,16 @@ export default function Sales() {
                 <div>Bảng giá: {detail.price_list_name || 'Giá lẻ'}</div>
                 <div>Thanh toán: {PAYMENT_LABEL[detail.payment_method]}</div>
                 {detail.is_vat_invoice === 1 && <Badge tone="info">Có hoá đơn GTGT</Badge>}
+                {detail.cod_amount > 0 && (
+                  <div>
+                    Thu hộ COD: {money(detail.cod_amount)}
+                    {detail.cod_status === 'collected' ? ' — đã đối soát' : detail.cod_status === 'pending' ? ' — chờ đối soát' : ''}
+                  </div>
+                )}
+                {detail.voucher_amount > 0 && <div>Trừ phiếu đổi hàng: {money(detail.voucher_amount)}</div>}
+                {detail.approval_note && (
+                  <div className="text-2xs text-muted-ink">Quản lý đã duyệt: {detail.approval_note}</div>
+                )}
               </div>
             </div>
 

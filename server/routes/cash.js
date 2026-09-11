@@ -7,6 +7,7 @@ const r = Router();
 export const CASH_CATEGORIES = {
   in: [
     { code: 'sale', label: 'Thu bán hàng' },
+    { code: 'cod_in', label: 'Thu hộ COD từ người giao hàng' },
     { code: 'debt_in', label: 'Thu công nợ khách' },
     { code: 'deposit_in', label: 'Khách đặt cọc đơn hàng' },
     { code: 'purchase_return', label: 'NCC hoàn tiền trả hàng' },
@@ -185,6 +186,18 @@ r.post('/cash/transactions', (req, res) => {
 r.delete('/cash/transactions/:id', (req, res) => {
   const t = get('SELECT * FROM cash_transactions WHERE id = ?', [req.params.id]);
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu' });
+  /* Phiếu thu nợ đã xác nhận thì chỉ chủ cửa hàng xoá được.
+
+     Khách đưa tiền trả nợ, người đứng quầy ghi phiếu thu rồi xoá đi là
+     tiền biến mất khỏi sổ mà khách vẫn tưởng đã trả. Thu ngân vốn không
+     có quyền quỹ, nhưng chặn thêm ở đây để kể cả quản lý cũng không tự
+     xoá được — và không có đường nào SỬA phiếu thu, chỉ có thể xoá. */
+  if (t.category === 'debt_in' && req.user && req.user.role !== 'owner') {
+    return res.status(403).json({
+      error: 'Phiếu thu nợ đã xác nhận thì chỉ chủ cửa hàng mới xoá được.',
+      code: 'RECEIPT_LOCKED',
+    });
+  }
   if (t.ref_type) {
     return res.status(400).json({
       error: `Phiếu này sinh tự động từ chứng từ ${t.ref_code}. Hãy huỷ chứng từ gốc thay vì xoá phiếu quỹ.`,

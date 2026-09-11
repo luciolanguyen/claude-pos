@@ -664,6 +664,52 @@ CREATE TABLE IF NOT EXISTS doc_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_docdraft_kind ON doc_drafts(kind, updated_at);
 
+-- ============================================================
+-- MO RONG v13: thu no theo hoa don, phieu doi hang, ma PIN duyet
+-- ============================================================
+
+-- ---------- Tien tra no gan vao hoa don nao ----------
+-- Khach tra no thi tien ve mot phieu thu chung, bang nay ghi ro phieu
+-- thu do tru vao nhung hoa don nao. Tong no KHONG doi vi bang nay chi
+-- chia nho khoan da thu, khong sinh them tien.
+CREATE TABLE IF NOT EXISTS debt_allocations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  cash_tx_id INTEGER NOT NULL REFERENCES cash_transactions(id) ON DELETE CASCADE,
+  sale_id    INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  amount     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dalloc_sale ON debt_allocations(sale_id);
+CREATE INDEX IF NOT EXISTS idx_dalloc_tx ON debt_allocations(cash_tx_id);
+
+-- ---------- Phieu doi hang (store credit cho khach le) ----------
+-- Khach tra hang ma tiem khong muon chi tien mat ra (tranh hut quy ca
+-- truc) thi cap mot ma phieu, lan sau mua tru vao.
+CREATE TABLE IF NOT EXISTS vouchers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        TEXT NOT NULL UNIQUE,
+  ts          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  amount      INTEGER NOT NULL,          -- gia tri luc cap
+  balance     INTEGER NOT NULL,          -- con lai chua dung
+  source_type TEXT,
+  source_id   INTEGER,
+  source_code TEXT,
+  expires_at  TEXT,
+  status      TEXT NOT NULL DEFAULT 'active',   -- active | used | void
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vouchers_customer ON vouchers(customer_id);
+
+CREATE TABLE IF NOT EXISTS voucher_uses (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  voucher_id INTEGER NOT NULL REFERENCES vouchers(id) ON DELETE CASCADE,
+  sale_id    INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+  ts         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  amount     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vuses_voucher ON voucher_uses(voucher_id);
+
 -- Cac lan khach dua tien coc
 CREATE TABLE IF NOT EXISTS sale_order_deposits (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,

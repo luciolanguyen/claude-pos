@@ -334,6 +334,9 @@ export function CustomerDetail() {
   const [tab, setTab] = useState('sales');
   const [editing, setEditing] = useState(false);
   const [paying, setPaying] = useState(null);
+  /* Số lần người này đi mua hộ cho khách khác (tài liệu 03) — thống kê riêng,
+     doanh số và công nợ vẫn tính cho khách chủ */
+  const { data: proxy } = useFetch(() => api.proxyStats(id), [id]);
 
   if (busy && !c) return <><PageHeader title="Khách hàng" /><Spinner /></>;
   if (error) return <><PageHeader title="Khách hàng" /><Page><ErrorBox error={error} onRetry={reload} /></Page></>;
@@ -367,6 +370,16 @@ export function CustomerDetail() {
           />
           <Stat label="Nợ đầu kỳ" value={short(c.opening_debt)} />
         </div>
+
+        {proxy?.times > 0 && (
+          <div className="card-pad text-[13px] flex flex-wrap items-center gap-x-3 gap-y-1 border-violet-200 bg-violet-50/60">
+            <Users size={15} className="text-violet-700" aria-hidden="true" />
+            <span className="text-violet-950">
+              Đã <b>đi mua hộ {n(proxy.times)} lần</b> cho {n(proxy.for_customers)} khách, tổng <b>{money(proxy.total)}</b>
+            </span>
+            {proxy.last_ts && <span className="text-2xs text-muted-ink">lần gần nhất {smartTime(proxy.last_ts)}</span>}
+          </div>
+        )}
 
         {c.company_name && (
           <div className="card-pad text-[13px]">
