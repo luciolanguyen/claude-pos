@@ -1,15 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import {
   Package, Download, Pencil, ClipboardCheck, Plus, ArrowLeftRight, Check,
-  AlertTriangle, PackageX, History, Trash2, Eye,
+  AlertTriangle, History, Trash2, Eye,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
-import { money, n, short, qty as fq, datetime, date, MOVE_LABEL, match } from '../lib/format';
+import { useApp, useFetch } from '../lib/store';
+import { money, n, qty as fq, datetime, date, MOVE_LABEL, match } from '../lib/format';
 import {
-  Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, Stat, QtyInput, Textarea, Input,
+  Button, IconButton, Select, Modal, Spinner, Empty, ErrorBox, Badge,
+  Confirm, Field, QtyInput, Textarea, Input,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
@@ -18,176 +17,14 @@ import { StockHistory } from './Products';
 import { ProductPicker } from '../components/ProductPicker';
 
 /* ==================================================================== */
-/* Tồn kho                                                               */
+/* Sửa tồn kho và kiểm kê                                                */
+/*                                                                      */
+/* Trang "Tồn kho" riêng đã gộp vào trang Hàng hoá & tồn kho (tài liệu   */
+/* 15, mục 1). File này còn giữ hộp sửa tồn nhanh — trang gộp gọi tới —  */
+/* cùng hai màn hình Kiểm kê và Chuyển kho.                              */
 /* ==================================================================== */
 
-export default function Stock() {
-  const { toast, meta, defaultWarehouse } = useApp();
-  const [params] = useSearchParams();
-  const [q, setQ] = useState('');
-  const dq = useDebounced(q, 300);
-  const [warehouseId, setWarehouseId] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [filter, setFilter] = useState(params.get('filter') || 'all');
-
-  const { data, busy, error, reload } = useFetch(
-    () => api.stock({ q: dq, warehouse_id: warehouseId, category_id: categoryId, filter }),
-    [dq, warehouseId, categoryId, filter]
-  );
-
-  const [adjusting, setAdjusting] = useState(null);
-  const [historyOf, setHistoryOf] = useState(null);
-
-  const totals = useMemo(() => {
-    if (!data) return null;
-    return {
-      count: data.length,
-      value: data.reduce((a, p) => a + p.value, 0),
-      low: data.filter((p) => p.status === 'low').length,
-      out: data.filter((p) => p.status === 'out').length,
-    };
-  }, [data]);
-
-  const exportCsv = () => {
-    if (!data?.length) return;
-    const head = ['Mã hàng', 'Tên hàng', 'Nhóm', 'ĐVT', 'Tồn kho', 'Tối thiểu', 'Giá vốn', 'Giá trị tồn', 'Vị trí', 'Tình trạng'];
-    const label = { ok: 'Bình thường', low: 'Sắp hết', out: 'Hết hàng', over: 'Vượt định mức' };
-    const csv = '﻿' + [head, ...data.map((p) => [
-      p.sku, p.name, p.category_name || '', p.base_unit, p.qty, p.min_stock,
-      p.cost_price, p.value, p.location || '', label[p.status],
-    ])].map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = 'tonkho.csv'; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const FILTERS = [
-    ['all', 'Tất cả'], ['low', 'Sắp hết'], ['out', 'Hết hàng'], ['over', 'Vượt định mức'],
-  ];
-
-  return (
-    <>
-      <PageHeader
-        title="Tồn kho"
-        subtitle={totals ? `${n(totals.count)} mặt hàng · giá trị ${money(totals.value)}` : ''}
-        actions={<Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>}
-      >
-        <div className="flex flex-wrap gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Tìm tên hàng, mã hàng..." className="w-full sm:w-72" />
-          <Select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} size="sm" className="!w-auto">
-            <option value="">Tất cả kho</option>
-            {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </Select>
-          <CategorySelect size="sm" value={categoryId} onChange={setCategoryId}
-            categories={meta.categories} className="!w-auto"
-            ariaLabel="Lọc theo nhóm hàng" />
-          <div className="flex gap-1">
-            {FILTERS.map(([k, l]) => (
-              <button key={k} onClick={() => setFilter(k)}
-                className={`btn btn-sm ${filter === k ? 'btn-secondary' : 'btn-outline'}`}>
-                {l}
-              </button>
-            ))}
-          </div>
-        </div>
-      </PageHeader>
-
-      <Page className="space-y-3">
-        {totals && (
-          <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
-            <Stat label="Số mặt hàng" value={n(totals.count)} icon={Package} />
-            <Stat label="Giá trị tồn kho" value={short(totals.value)} />
-            <Stat label="Sắp hết hàng" value={n(totals.low)} tone={totals.low > 0 ? 'warn' : 'default'} icon={AlertTriangle} />
-            <Stat label="Đã hết hàng" value={n(totals.out)} tone={totals.out > 0 ? 'bad' : 'default'} icon={PackageX} />
-          </div>
-        )}
-
-        {busy && !data ? <Spinner />
-          : error ? <ErrorBox error={error} onRetry={reload} />
-            : !data?.length ? (
-              <Empty
-                icon={Package}
-                title={filter === 'all' ? 'Chưa có hàng trong kho' : 'Không có mặt hàng nào ở nhóm này'}
-                message={filter === 'low' ? 'Tốt — không có mặt hàng nào dưới định mức tồn tối thiểu.'
-                  : filter === 'out' ? 'Tốt — không có mặt hàng nào bị hết sạch.'
-                    : 'Thử đổi bộ lọc hoặc từ khoá tìm kiếm.'}
-              />
-            ) : (
-              <div className="table-wrap">
-                <table className="data">
-                  <thead>
-                    <tr>
-                      <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th><th>ĐVT</th>
-                      <th className="text-right">Tồn kho</th>
-                      <th className="text-right">Tối thiểu</th>
-                      <th className="text-right">Giá vốn</th>
-                      <th className="text-right">Giá trị tồn</th>
-                      <th>Vị trí</th>
-                      <th>Tình trạng</th>
-                      <th className="text-right">Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.map((p) => (
-                      <tr key={p.id} className="hoverable">
-                        <td className="font-mono text-muted-ink">{p.sku}</td>
-                        <td className="font-semibold">{p.name}</td>
-                        <td className="text-muted-ink">{p.category_name || '—'}</td>
-                        <td>{p.base_unit}</td>
-                        <td className={`num font-semibold ${
-                          p.status === 'out' ? 'text-danger' : p.status === 'low' ? 'text-warn' : ''}`}>
-                          {fq(p.qty)}
-                        </td>
-                        <td className="num text-muted-ink">{p.min_stock > 0 ? fq(p.min_stock) : '—'}</td>
-                        <td className="num">{money(p.cost_price)}</td>
-                        <td className="num font-semibold">{money(p.value)}</td>
-                        <td className="text-muted-ink text-2xs">{p.location || '—'}</td>
-                        <td>
-                          {p.status === 'out' ? <Badge tone="bad">Hết hàng</Badge>
-                            : p.status === 'low' ? <Badge tone="warn">Sắp hết</Badge>
-                              : p.status === 'over' ? <Badge tone="info">Vượt định mức</Badge>
-                                : <Badge tone="ok">Bình thường</Badge>}
-                        </td>
-                        <td>
-                          <div className="flex items-center justify-end gap-0.5">
-                            <IconButton icon={History} label={`Thẻ kho ${p.name}`} size={14}
-                              onClick={() => setHistoryOf(p)} />
-                            <IconButton icon={Pencil} label={`Điều chỉnh tồn ${p.name}`} size={14}
-                              onClick={() => setAdjusting(p)} />
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={7} className="text-right">TỔNG GIÁ TRỊ TỒN KHO</td>
-                      <td className="num">{money(totals.value)}</td>
-                      <td colSpan={3} />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            )}
-      </Page>
-
-      <AdjustModal
-        product={adjusting}
-        warehouseId={warehouseId || defaultWarehouse}
-        warehouses={meta.warehouses}
-        onClose={() => setAdjusting(null)}
-        onDone={() => { setAdjusting(null); reload(); toast('Đã điều chỉnh tồn kho', 'ok'); }}
-      />
-
-      <StockHistory product={historyOf} onClose={() => setHistoryOf(null)} />
-    </>
-  );
-}
-
-/* -------------------------------------------------------------------- */
-
-function AdjustModal({ product, warehouseId, warehouses, onClose, onDone }) {
+export function AdjustModal({ product, warehouseId, warehouses, onClose, onDone }) {
   const [newQty, setNewQty] = useState(0);
   const [whId, setWhId] = useState(warehouseId);
   const [note, setNote] = useState('');

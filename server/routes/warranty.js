@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf,
+  all, get, run, tx, nextCode, moveStock, costOf, searchMode,
   addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings, pageParams } from '../db.js';
 import { isApproverRole, peekApproval, consumeApproval } from '../policy.js';
 import { ensureDefectWarehouse } from './sales.js';
@@ -240,7 +240,9 @@ r.get('/warranty', (req, res) => {
   if (q.trim()) {
     where.push(`(t.code LIKE ? OR t.product_name LIKE ? OR t.serial LIKE ?
                  OR t.customer_name LIKE ? OR t.customer_phone LIKE ? OR c.name LIKE ?)`);
-    const like = `%${q.trim()}%`;
+    /* Số máy (serial) là chỗ hay cần tìm chính xác nhất: gõ "12" kiểu có
+       chứa thì ra mọi máy có số 12 ở giữa (tài liệu 13, mục 2.1) */
+    const like = searchMode(req.query.match) === 'exact' ? q.trim() : `%${q.trim()}%`;
     params.push(like, like, like, like, like, like);
   }
   if (status) { where.push('t.status = ?'); params.push(status); }

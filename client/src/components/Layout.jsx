@@ -38,8 +38,8 @@ export const NAV = [
   {
     label: 'Kho hàng', icon: Package, key: 'stock',
     children: [
-      { to: '/products', icon: Boxes, label: 'Hàng hoá', perm: 'product.view' },
-      { to: '/stock', icon: Package, label: 'Tồn kho', perm: 'product.view' },
+      /* Hàng hoá và tồn kho gộp một màn hình (tài liệu 15) */
+      { to: '/products', icon: Boxes, label: 'Hàng hoá & tồn kho', perm: 'product.view' },
       { to: '/requisitions', icon: PackageX, label: 'Báo hết hàng', perm: 'product.view' },
       { to: '/stock-takes', icon: ClipboardCheck, label: 'Kiểm kê', perm: 'stock.manage' },
       { to: '/stock-transfers', icon: ArrowLeftRight, label: 'Chuyển kho', perm: 'stock.manage' },

@@ -15,7 +15,7 @@
    ==================================================================== */
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, addCashTx, defaultCashAccount, getSettings,
+  all, get, run, tx, nextCode, addCashTx, defaultCashAccount, getSettings, resolveUnitId,
 } from '../db.js';
 import { createSale } from './sales.js';
 
@@ -307,11 +307,13 @@ function saveItems(orderId, items) {
   run('DELETE FROM sale_order_items WHERE order_id = ?', [orderId]);
   for (const it of items) {
     const { discount, amount } = lineAmount(it);
-    run(`INSERT INTO sale_order_items(order_id, product_id, name_snapshot, unit_name, factor,
+    run(`INSERT INTO sale_order_items(order_id, product_id, name_snapshot, unit_id, unit_name, factor,
                                       qty, delivered_qty, price, discount, discount_type,
                                       discount_percent, amount, note)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [orderId, it.product_id, it.name_snapshot || '', it.unit_name, num(it.factor, 1),
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [orderId, it.product_id, it.name_snapshot || '',
+        resolveUnitId(it.product_id, it.unit_id, it.unit_name),
+        it.unit_name, num(it.factor, 1),
         num(it.qty), num(it.delivered_qty), money(it.price), discount,
         it.discount_type === 'percent' ? 'percent' : 'amount', num(it.discount_percent),
         amount, it.note || null]);

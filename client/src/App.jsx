@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Zap, LogIn, AlertTriangle, Lock } from 'lucide-react';
 import { AppProvider, useApp } from './lib/store';
 import { api } from './lib/api';
@@ -14,7 +14,7 @@ import Suppliers, { SupplierDetail } from './pages/Suppliers';
 import Purchases from './pages/Purchases';
 import { SaleReturns, PurchaseReturns } from './pages/Returns';
 import Products from './pages/Products';
-import Stock, { StockTakes, StockTransfers } from './pages/Stock';
+import { StockTakes, StockTransfers } from './pages/Stock';
 import Production from './pages/Production';
 import Requisitions from './pages/Requisitions';
 import Warranty from './pages/Warranty';
@@ -228,7 +228,9 @@ function Shell() {
               <Route path="supplier-debts" element={<Navigate to="/suppliers?filter=debt" replace />} />
 
               <Route path="products" element={<Guard perm="product.view"><Products /></Guard>} />
-              <Route path="stock" element={<Guard perm="product.view"><Stock /></Guard>} />
+              {/* Trang Tồn kho riêng đã gộp vào Hàng hoá (tài liệu 15) — link cũ
+                  và đường dẫn đã lưu tự chuyển sang lưới gộp, giữ cả bộ lọc */}
+              <Route path="stock" element={<StockRedirect />} />
               <Route path="stock-takes" element={<Guard perm="stock.manage"><StockTakes /></Guard>} />
               <Route path="stock-transfers" element={<Guard perm="stock.manage"><StockTransfers /></Guard>} />
               <Route path="production" element={<Guard perm="stock.manage"><Production /></Guard>} />
@@ -248,6 +250,15 @@ function Shell() {
       <GlobalShortcuts />
     </>
   );
+}
+
+/**
+ * Đường dẫn cũ /stock (kể cả /stock?filter=low từ thẻ cảnh báo trên trang
+ * tổng quan) chuyển sang lưới Hàng hoá & tồn kho, giữ nguyên bộ lọc.
+ */
+function StockRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/products${search}`} replace />;
 }
 
 /** F1 mở nhanh màn hình bán hàng từ bất kỳ đâu. */

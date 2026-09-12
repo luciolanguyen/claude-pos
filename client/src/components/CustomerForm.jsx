@@ -14,10 +14,19 @@ export const CUSTOMER_TYPES = [
 export const customerTypeOf = (key) => CUSTOMER_TYPES.find((t) => t.key === key) || CUSTOMER_TYPES[0];
 
 const EMPTY = {
-  code: '', name: '', phone: '', email: '', address: '', tax_code: '',
+  code: '', name: '', phone: '', phone2: '', phone3: '', email: '', address: '', tax_code: '',
   company_name: '', price_list_id: '', opening_debt: 0, debt_limit: 0,
   birthday: '', note: '', active: 1, customer_type: 'member', max_debt_days: '',
 };
+
+/* Ba ô số điện thoại (tài liệu 14, mục 4.1). Số 1 là số chính, bắt buộc —
+   nhà thầu hay đưa thêm số của vợ và của thợ, gõ số nào cũng phải ra đúng
+   hồ sơ này. Một số không được thuộc hai hồ sơ khác nhau; máy chủ soát lại. */
+const PHONE_FIELDS = [
+  ['phone', 'Số điện thoại chính', true, 'Số hay gọi nhất — dùng để tra khách'],
+  ['phone2', 'Số điện thoại phụ 1', false, 'Ví dụ: số của vợ / chồng'],
+  ['phone3', 'Số điện thoại phụ 2', false, 'Ví dụ: số của thợ đi lấy hàng'],
+];
 
 const ErrorLine = ({ children, className = '' }) => (
   <p role="alert" className={`text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5 ${className}`}>
@@ -37,7 +46,11 @@ export default function CustomerForm({ open, onClose, onSaved, customer }) {
   useEffect(() => {
     if (!open) return;
     setForm(customer
-      ? { ...EMPTY, ...customer, max_debt_days: customer.max_debt_days ?? '' }
+      ? {
+        ...EMPTY, ...customer,
+        max_debt_days: customer.max_debt_days ?? '',
+        phone: customer.phone || '', phone2: customer.phone2 || '', phone3: customer.phone3 || '',
+      }
       : EMPTY);
     setErr('');
     setNeedPin(null);
@@ -48,6 +61,16 @@ export default function CustomerForm({ open, onClose, onSaved, customer }) {
 
   const save = async (approvalToken) => {
     if (!form.name.trim()) { setErr('Bắt buộc nhập tên khách hàng.'); return; }
+    /* Số chính là cách tra ra khách; thiếu nó thì mọi ô tìm kiếm đều mù */
+    if (!String(form.phone || '').trim()) {
+      setErr('Bắt buộc nhập số điện thoại chính. Đây là số dùng để tra ra khách khi bán hàng.');
+      return;
+    }
+    const nums = [form.phone, form.phone2, form.phone3].map((x) => String(x || '').trim()).filter(Boolean);
+    if (new Set(nums).size !== nums.length) {
+      setErr('Ba số điện thoại của cùng một khách phải khác nhau.');
+      return;
+    }
     setBusy(true);
     setErr('');
     try {
@@ -89,13 +112,34 @@ export default function CustomerForm({ open, onClose, onSaved, customer }) {
             <Input id="cf-name" value={form.name} onChange={set('name')} placeholder="Ví dụ: Anh Tuấn - Thợ điện" />
           </Field>
 
-          <Field label="Số điện thoại" htmlFor="cf-phone">
-            <Input id="cf-phone" value={form.phone || ''} onChange={set('phone')} inputMode="tel" placeholder="09xx xxx xxx" />
-          </Field>
-
           <Field label="Mã khách" hint={customer ? 'Không đổi được sau khi tạo' : 'Bỏ trống để hệ thống tự đặt'} htmlFor="cf-code">
             <Input id="cf-code" value={form.code || ''} onChange={set('code')} disabled={!!customer} placeholder="KH0001" />
           </Field>
+
+          <div className="sm:col-span-1" />
+
+          {/* Ba số điện thoại — tìm bằng số nào cũng ra hồ sơ này */}
+          <fieldset className="sm:col-span-2 rounded-lg border border-line p-2.5">
+            <legend className="px-1 text-[13px] font-bold">Số điện thoại</legend>
+            <div className="grid gap-2.5 sm:grid-cols-3">
+              {PHONE_FIELDS.map(([key, label, required, hint]) => (
+                <Field key={key} label={label} required={required} hint={hint} htmlFor={`cf-${key}`}>
+                  <Input
+                    id={`cf-${key}`}
+                    value={form[key] || ''}
+                    onChange={set(key)}
+                    inputMode="tel"
+                    className="tabular"
+                    placeholder="09xx xxx xxx"
+                  />
+                </Field>
+              ))}
+            </div>
+            <p className="text-2xs text-muted-ink mt-1.5">
+              Gõ bất kỳ số nào trong ba số ở ô tìm khách (cả màn hình bán hàng) đều ra hồ sơ này.
+              Một số điện thoại chỉ thuộc về một khách.
+            </p>
+          </fieldset>
 
           <div className="sm:col-span-2">
             <span className="label" id="cf-type-label">Loại khách</span>

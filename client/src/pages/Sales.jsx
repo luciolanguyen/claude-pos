@@ -4,7 +4,7 @@ import {
   Receipt, Printer, Undo2, XCircle, Eye, Filter, Download, ShoppingCart, HandCoins,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, usePaged, useDebounced, fetchAllPages } from '../lib/store';
+import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, PAYMENT_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox,
@@ -25,9 +25,10 @@ export default function Sales() {
   const [onlyUnpaid, setOnlyUnpaid] = useState(false);
 
   const r = useMemo(() => range(rangeKey), [rangeKey]);
+  const [mode, setMode] = useSearchMode();
   const filters = useMemo(() => ({
-    q: dq, from: r.from, to: r.to, payment_method: method, unpaid: onlyUnpaid ? 1 : '',
-  }), [dq, r.from, r.to, method, onlyUnpaid]);
+    q: dq, match: mode, from: r.from, to: r.to, payment_method: method, unpaid: onlyUnpaid ? 1 : '',
+  }), [dq, mode, r.from, r.to, method, onlyUnpaid]);
 
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
@@ -106,6 +107,8 @@ export default function Sales() {
           <SearchInput
             value={q}
             onChange={(v) => { setQ(v); setParams(v ? { q: v } : {}); }}
+            mode={mode}
+            onMode={setMode}
             placeholder="Tìm mã hoá đơn, tên / SĐT khách hoặc người mua hộ..."
             className="w-full sm:w-80"
           />

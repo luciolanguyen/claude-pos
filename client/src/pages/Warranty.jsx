@@ -16,8 +16,8 @@ import {
   ShoppingCart, Minus, Save, Info, ArrowLeftRight, PackagePlus, User,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
-import { money, n, short, qty as fq, datetime, date, isoDate, match } from '../lib/format';
+import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
+import { money, n, short, qty as fq, datetime, date, isoDate, match, matchMode } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, Badge,
   Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs, Pager, ErrorBox,
@@ -127,13 +127,14 @@ function Tickets() {
   const [status, setStatus] = useState('');
   const [type, setType] = useState('');
   const [openOnly, setOpenOnly] = useState(true);
+  const [mode, setMode] = useSearchMode();
 
   const {
     rows: data, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
   } = usePaged(
-    (pg) => api.warranty({ q: dq, status, type, open_only: openOnly ? 1 : '', ...pg }),
-    [dq, status, type, openOnly],
+    (pg) => api.warranty({ q: dq, match: mode, status, type, open_only: openOnly ? 1 : '', ...pg }),
+    [dq, mode, status, type, openOnly],
     { key: 'warranty' }
   );
   const { data: summary, reload: reloadSummary } = useFetch(() => api.warrantySummary(), []);
@@ -209,7 +210,7 @@ function Tickets() {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <SearchInput value={q} onChange={setQ}
+        <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode}
           placeholder="Tìm mã phiếu, tên hàng, serial, tên hoặc SĐT khách..."
           className="w-full sm:w-80" />
         <div className="flex rounded-lg border border-line overflow-hidden" role="radiogroup" aria-label="Loại phiếu">
@@ -1321,6 +1322,7 @@ function CostSheet({
 
 function PartsCartModal({ parts, setParts, total, onClose }) {
   const { meta, defaultWarehouse, defaultPriceList } = useApp();
+  const [partMode, setPartMode] = useSearchMode();
   const { data: products, busy } = useFetch(
     () => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse]);
   const [q, setQ] = useState('');
@@ -1332,9 +1334,12 @@ function PartsCartModal({ parts, setParts, total, onClose }) {
     let l = (products || []).filter((p) => p.track_stock);
     if (branch) l = l.filter((p) => branch.has(p.category_id));
     const k = q.trim();
-    if (k) l = l.filter((p) => match(p.name, k) || match(p.alias || '', k) || match(p.sku, k) || (p.barcode || '') === k);
+    if (k) {
+      l = l.filter((p) => matchMode(p.name, k, partMode) || matchMode(p.alias || '', k, partMode)
+        || matchMode(p.sku, k, partMode) || (p.barcode || '') === k);
+    }
     return l.slice(0, 200);
-  }, [products, q, branch]);
+  }, [products, q, partMode, branch]);
   const inCart = useMemo(() => {
     const m = new Map();
     for (const x of parts) m.set(x.product_id, (m.get(x.product_id) || 0) + Number(x.qty));
@@ -1383,7 +1388,7 @@ function PartsCartModal({ parts, setParts, total, onClose }) {
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-2 min-w-0">
           <div className="flex flex-wrap items-center gap-2" onKeyDown={onScanKey}>
-            <SearchInput value={q} onChange={setQ} placeholder="Gõ tên, mã hàng hoặc quét mã vạch..." className="flex-1 min-w-[12rem]" autoFocus />
+            <SearchInput value={q} onChange={setQ} mode={partMode} onMode={setPartMode} placeholder="Gõ tên, mã hàng hoặc quét mã vạch..." className="flex-1 min-w-[12rem]" autoFocus />
             <CategorySelect value={cat} onChange={setCat} categories={meta.categories} className="!w-auto" ariaLabel="Lọc theo nhóm hàng" />
             <Badge tone={parts.length ? 'ok' : 'mute'}>Đã thêm: {n(parts.length)} món</Badge>
           </div>

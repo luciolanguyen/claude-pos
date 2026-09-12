@@ -5,9 +5,9 @@ import {
   CreditCard, AlertTriangle, Copy, Printer, Banknote, MapPin, Mail, Info, Clock, User,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
-import { money, n, short, date, datetime, smartTime, CASH_LABEL } from '../lib/format';
+import { money, n, short, date, datetime, smartTime, match, CASH_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Spinner, Empty, ErrorBox, Badge, Confirm, Stat, Tabs,
   Modal, Field, MoneyInput, Select, Textarea,
@@ -15,6 +15,7 @@ import {
 import { PageHeader, Page } from '../components/Layout';
 import { SupplierForm } from '../components/CustomerForm';
 import CashVoucherPrint from '../components/CashVoucherPrint';
+import { ProductPicker } from '../components/ProductPicker';
 
 /* Phân hệ nhà cung cấp gộp công nợ (tài liệu 10): không còn trang công nợ
    NCC riêng — lọc "đang nợ", "nợ quá hạn" ngay trên danh mục, trả nợ ngay
@@ -36,7 +37,9 @@ export default function Suppliers() {
   };
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
-  const { data, busy, error, reload } = useFetch(() => api.suppliers({ q: dq, filter }), [dq, filter]);
+  const [mode, setMode] = useSearchMode();
+  const { data, busy, error, reload } = useFetch(
+    () => api.suppliers({ q: dq, match: mode, filter }), [dq, mode, filter]);
   useLiveReload(reload);
 
   const [editing, setEditing] = useState(null);
@@ -98,7 +101,7 @@ export default function Suppliers() {
         </>}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Tìm tên, người liên hệ, số điện thoại..." className="w-full sm:w-80" />
+          <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode} placeholder="Tìm tên, người liên hệ, số điện thoại..." className="w-full sm:w-80" />
           <div className="flex rounded-lg border border-line overflow-hidden" role="radiogroup" aria-label="Lọc theo công nợ">
             {FILTERS.map((f) => (
               <button
@@ -450,7 +453,7 @@ export function SupplierPayModal({ supplierId, onClose, onDone }) {
 /* Hồ sơ nhà cung cấp — thông tin liên hệ, lịch sử giao dịch, công nợ     */
 /* ==================================================================== */
 
-const SUP_TABS = ['info', 'history', 'debt'];
+const SUP_TABS = ['info', 'history', 'debt', 'quotes'];
 
 export function SupplierDetail() {
   const { id } = useParams();
@@ -503,11 +506,13 @@ export function SupplierDetail() {
               { key: 'info', label: 'Thông tin liên hệ' },
               { key: 'history', label: 'Lịch sử giao dịch', count: s.purchases.length + s.returns.length || null },
               { key: 'debt', label: 'Công nợ', count: s.unpaid.length || null },
+              { key: 'quotes', label: 'Báo giá' },
             ]}
           />
           {tab === 'info' && <SupplierInfoTab s={s} />}
           {tab === 'history' && <SupplierHistoryTab s={s} />}
           {tab === 'debt' && <SupplierDebtTab s={s} onPay={() => setPaying(true)} />}
+          {tab === 'quotes' && <SupplierQuotesTab s={s} />}
         </div>
       </Page>
 
@@ -522,6 +527,146 @@ export function SupplierDetail() {
         <SupplierPayModal supplierId={s.id} onClose={() => setPaying(false)} onDone={() => reload()} />
       )}
     </>
+  );
+}
+
+/* ==================================================================== */
+/* Bảng báo giá của mối (tài liệu 15, mục 4.3)                            */
+/*                                                                      */
+/* Mối báo giá bao nhiêu cho từng mã hàng thì ghi vào đây. Lúc lập phiếu  */
+/* mua tạm từ phiếu báo hết hàng, hệ thống lấy ĐÚNG con số này đổ vào đơn */
+/* giá dự kiến — khỏi phải mở tin nhắn ra tra lại từng món.               */
+/* ==================================================================== */
+
+function SupplierQuotesTab({ s }) {
+  const { toast, defaultWarehouse } = useApp();
+  const { data, busy, error, reload } = useFetch(() => api.supplierQuotes(s.id), [s.id]);
+  const { data: products } = useFetch(
+    () => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse]);
+  const [edits, setEdits] = useState({});
+  const [adding, setAdding] = useState(false);
+  const [q, setQ] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const rows = data?.rows || [];
+  const shown = useMemo(() => {
+    const k = q.trim();
+    return k ? rows.filter((r) => match(r.name, k) || match(r.sku, k)) : rows;
+  }, [rows, q]);
+
+  const dirty = Object.keys(edits).length > 0;
+  const valueOf = (r) => (edits[r.product_id] !== undefined ? edits[r.product_id] : r.quote_price);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = Object.entries(edits).map(([pid, price]) => ({
+        product_id: Number(pid), quote_price: Math.round(Number(price) || 0),
+      }));
+      await api.saveSupplierQuotes(s.id, payload);
+      setEdits({});
+      reload();
+      toast(`Đã lưu báo giá ${payload.length} mặt hàng của ${s.name}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    } finally { setSaving(false); }
+  };
+
+  /* Thêm mặt hàng mối này chưa từng bán: ghi báo giá 0 trước, gõ giá sau */
+  const addProduct = async (p) => {
+    try {
+      await api.saveSupplierQuotes(s.id, [{ product_id: p.id, quote_price: 0 }]);
+      setAdding(false);
+      reload();
+    } catch (e) { toast(e.message, 'bad', 6000); }
+  };
+
+  if (busy && !data) return <div className="p-3"><Spinner /></div>;
+  if (error) return <div className="p-3"><ErrorBox error={error} onRetry={reload} /></div>;
+
+  return (
+    <div className="p-3 space-y-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <SearchInput value={q} onChange={setQ} placeholder="Tìm mặt hàng trong bảng báo giá..."
+          className="w-full sm:w-72" />
+        <div className="flex-1" />
+        <Button size="sm" icon={Plus} onClick={() => setAdding(true)}>Thêm mặt hàng</Button>
+        {dirty && (
+          <Button size="sm" variant="primary" loading={saving} onClick={save}>
+            Lưu báo giá ({Object.keys(edits).length})
+          </Button>
+        )}
+      </div>
+
+      {rows.length === 0 ? (
+        <Empty
+          icon={FileText}
+          title="Chưa có báo giá nào của mối này"
+          message="Ghi giá mối báo cho từng mã hàng. Lúc lập phiếu mua tạm, hệ thống tự đổ đúng con số này vào đơn giá."
+          action={<Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Thêm mặt hàng</Button>}
+        />
+      ) : (
+        <div className="table-wrap max-h-[52vh]">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Mã hàng</th>
+                <th>Tên hàng</th>
+                <th>Mã bên mối</th>
+                <th className="text-right">Giá vốn hiện tại</th>
+                <th className="text-right">Giá mua lần trước</th>
+                <th className="text-right" style={{ width: 150 }}>Giá mối báo</th>
+                <th>Ngày báo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => (
+                <tr key={r.product_id} className={edits[r.product_id] !== undefined ? 'bg-accent-soft/30' : ''}>
+                  <td className="font-mono text-muted-ink">{r.sku}</td>
+                  <td>
+                    <div className="font-medium">{r.name}</div>
+                    {r.product_active === 0 && <Badge tone="mute">Ngừng KD</Badge>}
+                  </td>
+                  <td className="text-muted-ink text-2xs font-mono">{r.supplier_sku || '—'}</td>
+                  <td className="num text-muted-ink">{money(r.cost_price)}</td>
+                  <td className="num text-muted-ink">
+                    {r.last_price > 0 ? money(r.last_price) : '—'}
+                  </td>
+                  <td>
+                    <MoneyInput
+                      size="sm"
+                      value={valueOf(r)}
+                      onChange={(v) => setEdits((m) => ({ ...m, [r.product_id]: v }))}
+                      aria-label={`Giá mối báo cho ${r.name}`}
+                    />
+                    <div className="text-2xs text-muted-ink text-right">
+                      / {r.base_unit}
+                    </div>
+                  </td>
+                  <td className="text-muted-ink text-2xs whitespace-nowrap">
+                    {r.quote_at ? date(r.quote_at) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-2xs text-muted-ink">
+        Giá tính theo <b>đơn vị cơ bản</b> của mặt hàng. Ghi 0 là bỏ báo giá — lúc đó phiếu mua tạm
+        rơi về giá nhập gần nhất, rồi tới giá vốn.
+      </p>
+
+      <ProductPicker
+        open={adding}
+        onClose={() => setAdding(false)}
+        products={(products || []).filter((p) => !rows.some((r) => r.product_id === p.id))}
+        onPick={addProduct}
+        withQty={false}
+        title={`Thêm mặt hàng vào bảng báo giá của ${s.name}`}
+      />
+    </div>
   );
 }
 

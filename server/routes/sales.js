@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf,
+  all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchMode,
   addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
@@ -14,16 +14,20 @@ const r = Router();
 /* ============================ HOÁ ĐƠN BÁN ========================== */
 
 r.get('/sales', (req, res) => {
-  const { q = '', customer_id, from, to, status, payment_method, unpaid, user_id } = req.query;
+  const {
+    q = '', customer_id, from, to, status, payment_method, unpaid, user_id, match = 'contains',
+  } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
     /* Tìm song song ở khách chủ VÀ người mua hộ (tài liệu 03): khách gọi
        hỏi "hôm trước con tôi ra mua" thì phải ra được hoá đơn đó. */
-    where.push(`(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ?
-                 OR s.buyer_name LIKE ? OR s.buyer_phone LIKE ?)`);
-    const like = `%${q.trim()}%`;
-    params.push(like, like, like, like, like);
+    where.push(`(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.phone2 LIKE ?
+                 OR c.phone3 LIKE ? OR s.buyer_name LIKE ? OR s.buyer_phone LIKE ?)`);
+    /* Tìm chính xác thì khớp trọn cả ô — dán đúng số hoá đơn hay số điện
+       thoại thì khỏi ra thêm chục dòng gần giống (tài liệu 13, mục 2.1) */
+    const like = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
+    params.push(like, like, like, like, like, like, like);
   }
   if (customer_id) { where.push('s.customer_id = ?'); params.push(customer_id); }
   if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }
@@ -340,11 +344,13 @@ export function createSale(b) {
                           delivery_name, delivery_phone, delivery_address, carrier_id, tracking_code,
                           ship_fee, ship_payer, cod_amount, delivery_status, delivery_note,
                           cod_status, shipper_name, shipper_user_id, shipper_phone,
+                          shipper_fee, ship_weight, ship_size,
                           buyer_id, buyer_name, buyer_phone, voucher_amount,
                           approved_by, approval_note)
         VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?,
+               ?, ?, ?,
                ?, ?, ?, ?,
                ?, ?)`,
         [code, b.ts || null, b.customer_id || null, warehouseId, b.user_id || null,
@@ -359,6 +365,11 @@ export function createSale(b) {
           codAmount > 0 ? 'pending' : null,
           String(b.shipper_name || '').trim() || null, Number(b.shipper_user_id) || null,
           String(b.shipper_phone || '').trim() || null,
+          /* Tiền trả cho tài xế: là CHI PHÍ của tiệm, khác hẳn phí ship thu
+             của khách (tài liệu 14, mục 5.2) */
+          Math.max(0, Math.round(Number(b.shipper_fee) || 0)),
+          Math.max(0, Number(b.ship_weight) || 0),
+          String(b.ship_size || '').trim() || null,
           buyerId, buyerName, buyerPhone, voucherUse,
           approvedBy, approvedBy ? approvalNotes.join('; ') : null]);
       const saleId = Number(info.lastInsertRowid);
@@ -378,12 +389,14 @@ export function createSale(b) {
 
         /* Giá niêm yết lúc bán — để soát lại mức giảm thật so với bảng giá */
         const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id);
-        run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_name, factor, qty,
+        run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
                                     warranty_months, warranty_until, serial, list_price, warranty_note)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [saleId, it.product_id, it.name_snapshot || '', it.unit_name, factor, Number(it.qty),
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [saleId, it.product_id, it.name_snapshot || '',
+            resolveUnitId(it.product_id, it.unit_id, it.unit_name),
+            it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._discount,
             it.discount_type === 'percent' ? 'percent' : 'amount',
             Number(it.discount_percent) || 0,
@@ -739,10 +752,11 @@ export function createSaleReturn(b) {
       const condition = it.condition === 'defect' ? 'defect' : 'good';
       /* Hàng đạt chuẩn về kho đang bán; hàng lỗi vào kho hàng lỗi, không bán */
       const wh = condition === 'defect' ? defectWh : baseWarehouse;
-      run(`INSERT INTO sale_return_items(return_id, product_id, unit_name, factor, qty, price,
+      run(`INSERT INTO sale_return_items(return_id, product_id, unit_id, unit_name, factor, qty, price,
                                          unit_cost, amount, sale_item_id, condition, warehouse_id)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [returnId, it.product_id, it.unit_name, factor, Number(it.qty),
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [returnId, it.product_id, resolveUnitId(it.product_id, it.unit_id, it.unit_name),
+        it.unit_name, factor, Number(it.qty),
         Math.round(Number(it.price) || 0), unitCost, it._amount,
         it.sale_item_id || null, condition, wh]);
       moveStock({
@@ -1167,6 +1181,7 @@ r.get('/deliveries', (req, res) => {
 
   const rows = all(`
     SELECT s.id, s.code, s.ts, s.total, s.paid, s.ship_fee, s.ship_payer,
+           s.shipper_fee, s.ship_weight, s.ship_size,
            s.delivery_status, s.delivery_name, s.delivery_phone, s.delivery_address,
            s.tracking_code, s.delivery_note,
            s.shipper_name, s.shipper_phone, s.shipper_user_id, su.full_name AS shipper_user_name,
@@ -1241,12 +1256,16 @@ r.put('/sales/:id/delivery', (req, res) => {
       const keep = (v, old) => (v === undefined ? old : (v || null));
 
       run(`UPDATE sales SET delivery_status = ?, tracking_code = ?, carrier_id = ?,
-             delivery_note = ?, shipper_name = ?, shipper_user_id = ?, shipper_phone = ?
+             delivery_note = ?, shipper_name = ?, shipper_user_id = ?, shipper_phone = ?,
+             shipper_fee = ?, ship_weight = ?, ship_size = ?
              ${stamp ? `, ${stamp} = COALESCE(${stamp}, datetime('now','localtime'))` : ''}
            WHERE id = ?`,
       [next, keep(b.tracking_code, sale.tracking_code), keep(b.carrier_id, sale.carrier_id),
         keep(b.delivery_note, sale.delivery_note), keep(b.shipper_name, sale.shipper_name),
         keep(b.shipper_user_id, sale.shipper_user_id), keep(b.shipper_phone, sale.shipper_phone),
+        b.shipper_fee === undefined ? sale.shipper_fee : Math.max(0, Math.round(Number(b.shipper_fee) || 0)),
+        b.ship_weight === undefined ? sale.ship_weight : Math.max(0, Number(b.ship_weight) || 0),
+        keep(b.ship_size, sale.ship_size),
         sale.id]);
 
       if (changed && next === 'failed' && sale.cod_status === 'pending') {

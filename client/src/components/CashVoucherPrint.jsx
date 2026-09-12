@@ -35,9 +35,23 @@ const SIDE = {
   },
 };
 
-export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5' }) {
+export default function CashVoucherPrint({ voucher, onClose, defaultFormat }) {
   const { store, settings } = useApp();
-  const [format, setFormat] = useState(defaultFormat);
+  /* Phiếu thu nợ in ở quầy thì khổ K80 là mặc định (tài liệu 14, mục 1.1):
+     máy in nhiệt sẵn ngay đó, khỏi bật máy in giấy A4. */
+  const isDebt = voucher?.category === 'debt_in' || voucher?.category === 'debt_out';
+  const [format, setFormat] = useState(defaultFormat || (isDebt ? 'k80' : 'a5'));
+  /* Có in số nợ còn lại lên phiếu hay không — mặc định theo thiết lập tiệm,
+     đổi ngay tại đây cho từng lần in (tài liệu 14, mục 1.2) */
+  const [showDebt, setShowDebt] = useState(true);
+
+  useEffect(() => {
+    setFormat(defaultFormat || (isDebt ? 'k80' : 'a5'));
+  }, [defaultFormat, isDebt, voucher?.id]);
+
+  useEffect(() => {
+    setShowDebt(settings?.print?.debt_show_remaining !== false);
+  }, [settings, voucher?.id]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -53,6 +67,126 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5
   const t = SIDE[voucher.direction] || SIDE.in;
   const isA4 = format === 'a4';
   const px = (a5, a4) => (isA4 ? a4 : a5);
+  /* Chỉ phiếu thu / trả nợ mới có hai con số này; phiếu chi tiền điện thì không */
+  const hasDebt = voucher.debt_before !== null && voucher.debt_before !== undefined;
+
+  /* ------------------------------------------------------------------ */
+  /* Mẫu in K80 — máy in nhiệt 80mm ngay tại quầy (tài liệu 14, mục 1.1)  */
+  /*                                                                     */
+  /* Giấy hẹp nên bỏ hết khung viền, chỉ dùng đường gạch đứt chia khối.   */
+  /* Dòng công nợ chỉ in khi được tích chọn — quầy đông người, số nợ của  */
+  /* khách là chuyện riêng của khách (mục 1.2).                           */
+  /* ------------------------------------------------------------------ */
+  const k80 = (
+    <div className="print-k80 text-black bg-white">
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>{store?.name || 'CỬA HÀNG'}</div>
+        {store?.address && <div>{store.address}</div>}
+        {store?.phone && <div>ĐT: {store.phone}</div>}
+      </div>
+
+      <div className="dashed" />
+
+      <div style={{ textAlign: 'center', fontWeight: 700, fontSize: 14, letterSpacing: 1 }}>
+        {t.title}
+      </div>
+      <div style={{ textAlign: 'center' }}>
+        Số: {voucher.code}<br />
+        {datetime(voucher.ts)}
+      </div>
+
+      <div className="dashed" />
+
+      <table>
+        <tbody>
+          <tr>
+            <td style={{ verticalAlign: 'top', paddingBottom: 2 }}>{t.who}</td>
+            <td style={{ textAlign: 'right', fontWeight: 700, paddingBottom: 2 }}>
+              {voucher.partner_name || '—'}
+            </td>
+          </tr>
+          {voucher.partner_phone && (
+            <tr>
+              <td style={{ verticalAlign: 'top', paddingBottom: 2 }}>Điện thoại</td>
+              <td style={{ textAlign: 'right', paddingBottom: 2 }}>{voucher.partner_phone}</td>
+            </tr>
+          )}
+          <tr>
+            <td style={{ verticalAlign: 'top', paddingBottom: 2 }}>{t.reason}</td>
+            <td style={{ textAlign: 'right', paddingBottom: 2 }}>
+              {voucher.note || voucher.category_label || '—'}
+            </td>
+          </tr>
+          <tr>
+            <td style={{ verticalAlign: 'top' }}>Hình thức</td>
+            <td style={{ textAlign: 'right' }}>
+              {voucher.account_type === 'bank' ? 'Chuyển khoản' : 'Tiền mặt'}
+            </td>
+          </tr>
+          {voucher.counterparty_account && (
+            <tr>
+              <td style={{ verticalAlign: 'top' }}>Tài khoản nhận</td>
+              <td style={{ textAlign: 'right' }}>{voucher.counterparty_account}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <div className="dashed" />
+
+      {/* Số tiền khách vừa nộp — to và rõ nhất trên tờ phiếu */}
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 10 }}>
+          {voucher.direction === 'out' ? 'SỐ TIỀN ĐÃ CHI' : 'SỐ TIỀN ĐÃ THU'}
+        </div>
+        <div style={{ fontWeight: 700, fontSize: 19, lineHeight: 1.2 }}>{money(voucher.amount)}</div>
+        <div style={{ fontStyle: 'italic', fontSize: 10 }}>{readMoney(voucher.amount)}</div>
+      </div>
+
+      {hasDebt && showDebt && (
+        <>
+          <div className="dashed" />
+          <table>
+            <tbody>
+              <tr>
+                <td>Nợ trước khi trả</td>
+                <td style={{ textAlign: 'right' }}>{money(voucher.debt_before)}</td>
+              </tr>
+              <tr>
+                <td>Vừa trả</td>
+                <td style={{ textAlign: 'right' }}>−{money(voucher.amount)}</td>
+              </tr>
+              <tr style={{ fontWeight: 700 }}>
+                <td>CÒN NỢ LẠI</td>
+                <td style={{ textAlign: 'right' }}>{money(voucher.debt_after)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <div className="dashed" />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', textAlign: 'center', marginTop: 4 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700 }}>Người nộp</div>
+          <div style={{ fontSize: 9, fontStyle: 'italic' }}>(ký, ghi rõ họ tên)</div>
+          <div style={{ height: 34 }} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700 }}>Người thu</div>
+          <div style={{ fontSize: 9, fontStyle: 'italic' }}>(ký, ghi rõ họ tên)</div>
+          <div style={{ height: 34 }} />
+          <div>{voucher.user_name || ''}</div>
+        </div>
+      </div>
+
+      <div style={{ textAlign: 'center', marginTop: 4 }}>
+        Cảm ơn quý khách!<br />
+        <span style={{ fontSize: 9 }}>Xin giữ phiếu để đối chiếu công nợ</span>
+      </div>
+    </div>
+  );
 
   /* Số quyển / số phiếu: dùng luôn mã chứng từ của phần mềm (PT…, PC…),
      khỏi phải đánh số tay và không bao giờ trùng. */
@@ -128,6 +262,20 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5
               <td style={{ borderBottom: '1px dotted #666' }}>{voucher.ref_code}</td>
             </tr>
           )}
+          {hasDebt && showDebt && (
+            <>
+              <tr>
+                <td style={{ padding: '4px 0', verticalAlign: 'top' }}>Nợ trước khi trả</td>
+                <td style={{ borderBottom: '1px dotted #666' }}>{money(voucher.debt_before)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '4px 0', verticalAlign: 'top' }}>Còn nợ lại</td>
+                <td style={{ fontWeight: 800, borderBottom: '1px dotted #666' }}>
+                  {money(voucher.debt_after)}
+                </td>
+              </tr>
+            </>
+          )}
         </tbody>
       </table>
 
@@ -166,8 +314,8 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5
         size="lg"
         footer={
           <>
-            <div className="flex gap-1 mr-auto">
-              {[['a5', 'Khổ A5'], ['a4', 'Khổ A4']].map(([k, label]) => (
+            <div className="flex flex-wrap items-center gap-1 mr-auto">
+              {[['k80', 'Khổ K80'], ['a5', 'Khổ A5'], ['a4', 'Khổ A4']].map(([k, label]) => (
                 <button
                   key={k}
                   onClick={() => setFormat(k)}
@@ -176,6 +324,18 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5
                   {label}
                 </button>
               ))}
+              {/* Giấu số nợ khi quầy đông người (tài liệu 14, mục 1.2) */}
+              {hasDebt && (
+                <label className="flex items-center gap-1.5 text-[13px] cursor-pointer ml-2">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                    checked={showDebt}
+                    onChange={(e) => setShowDebt(e.target.checked)}
+                  />
+                  Hiển thị số nợ còn lại trên phiếu
+                </label>
+              )}
             </div>
             <Button onClick={onClose}>Đóng</Button>
             <Button variant="primary" icon={Printer} onClick={() => window.print()}>
@@ -185,10 +345,12 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat = 'a5
         }
       >
         <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[55vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
+          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>
+            {format === 'k80' ? k80 : body}
+          </div>
         </div>
       </Modal>
-      <div className={`print-area size-${format}`}>{body}</div>
+      <div className={`print-area size-${format}`}>{format === 'k80' ? k80 : body}</div>
     </>
   );
 }

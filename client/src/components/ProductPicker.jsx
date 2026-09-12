@@ -13,8 +13,8 @@
    ==================================================================== */
 import { useState, useMemo, useEffect } from 'react';
 import { Search, Plus } from 'lucide-react';
-import { useApp } from '../lib/store';
-import { money, qty as fq, match } from '../lib/format';
+import { useApp, useSearchMode } from '../lib/store';
+import { money, qty as fq, matchMode } from '../lib/format';
 import { Button, SearchInput, Select, Modal, Empty, QtyInput } from './ui';
 import { CategorySelect, categoryBranch } from './CategoryTree';
 
@@ -28,6 +28,7 @@ export function ProductPicker({
   withQty = true,
 }) {
   const [q, setQ] = useState('');
+  const [mode, setMode] = useSearchMode();
   const [cat, setCat] = useState('');
   /* Số lượng đang gõ cho từng dòng, theo id mặt hàng. Chưa gõ thì coi là 1. */
   const [qtys, setQtys] = useState({});
@@ -53,9 +54,13 @@ export function ProductPicker({
       const branch = categoryBranch(meta.categories, cat);
       if (branch) l = l.filter((p) => branch.has(p.category_id));
     }
-    if (q.trim()) l = l.filter((p) => match(p.name, q) || match(p.sku, q) || (p.barcode || '').includes(q.trim()));
+    if (q.trim()) {
+      l = l.filter((p) => matchMode(p.name, q, mode) || matchMode(p.sku, q, mode)
+        || matchMode(p.alias || '', q, mode)
+        || (mode === 'exact' ? (p.barcode || '') === q.trim() : (p.barcode || '').includes(q.trim())));
+    }
     return l.slice(0, 300);
-  }, [products, q, cat, meta.categories]);
+  }, [products, q, mode, cat, meta.categories]);
 
   return (
     <Modal
@@ -76,7 +81,7 @@ export function ProductPicker({
     >
       <div className="space-y-2">
         <div className="flex gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng hoặc quét mã vạch..." className="flex-1" autoFocus />
+          <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode} placeholder="Gõ tên hàng hoặc quét mã vạch..." className="flex-1" autoFocus />
           <CategorySelect value={cat} onChange={setCat} categories={meta.categories}
             className="!w-auto" ariaLabel="Lọc theo nhóm hàng" />
         </div>

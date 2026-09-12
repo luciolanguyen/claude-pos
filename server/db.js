@@ -22,6 +22,11 @@ export const WARRANTY_DIR = path.join(
   DATA_DIR, DB_NAME === 'pos' ? 'warranty' : `warranty-${DB_NAME}`);
 if (!fs.existsSync(WARRANTY_DIR)) fs.mkdirSync(WARRANTY_DIR, { recursive: true });
 
+/* Ảnh hàng hoá (tài liệu 13, mục 1.4) — cùng cách bám tên CSDL như ảnh bảo hành */
+export const PRODUCT_DIR = path.join(
+  DATA_DIR, DB_NAME === 'pos' ? 'products' : `products-${DB_NAME}`);
+if (!fs.existsSync(PRODUCT_DIR)) fs.mkdirSync(PRODUCT_DIR, { recursive: true });
+
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
@@ -253,6 +258,97 @@ db.exec(`INSERT INTO supplier_bank_accounts(supplier_id, bank_name, account_no, 
          WHERE COALESCE(trim(s.bank_account), '') <> ''
            AND NOT EXISTS (SELECT 1 FROM supplier_bank_accounts b WHERE b.supplier_id = s.id)`);
 
+/* ------------------- Đợt 15: ba tài liệu đặc tả tiếp theo ------------------- */
+
+/* Hàng hoá (tài liệu 13, 15): mô tả cho thu ngân tư vấn, quy cách đóng gói,
+   và hai đơn vị mặc định — bán thì nhảy đơn vị nào, nhập thì đơn vị nào. */
+addColumns('products', {
+  description: 'TEXT',                               // thông số, chất liệu, cách dùng
+  pack_spec: 'TEXT',                                 // "Lố 12 cái", "Thùng 360 cái"
+  sell_unit_id: 'INTEGER',                           // đơn vị bán chính
+  buy_unit_id: 'INTEGER',                            // đơn vị mua chính
+});
+
+/* Đơn vị tính có mã riêng, xoá mềm được, và khai được theo kiểu bắc cầu
+   ("1 Thùng = 12 Lốc") — giữ lại lời khai để mở ra sửa vẫn thấy. */
+addColumns('product_units', {
+  active: 'INTEGER NOT NULL DEFAULT 1',              // 0 = ngừng hoạt động, ẩn ở POS
+  ref_unit_id: 'INTEGER',                            // khai theo đơn vị nào
+  ref_qty: 'REAL',                                   // bao nhiêu đơn vị đó
+});
+
+/* Chứng từ nối vào MÃ đơn vị, không chỉ nối bằng chữ (tài liệu 13, mục 1.3).
+   Cột chữ unit_name / factor vẫn giữ nguyên: hoá đơn cũ phải đọc lại được
+   đúng như lúc in, kể cả sau khi đơn vị bị đổi tên. */
+addColumns('sale_items', { unit_id: 'INTEGER' });
+addColumns('purchase_items', {
+  unit_id: 'INTEGER',
+  /* Tích ô "ghi đè giá vốn" ở dòng này thì lúc lưu phiếu giá vốn mặt hàng
+     bị ghi đè bằng đơn giá nhập. Không tích thì giá vốn đứng yên. */
+  overwrite_cost: 'INTEGER NOT NULL DEFAULT 0',
+});
+addColumns('sale_order_items', { unit_id: 'INTEGER' });
+addColumns('sale_return_items', { unit_id: 'INTEGER' });
+addColumns('purchase_return_items', { unit_id: 'INTEGER' });
+
+/* Khách hàng tối đa 3 số điện thoại (tài liệu 14, mục 4) */
+addColumns('customers', { phone2: 'TEXT', phone3: 'TEXT' });
+
+/* Báo giá của từng mối cho từng mã hàng (tài liệu 15, mục 4.3) */
+addColumns('product_suppliers', {
+  quote_price: 'INTEGER NOT NULL DEFAULT 0',
+  quote_at: 'TEXT',
+  quote_note: 'TEXT',
+});
+
+/* Phiếu thu nợ in khổ K80 cần số nợ ĐÚNG LÚC THU, không phải lúc in lại —
+   nên chốt luôn hai con số vào phiếu (tài liệu 14, mục 1.2). */
+addColumns('cash_transactions', {
+  debt_before: 'INTEGER',
+  debt_after: 'INTEGER',
+});
+
+/* Phiếu báo hết hàng (tài liệu 15, mục 4): dòng nào đã chuyển sang phiếu mua
+   tạm thì khoá lại, và phiếu lẻ gộp vào phiếu tổng nào. */
+addColumns('requisition_items', {
+  split_at: 'TEXT',
+  split_draft_id: 'INTEGER',
+});
+addColumns('requisitions', { merged_into: 'INTEGER' });
+
+/* Giao hàng: phí trả cho tài xế (khác phí thu của khách), và số đo đóng gói
+   để khai với hãng vận chuyển (tài liệu 14, mục 5). */
+addColumns('sales', {
+  shipper_fee: 'INTEGER NOT NULL DEFAULT 0',
+  ship_weight: 'REAL NOT NULL DEFAULT 0',
+  ship_size: 'TEXT',
+});
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_customers_phone2 ON customers(phone2)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_customers_phone3 ON customers(phone3)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_si_unit ON sale_items(unit_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_pi_unit ON purchase_items(unit_id)');
+
+/* Nối chứng từ CŨ vào mã đơn vị theo tên đã lưu. Chỉ đụng dòng còn trống,
+   nên chạy lại mỗi lần khởi động vô hại; dòng có tên đơn vị đã bị xoá khỏi
+   danh mục thì để trống — không đoán bừa. */
+for (const t of ['sale_items', 'purchase_items', 'sale_order_items',
+  'sale_return_items', 'purchase_return_items']) {
+  db.exec(`UPDATE ${t} SET unit_id = (
+             SELECT pu.id FROM product_units pu
+             WHERE pu.product_id = ${t}.product_id AND pu.unit_name = ${t}.unit_name
+             LIMIT 1)
+           WHERE unit_id IS NULL AND product_id IS NOT NULL`);
+}
+
+/* Đơn vị bán / mua chính: mặt hàng cũ chưa khai thì lấy đơn vị cơ bản.
+   Chỉ điền chỗ còn trống, và chỉ khi mã đơn vị đó có thật. */
+db.exec(`UPDATE products SET sell_unit_id = (
+           SELECT pu.id FROM product_units pu
+           WHERE pu.product_id = products.id AND pu.factor = 1 LIMIT 1)
+         WHERE sell_unit_id IS NULL`);
+db.exec(`UPDATE products SET buy_unit_id = sell_unit_id WHERE buy_unit_id IS NULL`);
+
 export const DB_FILE = DB_PATH;
 
 /* ------------------------------------------------------------------ */
@@ -335,6 +431,70 @@ export function pageParams(query = {}, defaultSize = 20) {
   const size = Math.min(Math.max(Number(query.page_size) || defaultSize, 1), 200);
   const page = Math.max(Number(query.page) || 1, 1);
   return { page, size, offset: (page - 1) * size };
+}
+
+/* ------------------------------------------------------------------ */
+/* Mã đơn vị tính của một dòng chứng từ (tài liệu 13, mục 1.3)          */
+/*                                                                     */
+/* Chứng từ nối vào MÃ đơn vị. Máy khách đời cũ và phiếu tạm lưu từ     */
+/* trước chỉ gửi tên đơn vị, nên tra lại theo tên; tra không ra thì để  */
+/* trống chứ không đoán bừa sang đơn vị khác.                           */
+/* ------------------------------------------------------------------ */
+
+export function resolveUnitId(productId, unitId, unitName) {
+  const pid = Number(productId) || 0;
+  if (!pid) return null;
+  const id = Number(unitId) || 0;
+  if (id) {
+    const row = get('SELECT id FROM product_units WHERE id = ? AND product_id = ?', [id, pid]);
+    if (row) return row.id;
+  }
+  const name = String(unitName ?? '').trim();
+  if (!name) return null;
+  return get('SELECT id FROM product_units WHERE product_id = ? AND unit_name = ? LIMIT 1',
+    [pid, name])?.id ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Kiểu tìm kiếm: đúng hẳn hay có chứa (tài liệu 13, mục 2.1)          */
+/*                                                                     */
+/* "Tìm có chứa" là kiểu quen dùng: gõ một khúc tên là ra. Nhưng khi    */
+/* quét mã vạch hay dò đúng một mã hàng thì kiểu đó trả về cả chục dòng */
+/* rác — nên mỗi ô tìm kiếm cho chọn "Tìm chính xác".                   */
+/*                                                                     */
+/* Dùng: searchWhere('p.name', q, mode) -> { sql, params }             */
+/* ------------------------------------------------------------------ */
+
+/** 'exact' hoặc 'contains'. Gửi gì lạ thì coi như 'contains'. */
+export function searchMode(v) {
+  return String(v ?? '').toLowerCase() === 'exact' ? 'exact' : 'contains';
+}
+
+/**
+ * Điều kiện tìm kiếm cho một hoặc nhiều cột.
+ * Tìm chính xác thì so khớp cả chuỗi (không phân biệt hoa thường, vì LIKE
+ * của SQLite vốn không phân biệt với chữ không dấu); tìm có chứa thì bọc %.
+ */
+export function searchWhere(columns, value, mode = 'contains') {
+  const cols = Array.isArray(columns) ? columns : [columns];
+  const v = String(value ?? '').trim();
+  if (!v || !cols.length) return { sql: '', params: [] };
+  const needle = searchMode(mode) === 'exact' ? v : `%${v}%`;
+  return {
+    sql: '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')',
+    params: cols.map(() => needle),
+  };
+}
+
+/**
+ * Cột sắp xếp do người dùng bấm vào tiêu đề bảng. CHỈ nhận tên cột nằm
+ * trong danh sách cho phép — ghép thẳng chuỗi của người dùng vào câu SQL
+ * là mở cửa cho việc chèn câu lệnh lạ.
+ */
+export function orderBy(allowed, field, dir, fallback) {
+  const col = allowed[String(field ?? '')];
+  if (!col) return fallback;
+  return `${col} ${String(dir ?? '').toLowerCase() === 'desc' ? 'DESC' : 'ASC'}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -501,21 +661,34 @@ export function costMethodOf(product) {
 }
 
 /**
+ * Ghi đè giá vốn bằng đơn giá nhập, do người lập phiếu TỰ TÍCH CHỌN từng
+ * dòng (tài liệu 13, mục 1.2). Đây là một trong hai đường duy nhất đổi giá
+ * vốn của hàng dùng giá vốn cố định; đường kia là gõ tay ở thẻ hàng hoá.
+ *
+ * Ghi đè thì chốt luôn (cost_fixed = 1): lần nhập sau không tự đụng vào nữa.
+ */
+export function overwriteCost(productId, newUnitCost) {
+  const v = Math.max(0, Math.round(Number(newUnitCost) || 0));
+  if (!get('SELECT id FROM products WHERE id = ?', [productId])) return null;
+  run('UPDATE products SET cost_price = ?, cost_fixed = 1 WHERE id = ?', [v, productId]);
+  return v;
+}
+
+/**
  * Cập nhật giá vốn khi NHẬP hàng. newUnitCost tính theo đơn vị cơ bản.
  * Trả về giá vốn mới, hoặc null nếu không đổi gì.
+ *
+ * Hàng dùng GIÁ VỐN CỐ ĐỊNH thì phiếu nhập không được tự đụng vào con số đó
+ * nữa — kể cả lần nhập đầu tiên (tài liệu 13, mục 1.2 bỏ hẳn luật cũ "lần
+ * nhập đầu tự chốt"). Muốn đổi thì tích ô "Ghi đè giá vốn" ở dòng hàng trên
+ * phiếu nhập, hoặc gõ tay trong thẻ hàng hoá.
  */
 export function updateAvgCost(productId, inQtyBase, newUnitCost) {
   if (inQtyBase <= 0) return null;
   const p = get('SELECT cost_price, cost_method, cost_fixed FROM products WHERE id = ?', [productId]);
   if (!p) return null;
 
-  if (costMethodOf(p) === 'fixed') {
-    // Đã chốt rồi thì thôi. Chưa chốt thì lần nhập này là lần đầu.
-    if (p.cost_fixed) return null;
-    const v = Math.round(newUnitCost);
-    run('UPDATE products SET cost_price = ?, cost_fixed = 1 WHERE id = ?', [v, productId]);
-    return v;
-  }
+  if (costMethodOf(p) === 'fixed') return null;
 
   // Bình quân gia quyền theo số đang tồn SAU khi đã cộng hàng mới vào
   const totalQty = get(

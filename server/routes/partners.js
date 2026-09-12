@@ -10,7 +10,10 @@
    chuyển khoản thì chọn đúng tài khoản đã lưu, khỏi gõ tay nhầm số.
    ==================================================================== */
 import { Router } from 'express';
-import { all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount } from '../db.js';
+import {
+  all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount,
+  searchWhere, searchMode,
+} from '../db.js';
 import { planAllocation, writeAllocation, debtBreakdown } from '../debt.js';
 import { maxDebtDaysFor, posPolicy, isApproverRole, peekApproval, consumeApproval } from '../policy.js';
 import { customerBuyers, proxyStats } from '../customers.js';
@@ -99,14 +102,16 @@ function saveContacts(supplierId, b) {
 }
 
 r.get('/suppliers', (req, res) => {
-  const { q = '', active, filter = '' } = req.query;
+  const { q = '', active, filter = '', match = 'contains' } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
-    const like = `%${q.trim()}%`;
+    /* Tìm chính xác thì khớp cả chuỗi — quét mã NCC hay dán đúng số điện
+       thoại thì không muốn ra thêm mấy mối tên gần giống (tài liệu 13) */
+    const needle = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
     where.push(`(s.name LIKE ? OR s.code LIKE ? OR s.phone LIKE ? OR s.contact_name LIKE ?
                  OR EXISTS (SELECT 1 FROM supplier_phones sp WHERE sp.supplier_id = s.id AND sp.phone LIKE ?))`);
-    params.push(like, like, like, like, like);
+    params.push(needle, needle, needle, needle, needle);
   }
   if (active !== undefined && active !== '') { where.push('s.active = ?'); params.push(Number(active)); }
   let rows = all(`SELECT s.* FROM suppliers s ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY s.name`, params);
@@ -165,6 +170,61 @@ r.get('/suppliers/:id', (req, res) => {
     FROM purchases WHERE supplier_id = ? AND status = 'done' AND total > paid
     ORDER BY ts, id`, [s.id]);
   res.json(s);
+});
+
+/* ==================================================================== *
+ * BẢNG BÁO GIÁ CỦA NCC (tài liệu 15, mục 4.3)
+ *
+ * Mối báo giá bao nhiêu cho từng mã hàng thì lưu lại đây. Lúc lập phiếu mua
+ * tạm từ phiếu báo hết hàng, hệ thống ƯU TIÊN lấy đúng con số mối đã báo;
+ * chưa có báo giá thì rơi về giá nhập gần nhất rồi tới giá vốn.
+ * ==================================================================== */
+
+export function supplierQuotes(supplierId) {
+  return all(`
+    SELECT ps.product_id, ps.quote_price, ps.quote_at, ps.quote_note, ps.last_price,
+           ps.supplier_sku, ps.is_primary,
+           p.name, p.sku, p.base_unit, p.cost_price, p.active AS product_active
+    FROM product_suppliers ps JOIN products p ON p.id = ps.product_id
+    WHERE ps.supplier_id = ?
+    ORDER BY ps.quote_price > 0 DESC, p.name`, [supplierId]);
+}
+
+r.get('/suppliers/:id/quotes', (req, res) => {
+  if (!get('SELECT id FROM suppliers WHERE id = ?', [req.params.id])) {
+    return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+  }
+  res.json({ rows: supplierQuotes(Number(req.params.id)) });
+});
+
+/** Lưu báo giá cho một hoặc nhiều mã hàng. Giá 0 = xoá báo giá của mã đó. */
+r.put('/suppliers/:id/quotes', (req, res) => {
+  const sid = Number(req.params.id);
+  if (!get('SELECT id FROM suppliers WHERE id = ?', [sid])) {
+    return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+  }
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  try {
+    tx(() => {
+      for (const x of rows) {
+        const pid = Number(x.product_id) || 0;
+        if (!pid || !get('SELECT id FROM products WHERE id = ?', [pid])) continue;
+        const price = Math.max(0, Math.round(Number(x.quote_price) || 0));
+        run(`INSERT INTO product_suppliers(product_id, supplier_id, quote_price, quote_at, quote_note, supplier_sku)
+             VALUES(?, ?, ?, CASE WHEN ? > 0 THEN datetime('now','localtime') ELSE NULL END, ?, ?)
+             ON CONFLICT(product_id, supplier_id) DO UPDATE SET
+               quote_price = excluded.quote_price,
+               quote_at = excluded.quote_at,
+               quote_note = excluded.quote_note,
+               supplier_sku = COALESCE(excluded.supplier_sku, product_suppliers.supplier_sku)`,
+        [pid, sid, price, price, String(x.quote_note ?? '').trim() || null,
+          String(x.supplier_sku ?? '').trim() || null]);
+      }
+    });
+    res.json({ ok: true, rows: supplierQuotes(sid) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 r.post('/suppliers', (req, res) => {
@@ -249,6 +309,7 @@ r.post('/suppliers/:id/pay', (req, res) => {
   }
 
   const out = tx(() => {
+    const before = supplierDebt(s.id);
     const t = addCashTx({
       accountId, direction: 'out', amount, category: 'debt_out',
       partnerType: 'supplier', partnerId: s.id, partnerName: s.name,
@@ -258,10 +319,18 @@ r.post('/suppliers/:id/pay', (req, res) => {
         : `Trả nợ NCC ${s.name}`),
       ts: req.body.ts || null,
     });
-    if (t && counterparty) {
-      run('UPDATE cash_transactions SET counterparty_account = ? WHERE id = ?', [counterparty, t.id]);
+    const after = supplierDebt(s.id);
+    if (t) {
+      /* Chốt số nợ trước và sau ngay vào phiếu: in lại phiếu cũ sau vài tháng
+         phải ra đúng con số hôm đó, không phải số nợ hôm nay (tài liệu 14) */
+      run('UPDATE cash_transactions SET counterparty_account = ?, debt_before = ?, debt_after = ? WHERE id = ?',
+        [counterparty, before, after, t.id]);
     }
-    return { ok: true, transaction: t ? { ...t, counterparty_account: counterparty } : null, debt: supplierDebt(s.id) };
+    return {
+      ok: true,
+      transaction: t ? { ...t, counterparty_account: counterparty, debt_before: before, debt_after: after } : null,
+      debt: after, debt_before: before,
+    };
   });
   res.json(out);
 });
@@ -275,6 +344,58 @@ const normType = (v) => (CUSTOMER_TYPES.includes(v) ? v : 'member');
 /** Số ngày nợ tối đa riêng của khách. Rỗng = theo chính sách chung của tiệm. */
 const normDays = (v) => (v === undefined || v === null || v === '' || Number.isNaN(Number(v))
   ? null : Math.max(0, Math.round(Number(v))));
+
+/* ==================================================================== *
+ * BA SỐ ĐIỆN THOẠI CỦA MỘT KHÁCH (tài liệu 14, mục 4)
+ *
+ * Nhà thầu hay đưa số của mình, của vợ, của thợ. Gõ số nào cũng phải ra
+ * đúng một hồ sơ, nên cả ba ô đều được tra khi tìm.
+ *
+ * Một số KHÔNG được thuộc hai hồ sơ khác nhau: trùng số là lát nữa thu
+ * ngân chọn nhầm khách và ghi nợ sang người khác.
+ * ==================================================================== */
+
+export const PHONE_FIELDS = ['phone', 'phone2', 'phone3'];
+const PHONE_LABEL = { phone: 'SĐT 1', phone2: 'SĐT 2', phone3: 'SĐT 3' };
+
+/** Ba ô số điện thoại sau khi dọn: bỏ khoảng trắng, ô rỗng thành null. */
+function phoneValues(b, cur = null) {
+  const out = {};
+  for (const f of PHONE_FIELDS) {
+    out[f] = b[f] === undefined ? (cur ? cur[f] ?? null : null) : (clean(b[f]) || null);
+  }
+  return out;
+}
+
+/**
+ * Soát ba số của một hồ sơ. Trả về câu báo lỗi, hoặc chuỗi rỗng nếu sạch.
+ * excludeId là hồ sơ đang sửa — chính nó không tính là trùng.
+ */
+function phoneError(values, excludeId = null) {
+  const seen = new Map();
+  for (const f of PHONE_FIELDS) {
+    const v = values[f];
+    if (!v) continue;
+    if (seen.has(v)) {
+      return `${PHONE_LABEL[f]} trùng với ${PHONE_LABEL[seen.get(v)]} của chính khách này.`;
+    }
+    seen.set(v, f);
+    /* Số phụ chỉ có nghĩa khi đã có số chính: hồ sơ có SĐT 2 mà bỏ trống
+       SĐT 1 thì mọi màn hình hiện số trống, nhìn như khách không có số. */
+    if (f !== 'phone' && !values.phone) {
+      return `Điền ${PHONE_LABEL.phone} trước khi thêm ${PHONE_LABEL[f]}.`;
+    }
+    const dup = get(`
+      SELECT id, code, name FROM customers
+      WHERE id <> COALESCE(?, -1) AND (phone = ? OR phone2 = ? OR phone3 = ?)
+      LIMIT 1`, [excludeId ?? null, v, v, v]);
+    if (dup) {
+      return `Số ${v} (${PHONE_LABEL[f]}) đang là số của khách "${dup.name}" (${dup.code}).`
+        + ' Một số điện thoại chỉ thuộc một hồ sơ khách.';
+    }
+  }
+  return '';
+}
 
 /**
  * Hạn mức nợ và số ngày nợ tối đa là chốt chặn bán nợ của tài liệu 05: thu
@@ -317,13 +438,16 @@ function debtDetail(c) {
 }
 
 r.get('/customers', (req, res) => {
-  const { q = '', active, has_debt, filter = '', type = '', detail } = req.query;
+  const { q = '', active, has_debt, filter = '', type = '', detail, match = 'contains' } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
-    where.push('(c.name LIKE ? OR c.code LIKE ? OR c.phone LIKE ? OR c.company_name LIKE ?)');
-    const like = `%${q.trim()}%`;
-    params.push(like, like, like, like);
+    /* Tra đồng thời cả ba số điện thoại (tài liệu 14, mục 4.2): gõ số phụ
+       của bà vợ cũng phải ra đúng hồ sơ nhà thầu đó. */
+    const c = searchWhere(
+      ['c.name', 'c.code', 'c.phone', 'c.phone2', 'c.phone3', 'c.company_name'], q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (active !== undefined && active !== '') { where.push('c.active = ?'); params.push(Number(active)); }
   if (CUSTOMER_TYPES.includes(type)) { where.push('c.customer_type = ?'); params.push(type); }
@@ -399,8 +523,12 @@ r.post('/customers', (req, res) => {
   /* Lưu nhanh người mua hộ: khách định danh bằng số điện thoại (tài liệu 03).
      Đã có hồ sơ cùng số thì dùng lại, không đẻ thêm một hồ sơ trùng. */
   if (b.dedupe_phone && String(b.phone || '').trim()) {
-    const same = get('SELECT * FROM customers WHERE phone = ? AND active = 1 ORDER BY id LIMIT 1',
-      [String(b.phone).trim()]);
+    /* Người mua hộ định danh bằng số điện thoại — tra cả ba ô, vì số đó có
+       thể đang là số phụ của một hồ sơ đã có (tài liệu 14, mục 4.2) */
+    const p = String(b.phone).trim();
+    const same = get(`SELECT * FROM customers
+                      WHERE (phone = ? OR phone2 = ? OR phone3 = ?) AND active = 1
+                      ORDER BY id LIMIT 1`, [p, p, p]);
     if (same) return res.json({ ...same, existing: true });
   }
   if (!b.name?.trim()) return res.status(400).json({ error: 'Thiếu tên khách hàng' });
@@ -408,16 +536,20 @@ r.post('/customers', (req, res) => {
   if (get('SELECT id FROM customers WHERE code = ?', [code])) {
     return res.status(400).json({ error: `Mã "${code}" đã tồn tại` });
   }
+  const phones = phoneValues(b);
+  const badPhone = phoneError(phones, null);
+  if (badPhone) return res.status(400).json({ error: badPhone, code: 'PHONE_TAKEN' });
   const limit = Math.max(0, Math.round(Number(b.debt_limit) || 0));
   const days = normDays(b.max_debt_days);
   let token;
   try { token = creditGate(req, null, limit, days); } catch (e) { return gateError(res, e); }
   const info = run(`
-    INSERT INTO customers(code, name, phone, email, address, tax_code, company_name,
+    INSERT INTO customers(code, name, phone, phone2, phone3, email, address, tax_code, company_name,
                           price_list_id, opening_debt, debt_limit, birthday, note, active,
                           customer_type, max_debt_days)
-    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    [code, b.name.trim(), b.phone || null, b.email || null, b.address || null,
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    [code, b.name.trim(), phones.phone, phones.phone2, phones.phone3,
+      b.email || null, b.address || null,
       b.tax_code || null, b.company_name || null, b.price_list_id || null,
       Math.round(Number(b.opening_debt) || 0), limit,
       b.birthday || null, b.note || null, normType(b.customer_type), days]);
@@ -433,13 +565,17 @@ r.put('/customers/:id', (req, res) => {
   const type = b.customer_type === undefined ? cur.customer_type : normType(b.customer_type);
   const days = b.max_debt_days === undefined ? cur.max_debt_days : normDays(b.max_debt_days);
   const limit = b.debt_limit === undefined ? cur.debt_limit : Math.max(0, Math.round(Number(b.debt_limit) || 0));
+  const phones = phoneValues(b, cur);
+  const badPhone = phoneError(phones, cur.id);
+  if (badPhone) return res.status(400).json({ error: badPhone, code: 'PHONE_TAKEN' });
   let token;
   try { token = creditGate(req, cur, limit, days); } catch (e) { return gateError(res, e); }
-  run(`UPDATE customers SET name = ?, phone = ?, email = ?, address = ?, tax_code = ?,
+  run(`UPDATE customers SET name = ?, phone = ?, phone2 = ?, phone3 = ?, email = ?, address = ?, tax_code = ?,
          company_name = ?, price_list_id = ?, opening_debt = ?, debt_limit = ?,
          birthday = ?, note = ?, active = ?, customer_type = ?, max_debt_days = ?
        WHERE id = ?`,
-    [b.name ?? cur.name, b.phone || null, b.email || null, b.address || null, b.tax_code || null,
+    [b.name ?? cur.name, phones.phone, phones.phone2, phones.phone3,
+      b.email || null, b.address || null, b.tax_code || null,
       b.company_name || null, b.price_list_id || null, Math.round(Number(b.opening_debt) || 0),
       limit, b.birthday || null, b.note || null,
       b.active === 0 ? 0 : 1, type, days, cur.id]);
@@ -489,6 +625,8 @@ r.post('/customers/:id/pay', (req, res) => {
      đúng hoá đơn đó, không chọn thì trả dần từ khoản cũ nhất (FIFO). */
   const saleIds = Array.isArray(req.body.sale_ids) ? req.body.sale_ids : [];
   const out = tx(() => {
+    /* Số nợ trước khi thu, để in lên phiếu K80 (tài liệu 14, mục 1.2) */
+    const before = customerDebt(c.id);
     /* Chia tiền TRƯỚC khi ghi phiếu thu — xem chú thích ở planAllocation:
        làm sau thì một khoản tiền bị trừ hai lần */
     const plan = planAllocation(c.id, amount, saleIds);
@@ -504,10 +642,13 @@ r.post('/customers/:id/pay', (req, res) => {
       ts: req.body.ts || null,
     });
     writeAllocation(t.id, plan);
+    const after = customerDebt(c.id);
+    run('UPDATE cash_transactions SET debt_before = ?, debt_after = ? WHERE id = ?',
+      [before, after, t.id]);
     return {
-      ok: true, transaction: t,
+      ok: true, transaction: { ...t, debt_before: before, debt_after: after },
       allocations: plan.rows, to_opening: plan.to_opening, overpaid: plan.unallocated,
-      debt: customerDebt(c.id),
+      debt: after, debt_before: before,
     };
   });
   res.json(out);

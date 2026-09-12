@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR } from '../db.js';
+import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR } from '../db.js';
 
 const r = Router();
 
@@ -129,6 +129,8 @@ const TABLES = [
   /* Đợt 14 */
   'supplier_phones', 'supplier_bank_accounts', 'purchase_custom_items', 'purchase_return_custom_items',
   'warranty_custom_parts', 'warranty_fees',
+  /* Đợt 15 */
+  'product_images', 'pos_featured',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -245,6 +247,7 @@ r.post('/reset-all', (req, res) => {
     'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
+    'pos_featured', 'product_images',
     'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
     'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
@@ -269,13 +272,15 @@ r.post('/reset-all', (req, res) => {
     return res.status(500).json({ error: 'Không xoá được: ' + e.message });
   }
 
-  /* Ảnh bảo hành nằm ngoài cơ sở dữ liệu, phải xoá riêng */
-  try {
-    for (const name of fs.readdirSync(WARRANTY_DIR)) {
-      fs.unlinkSync(path.join(WARRANTY_DIR, name));
-      photosDeleted++;
-    }
-  } catch { /* thư mục trống hoặc chưa có */ }
+  /* Ảnh bảo hành và ảnh hàng hoá nằm ngoài cơ sở dữ liệu, phải xoá riêng */
+  for (const dir of [WARRANTY_DIR, PRODUCT_DIR]) {
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        fs.unlinkSync(path.join(dir, name));
+        photosDeleted++;
+      }
+    } catch { /* thư mục trống hoặc chưa có */ }
+  }
 
   /* Dựng lại những thứ tối thiểu để phần mềm chạy được ngay */
   run("INSERT INTO warehouses(code, name, is_default, active) VALUES('KHO', 'Kho cửa hàng', 1, 1)");

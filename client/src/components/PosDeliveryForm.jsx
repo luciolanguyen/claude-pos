@@ -22,11 +22,17 @@ import { Button, Input, Select, Modal, Field, MoneyInput, Textarea } from './ui'
 
 export const EMPTY_DELIVERY = {
   name: '', phone: '', address: '',
+  /* Hai lối vận chuyển (tài liệu 14, mục 5): gửi qua hãng, hay tự chở / book
+     tài xế ngoài. Đơn cũ lưu trên máy chưa có ô này thì tự suy ra ở
+     normalizeDelivery bên dưới. */
+  shipMode: 'self',                  // partner | self
   carrierId: null, carrierName: '', trackingCode: '',
-  shipperMode: 'none',              // none | staff | free
+  weight: '', size: '',              // khối lượng (kg) và số đo đóng gói
+  shipperMode: 'none',               // none | staff | free
   shipperUserId: null, shipperUserName: '',
   shipperName: '', shipperPhone: '',
   shipFee: 0, shopPaysShip: false,
+  shipperFee: 0,                     // tiền tiệm trả cho tài xế (chi phí của tiệm)
   prepaid: 0, prepaidMethod: 'cash',
   codMode: true,                     // false = phần còn lại ghi nợ khách, không thu hộ
   note: '',
@@ -41,6 +47,8 @@ export function normalizeDelivery(v) {
     ...v,
     shopPaysShip: v.shopPaysShip ?? v.shipPayer === 'shop',
     shipperMode: v.shipperMode || (v.shipperName ? 'free' : 'none'),
+    /* Đơn lưu từ bản cũ: có chọn hãng vận chuyển thì coi như đi đường đối tác */
+    shipMode: v.shipMode || (v.carrierId ? 'partner' : 'self'),
     print: { ...EMPTY_DELIVERY.print, ...(v.print || {}) },
   };
 }
@@ -55,19 +63,27 @@ export function deliveryShipCharged(v) {
 export function deliveryBody(v) {
   const d = normalizeDelivery(v);
   if (!d) return {};
-  const staff = d.shipperMode === 'staff';
-  const free = d.shipperMode === 'free';
+  const partner = d.shipMode === 'partner';
+  const staff = !partner && d.shipperMode === 'staff';
+  const free = !partner && d.shipperMode === 'free';
   return {
     delivery_name: d.name || null,
     delivery_phone: d.phone || null,
     delivery_address: d.address || null,
-    carrier_id: d.carrierId || null,
-    tracking_code: d.trackingCode || null,
+    /* Đi hãng thì lưu hãng và mã vận đơn; tự chở thì lưu người giao */
+    carrier_id: partner ? d.carrierId || null : null,
+    tracking_code: partner ? d.trackingCode || null : null,
+    ship_weight: partner ? Math.max(0, Number(d.weight) || 0) : 0,
+    ship_size: partner ? (String(d.size || '').trim() || null) : null,
     shipper_user_id: staff ? d.shipperUserId || null : null,
     shipper_name: staff ? d.shipperUserName || null : free ? d.shipperName || null : null,
     shipper_phone: free ? d.shipperPhone || null : null,
     ship_fee: Math.max(0, Math.round(Number(d.shipFee) || 0)),
     ship_payer: d.shopPaysShip ? 'shop' : 'customer',
+    /* Tiền trả cho tài xế là CHI PHÍ của tiệm, khác phí ship thu của khách.
+       Ghi lại trên đơn để cuối ngày đối chiếu, không tự ghi phiếu chi —
+       tiệm thường trả gộp cuối ca, ghi ở đây nữa là đếm tiền hai lần. */
+    shipper_fee: Math.max(0, Math.round(Number(d.shipperFee) || 0)),
     cod_mode: d.codMode !== false,
     delivery_note: d.note || null,
   };
@@ -144,12 +160,17 @@ export default function DeliveryInfoModal({
   const rest = total - prepaid;
 
   const check = () => {
-    if (!d.address.trim() && !d.carrierId && d.shipperMode === 'none') {
-      return 'Nhập địa chỉ giao, hoặc chọn đơn vị vận chuyển / người giao hàng.';
+    if (d.shipMode === 'partner') {
+      if (!d.carrierId) return 'Chọn hãng vận chuyển, hoặc đổi sang thẻ Tự vận chuyển nội bộ.';
+      if (!d.address.trim()) return 'Nhập địa chỉ giao để hãng vận chuyển lấy hàng.';
+      return '';
+    }
+    if (!d.address.trim() && d.shipperMode === 'none') {
+      return 'Nhập địa chỉ giao, hoặc chọn người giao hàng.';
     }
     if (d.shipperMode === 'staff' && !d.shipperUserId) return 'Chọn nhân viên đi giao.';
     if (d.shipperMode === 'free' && !d.shipperName.trim() && !d.shipperPhone.trim()) {
-      return 'Nhập tên hoặc số điện thoại của shipper tự do.';
+      return 'Nhập tên hoặc số điện thoại của tài xế.';
     }
     return '';
   };
@@ -217,77 +238,134 @@ export default function DeliveryInfoModal({
             </Field>
           </section>
 
-          {/* ---------------- Vận chuyển ---------------- */}
+          {/* ---------------- Vận chuyển: hai phân vùng (tài liệu 14, mục 5) ---------------- */}
           <section className="space-y-2.5 border-t border-line pt-3" aria-labelledby="dv-h-ship">
             <h3 id="dv-h-ship" className="text-[13px] font-bold">Vận chuyển</h3>
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              <Field label="Đơn vị vận chuyển" hint="Thêm đối tác ở Thiết lập" htmlFor="dv-carrier">
-                <Select
-                  id="dv-carrier"
-                  value={d.carrierId || ''}
-                  onChange={(e) => {
-                    const id = e.target.value ? Number(e.target.value) : null;
-                    setErr('');
-                    setD((p) => ({ ...p, carrierId: id, carrierName: carriers.find((c) => c.id === id)?.name || '' }));
-                  }}
+
+            <div className="grid grid-cols-2 rounded-lg border border-line overflow-hidden" role="tablist"
+              aria-label="Cách vận chuyển">
+              {[
+                ['self', 'Tự vận chuyển nội bộ', 'Tiệm tự chở, hoặc book tài xế ngoài'],
+                ['partner', 'Đối tác vận chuyển', 'Gửi qua GHTK, GHN, Viettel Post, nhà xe...'],
+              ].map(([k, label, hint]) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={d.shipMode === k}
+                  onClick={() => set('shipMode', k)}
+                  className={`px-2.5 py-2 text-left transition-colors duration-100 cursor-pointer
+                              ${d.shipMode === k ? 'bg-primary text-white' : 'bg-card hover:bg-muted'}`}
                 >
-                  <option value="">— Không qua đối tác —</option>
-                  {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </Select>
-              </Field>
-              <Field label="Mã vận đơn" htmlFor="dv-track">
-                <Input id="dv-track" value={d.trackingCode} onChange={(e) => set('trackingCode', e.target.value)}
-                  placeholder="Số vận đơn đối tác cấp" />
-              </Field>
+                  <span className="block text-[13px] font-semibold">{label}</span>
+                  <span className={`block text-2xs ${d.shipMode === k ? 'text-slate-300' : 'text-muted-ink'}`}>
+                    {hint}
+                  </span>
+                </button>
+              ))}
             </div>
 
-            <div>
-              <span className="label">Người giao trực tiếp</span>
-              <div className="grid grid-cols-3 rounded border border-line overflow-hidden" role="radiogroup"
-                aria-label="Người giao trực tiếp">
-                {[['none', 'Không có'], ['staff', 'Nhân viên cửa hàng'], ['free', 'Shipper tự do']].map(([k, lb]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    role="radio"
-                    aria-checked={d.shipperMode === k}
-                    onClick={() => set('shipperMode', k)}
-                    className={`h-9 px-2 text-[13px] font-semibold transition-colors duration-100 cursor-pointer
-                                ${d.shipperMode === k ? 'bg-primary text-white' : 'bg-card hover:bg-muted'}`}
-                  >
-                    {lb}
-                  </button>
-                ))}
+            {/* ---- Phân vùng 1: gửi qua đối tác ---- */}
+            {d.shipMode === 'partner' && (
+              <div className="space-y-2.5">
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  <Field label="Hãng vận chuyển" required hint="Thêm đối tác ở Thiết lập → Vận chuyển" htmlFor="dv-carrier">
+                    <Select
+                      id="dv-carrier"
+                      value={d.carrierId || ''}
+                      onChange={(e) => {
+                        const id = e.target.value ? Number(e.target.value) : null;
+                        setErr('');
+                        setD((p) => ({ ...p, carrierId: id, carrierName: carriers.find((c) => c.id === id)?.name || '' }));
+                      }}
+                    >
+                      <option value="">— Chọn hãng —</option>
+                      {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Mã vận đơn" hint="Hãng cấp lúc nhận hàng" htmlFor="dv-track">
+                    <Input id="dv-track" value={d.trackingCode} onChange={(e) => set('trackingCode', e.target.value)}
+                      placeholder="Số vận đơn đối tác cấp" />
+                  </Field>
+                  <Field label="Khối lượng đóng gói (kg)" htmlFor="dv-weight">
+                    <Input id="dv-weight" type="number" step="0.1" min="0" inputMode="decimal"
+                      value={d.weight} onChange={(e) => set('weight', e.target.value)}
+                      placeholder="VD: 4.5" />
+                  </Field>
+                  <Field label="Kích thước gói (cm)" hint="Dài × Rộng × Cao" htmlFor="dv-size">
+                    <Input id="dv-size" value={d.size} onChange={(e) => set('size', e.target.value)}
+                      placeholder="VD: 40x30x20" />
+                  </Field>
+                </div>
+                <p className="text-2xs text-muted-ink leading-relaxed bg-muted/60 border border-line rounded p-2">
+                  Máy chủ của tiệm chỉ chạy trong mạng nội bộ nên <b>chưa nối API của hãng</b>: phí ship
+                  và mã vận đơn nhập tay theo phiếu hãng đưa. Khối lượng và kích thước ghi ở đây để đối
+                  chiếu với phiếu cân của hãng khi có sai lệch.
+                </p>
               </div>
-            </div>
-
-            {d.shipperMode === 'staff' && (
-              <Field label="Nhân viên đi giao" htmlFor="dv-staff">
-                <Select
-                  id="dv-staff"
-                  value={d.shipperUserId || ''}
-                  onChange={(e) => {
-                    const id = e.target.value ? Number(e.target.value) : null;
-                    setErr('');
-                    setD((p) => ({ ...p, shipperUserId: id, shipperUserName: staff.find((u) => u.id === id)?.full_name || '' }));
-                  }}
-                >
-                  <option value="">— Chọn nhân viên —</option>
-                  {staff.map((u) => (
-                    <option key={u.id} value={u.id}>{u.full_name}{ROLE_LABEL[u.role] ? ` · ${ROLE_LABEL[u.role]}` : ''}</option>
-                  ))}
-                </Select>
-              </Field>
             )}
-            {d.shipperMode === 'free' && (
-              <div className="grid gap-2.5 sm:grid-cols-2">
-                <Field label="Tên shipper" htmlFor="dv-sname">
-                  <Input id="dv-sname" value={d.shipperName} onChange={(e) => set('shipperName', e.target.value)}
-                    placeholder="VD: anh Hùng xe ôm" />
-                </Field>
-                <Field label="Số điện thoại shipper" htmlFor="dv-sphone">
-                  <Input id="dv-sphone" value={d.shipperPhone} onChange={(e) => set('shipperPhone', e.target.value)}
-                    inputMode="tel" />
+
+            {/* ---- Phân vùng 2: tự chở hoặc book tài xế ngoài ---- */}
+            {d.shipMode === 'self' && (
+              <div className="space-y-2.5">
+                <div>
+                  <span className="label">Người giao hàng</span>
+                  <div className="grid grid-cols-3 rounded border border-line overflow-hidden" role="radiogroup"
+                    aria-label="Người giao hàng">
+                    {[['none', 'Chưa phân công'], ['staff', 'Nhân viên tiệm'], ['free', 'Tài xế ngoài']].map(([k, lb]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        role="radio"
+                        aria-checked={d.shipperMode === k}
+                        onClick={() => set('shipperMode', k)}
+                        className={`h-9 px-2 text-[13px] font-semibold transition-colors duration-100 cursor-pointer
+                                    ${d.shipperMode === k ? 'bg-primary text-white' : 'bg-card hover:bg-muted'}`}
+                      >
+                        {lb}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {d.shipperMode === 'staff' && (
+                  <Field label="Nhân viên đi giao" htmlFor="dv-staff">
+                    <Select
+                      id="dv-staff"
+                      value={d.shipperUserId || ''}
+                      onChange={(e) => {
+                        const id = e.target.value ? Number(e.target.value) : null;
+                        setErr('');
+                        setD((p) => ({ ...p, shipperUserId: id, shipperUserName: staff.find((u) => u.id === id)?.full_name || '' }));
+                      }}
+                    >
+                      <option value="">— Chọn nhân viên —</option>
+                      {staff.map((u) => (
+                        <option key={u.id} value={u.id}>{u.full_name}{ROLE_LABEL[u.role] ? ` · ${ROLE_LABEL[u.role]}` : ''}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+                {d.shipperMode === 'free' && (
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    <Field label="Tên tài xế" hint="Grab, Ahamove, Be, hoặc xe ôm quen" htmlFor="dv-sname">
+                      <Input id="dv-sname" value={d.shipperName} onChange={(e) => set('shipperName', e.target.value)}
+                        placeholder="VD: anh Hùng xe ôm" />
+                    </Field>
+                    <Field label="Số điện thoại tài xế" htmlFor="dv-sphone">
+                      <Input id="dv-sphone" value={d.shipperPhone} onChange={(e) => set('shipperPhone', e.target.value)}
+                        inputMode="tel" />
+                    </Field>
+                  </div>
+                )}
+
+                <Field
+                  label="Tiền trả cho tài xế"
+                  hint="Chi phí của tiệm, không phải phí thu của khách. Ghi để cuối ngày đối chiếu."
+                  htmlFor="dv-shipperfee"
+                >
+                  <MoneyInput id="dv-shipperfee" value={d.shipperFee}
+                    onChange={(v) => set('shipperFee', Math.max(0, v))} />
                 </Field>
               </div>
             )}

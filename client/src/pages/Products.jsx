@@ -1,11 +1,26 @@
+/* ====================================================================
+   HÀNG HOÁ & TỒN KHO — MỘT MÀN HÌNH DUY NHẤT (tài liệu 15, mục 1)
+
+   Trước đây tách làm hai trang: "Hàng hoá" xem giá và danh mục, "Tồn kho"
+   xem số lượng. Đi lại giữa hai trang chỉ để xem một mặt hàng còn mấy cái
+   là mất công, nên gộp thành một lưới có đủ cả.
+
+   Bộ lọc nằm hết trên thanh công cụ (tài liệu 13, mục 1.1) — hàng ô lọc
+   dưới tên cột đã bỏ, lấy chỗ cho dữ liệu. Bấm tên cột để sắp xếp, bấm
+   lần thứ ba thì về thứ tự mặc định.
+
+   Sửa nhanh tại chỗ: giá vốn, giá bán, và kiểm kho nhanh từng dòng.
+   ==================================================================== */
 import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Boxes, Plus, Pencil, Trash2, Download, Package, History, Tag, Layers, Upload,
-  Wrench, CheckSquare, Square, ChevronDown, FileText, AlertTriangle, X,
+  Wrench, CheckSquare, Square, FileText, AlertTriangle, X, ClipboardCheck,
+  ChevronUp, ChevronDown, PackageX, Check,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/store';
-import { money, n, short, qty as fq, datetime, date, MOVE_LABEL, COST_METHOD_LABEL } from '../lib/format';
+import { useApp, useFetch, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
+import { money, n, short, qty as fq, datetime, date, MOVE_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
   Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager,
@@ -14,36 +29,143 @@ import { PageHeader, Page } from '../components/Layout';
 import CategoryTree, { CategorySelect } from '../components/CategoryTree';
 import ImportProducts from '../components/ImportProducts';
 import PrintLabels from '../components/PrintLabels';
-import { ProductPicker } from '../components/ProductPicker';
 import { ProductForm } from '../components/ProductForm';
+import { Thumb, ProductInfoModal } from '../components/ProductImages';
+import { AdjustModal } from './Stock';
 
 /* Nhãn hiện trên chip bộ lọc */
 const FILTER_LABEL = {
-  name: 'Tên hàng', sku: 'Mã hàng', barcode: 'Mã vạch',
   brand: 'Hãng', location: 'Vị trí', stock_status: 'Tồn kho',
 };
-const STOCK_LABEL = { in: 'Còn hàng', low: 'Dưới tồn tối thiểu', out: 'Đã hết hàng' };
+const STOCK_LABEL = {
+  in: 'Còn hàng', low: 'Dưới tồn tối thiểu', out: 'Đã hết hàng', over: 'Vượt định mức',
+};
+const STATUS_BADGE = {
+  out: ['bad', 'Hết hàng'],
+  low: ['warn', 'Sắp hết'],
+  over: ['info', 'Vượt định mức'],
+  ok: ['ok', 'Bình thường'],
+  service: ['mute', 'Dịch vụ'],
+};
+
+/* Cột nào bấm được để sắp xếp — tên phải khớp với danh sách máy chủ cho phép */
+const SORTABLE = {
+  sku: 'Mã hàng', name: 'Tên hàng', category: 'Nhóm', unit: 'ĐVT',
+  cost_price: 'Giá vốn', sale_price: 'Giá bán', stock: 'Tồn kho',
+  min_stock: 'Tối thiểu', value: 'Giá trị tồn', location: 'Vị trí',
+};
+
+/**
+ * Tiêu đề cột bấm được, xoay vòng ba trạng thái (tài liệu 13, mục 1.1):
+ * tăng dần → giảm dần → về mặc định.
+ */
+function SortTh({ field, label, sort, onSort, className = '', style }) {
+  const on = sort.field === field;
+  const next = !on ? 'asc' : sort.dir === 'asc' ? 'desc' : '';
+  return (
+    <th style={style} className={className} aria-sort={on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(next ? { field, dir: next } : { field: '', dir: 'asc' })}
+        title={!on ? 'Bấm để sắp xếp tăng dần'
+          : sort.dir === 'asc' ? 'Bấm để sắp xếp giảm dần' : 'Bấm để bỏ sắp xếp'}
+        className={`inline-flex items-center gap-0.5 cursor-pointer hover:text-accent
+                    ${className.includes('text-right') ? 'flex-row-reverse' : ''}
+                    ${on ? 'text-accent font-bold' : ''}`}
+      >
+        {label}
+        {on
+          ? (sort.dir === 'asc'
+            ? <ChevronUp size={13} aria-hidden="true" />
+            : <ChevronDown size={13} aria-hidden="true" />)
+          : <span className="w-[13px]" aria-hidden="true" />}
+      </button>
+    </th>
+  );
+}
+
+/**
+ * Ô sửa nhanh tại chỗ: bấm vào con số là thành ô nhập, Enter lưu, Esc bỏ.
+ * Dùng cho giá vốn và giá bán — hai con số hay phải sửa lắt nhắt nhất.
+ */
+function QuickMoney({ value, onSave, label, disabled, tone = '' }) {
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(value);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setV(value); }, [value]);
+
+  if (disabled) return <span className={tone}>{money(value)}</span>;
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => { setV(value); setEditing(true); }}
+        title={`Bấm để sửa ${label}`}
+        className={`tabular cursor-pointer rounded px-1 -mx-1 hover:bg-accent-soft/60
+                    hover:ring-1 hover:ring-accent/40 ${tone}`}
+      >
+        {money(value)}
+      </button>
+    );
+  }
+
+  const commit = async () => {
+    if (Math.round(Number(v) || 0) === value) { setEditing(false); return; }
+    setBusy(true);
+    try { await onSave(Math.round(Number(v) || 0)); setEditing(false); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <span className="flex items-center gap-0.5 justify-end">
+      <MoneyInput
+        size="sm"
+        value={v}
+        onChange={setV}
+        autoFocus
+        className="!w-28"
+        aria-label={label}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+        }}
+      />
+      <IconButton icon={Check} size={13} label={`Lưu ${label}`} onClick={commit} disabled={busy} />
+      <IconButton icon={X} size={13} label="Bỏ sửa" onClick={() => setEditing(false)} />
+    </span>
+  );
+}
 
 export default function Products() {
-  const { toast, meta, loadMeta } = useApp();
+  const { toast, meta, loadMeta, can, defaultWarehouse } = useApp();
+  const [params] = useSearchParams();
   const [q, setQ] = useState('');
+  const [mode, setMode] = useSearchMode();
   const dq = useDebounced(q, 300);
   const [categoryId, setCategoryId] = useState('');
   const [active, setActive] = useState('1');
+  const [warehouseId, setWarehouseId] = useState('');
+  const [sort, setSort] = useState({ field: '', dir: 'asc' });
+  const maySeeCost = can('cost.view');
+  const mayManage = can('product.manage');
 
-  /* Bộ lọc gõ ngay dưới tên cột. Gộp thành một đối tượng để truyền cho
-     máy chủ và để đếm xem đang bật mấy điều kiện. */
-  const [col, setCol] = useState({ name: '', sku: '', barcode: '', brand: '', location: '', stock_status: '' });
-  const dcol = useDebounced(JSON.stringify(col), 300);
+  /* Bộ lọc trên thanh công cụ. Đường dẫn cũ /stock?filter=low vẫn dùng được. */
+  const startStatus = ['low', 'out', 'over'].includes(params.get('filter')) ? params.get('filter') : '';
+  const [col, setCol] = useState({ brand: '', location: '', stock_status: startStatus });
   const setColField = (k) => (v) => setCol((c) => ({ ...c, [k]: v }));
-  const clearCols = () => setCol({ name: '', sku: '', barcode: '', brand: '', location: '', stock_status: '' });
+  const clearCols = () => setCol({ brand: '', location: '', stock_status: '' });
   const activeFilters = Object.entries(col).filter(([, v]) => v);
 
   const { data: filterOpts } = useFetch(() => api.get('/products/filters'), []);
 
   const filters = useMemo(
-    () => ({ q: dq, category_id: categoryId, active, ...JSON.parse(dcol) }),
-    [dq, categoryId, active, dcol]);
+    () => ({
+      q: dq, match: mode, category_id: categoryId, active, warehouse_id: warehouseId,
+      sort: sort.field, dir: sort.dir, ...col,
+    }),
+    [dq, mode, categoryId, active, warehouseId, sort, col]);
 
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
@@ -53,15 +175,18 @@ export default function Products() {
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [historyOf, setHistoryOf] = useState(null);
+  const [adjusting, setAdjusting] = useState(null);
   const [catOpen, setCatOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [infoOf, setInfoOf] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [busyAction, setBusyAction] = useState(false);
 
   /* Số tổng do máy chủ tính trên CẢ bộ lọc. Cộng từ data thì phân trang
      xong thẻ "giá trị tồn kho" chỉ còn cộng 20 dòng, mà sai rất khó thấy. */
   const totals = extra?.totals || null;
+  const whName = meta.warehouses.find((w) => String(w.id) === String(warehouseId))?.name;
 
   const doDelete = async () => {
     setBusyAction(true);
@@ -77,24 +202,38 @@ export default function Products() {
     }
   };
 
+  const saveCost = async (p, v) => {
+    try {
+      await api.put(`/products/${p.id}/cost`, { cost_price: v });
+      toast(`${p.name}: giá vốn ${money(v)}`, 'ok');
+      reload();
+    } catch (e) { toast(e.message, 'bad', 6000); }
+  };
+  const savePrice = async (p, v) => {
+    try {
+      await api.quickPrice(p.id, { price: v });
+      toast(`${p.name}: giá bán ${money(v)}`, 'ok');
+      reload();
+    } catch (e) { toast(e.message, 'bad', 6000); }
+  };
+
   /**
-   * Xuất danh sách hàng hoá ra file mở được bằng Excel.
+   * Xuất danh sách ra file mở được bằng Excel.
    * Truyền onlySelected để chỉ xuất những dòng đã tích; không truyền thì
    * xuất toàn bộ danh sách đang lọc.
    */
   const exportCsv = async (onlySelected = false) => {
-    /* Chọn dòng nào thì xuất dòng đó; không chọn thì kéo hết mọi trang của
-       bộ lọc hiện tại — chứ không phải chỉ trang đang xem. */
     const list = onlySelected
       ? (data || []).filter((p) => selected.has(p.id))
       : await fetchAllPages((pg) => api.products({ ...filters, ...pg }));
     if (!list.length) return;
-    const head = ['Mã hàng', 'Mã vạch', 'Tên hàng', 'Tên phụ', 'Nhóm', 'ĐVT', 'Giá vốn',
-      'Tồn kho', 'Tồn tối thiểu', 'Giá trị tồn', 'Hãng', 'Vị trí'];
+    const head = ['Mã hàng', 'Mã vạch', 'Tên hàng', 'Tên phụ', 'Nhóm', 'ĐVT', 'Quy cách',
+      'Giá vốn', 'Giá bán', 'Tồn kho', 'Tồn tối thiểu', 'Giá trị tồn', 'Hãng', 'Vị trí', 'Tình trạng'];
     const rows = list.map((p) => [
       p.sku, p.barcode || '', p.name, p.alias || '', p.category_name || '', p.base_unit,
-      p.cost_price ?? '', p.total_stock, p.min_stock,
+      p.pack_spec || '', p.cost_price ?? '', p.sale_price ?? '', p.total_stock, p.min_stock,
       Math.round(p.total_stock * (p.cost_price || 0)), p.brand || '', p.location || '',
+      (STATUS_BADGE[p.stock_status] || [])[1] || '',
     ]);
     // Dấu BOM ở đầu để Excel nhận ra UTF-8, không thì tiếng Việt ra ký tự lạ
     const csv = '﻿' + [head, ...rows]
@@ -102,17 +241,23 @@ export default function Products() {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = onlySelected ? `hanghoa-da-chon-${list.length}.csv` : 'hanghoa.csv';
+    a.download = onlySelected ? `hanghoa-da-chon-${list.length}.csv` : 'hanghoa-tonkho.csv';
     a.click();
     URL.revokeObjectURL(url);
     toast(`Đã tải file ${n(list.length)} mặt hàng`, 'ok');
   };
 
+  const STATUS_TABS = [
+    ['', 'Tất cả'], ['in', 'Còn hàng'], ['low', 'Sắp hết'], ['out', 'Hết hàng'], ['over', 'Vượt định mức'],
+  ];
+
   return (
     <>
       <PageHeader
-        title="Hàng hoá"
-        subtitle={totals ? `${n(totals.count)} mặt hàng · giá trị tồn ${money(totals.value)}` : ''}
+        title="Hàng hoá & tồn kho"
+        subtitle={totals
+          ? `${n(totals.count)} mặt hàng · giá trị tồn ${money(totals.value)}${whName ? ` · ${whName}` : ''}`
+          : ''}
         actions={<>
           <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
           <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
@@ -122,8 +267,16 @@ export default function Products() {
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
         </>}
       >
-        <div className="flex flex-wrap gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Tìm tên hàng, mã hàng, mã vạch, hãng..." className="w-full sm:w-80" />
+        {/* Toàn bộ bộ lọc nằm ở đây, không còn hàng ô lọc dưới tên cột */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <SearchInput
+            value={q}
+            onChange={setQ}
+            mode={mode}
+            onMode={setMode}
+            placeholder="Tìm tên hàng, mã hàng, mã vạch, hãng..."
+            className="w-full sm:w-[22rem]"
+          />
           <CategorySelect
             value={categoryId}
             onChange={setCategoryId}
@@ -132,17 +285,42 @@ export default function Products() {
             className="!w-auto"
             ariaLabel="Lọc theo nhóm hàng"
           />
-          <Select value={active} onChange={(e) => setActive(e.target.value)} size="sm" className="!w-auto">
+          {meta.warehouses.length > 1 && (
+            <Select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} size="sm"
+              className="!w-auto" aria-label="Xem tồn của kho nào">
+              <option value="">Tồn tất cả kho</option>
+              {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </Select>
+          )}
+          <Select value={col.brand} onChange={(e) => setColField('brand')(e.target.value)} size="sm"
+            className="!w-auto" aria-label="Lọc theo hãng">
+            <option value="">Mọi hãng</option>
+            {(filterOpts?.brands || []).map((b) => <option key={b} value={b}>{b}</option>)}
+          </Select>
+          <Select value={col.location} onChange={(e) => setColField('location')(e.target.value)} size="sm"
+            className="!w-auto" aria-label="Lọc theo vị trí để hàng">
+            <option value="">Mọi vị trí</option>
+            {(filterOpts?.locations || []).map((l) => <option key={l} value={l}>{l}</option>)}
+          </Select>
+          <Select value={active} onChange={(e) => setActive(e.target.value)} size="sm" className="!w-auto"
+            aria-label="Lọc theo trạng thái kinh doanh">
             <option value="1">Đang kinh doanh</option>
             <option value="0">Ngừng kinh doanh</option>
             <option value="">Tất cả</option>
           </Select>
+          <div className="flex gap-1">
+            {STATUS_TABS.map(([k, l]) => (
+              <button key={k || 'all'} onClick={() => setColField('stock_status')(k)}
+                className={`btn btn-sm ${col.stock_status === k ? 'btn-secondary' : 'btn-outline'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
         </div>
       </PageHeader>
 
       <Page className="space-y-3">
-        {/* Thanh thao tác: chỉ hiện khi có dòng được tích, để lúc bình thường
-            màn hình không bị thêm một hàng nút không dùng tới */}
+        {/* Thanh thao tác: chỉ hiện khi có dòng được tích */}
         {selected.size > 0 && (
           <div className="card p-2.5 flex flex-wrap items-center gap-2 border-accent bg-accent-soft/25"
             role="region" aria-label="Thao tác với hàng đã chọn">
@@ -160,8 +338,7 @@ export default function Products() {
           </div>
         )}
 
-        {/* Chip cho biết đang lọc những gì. Cho xuống dòng chứ không ép
-            vào một hàng rồi cắt cụt — mất nhãn là mất luôn ý nghĩa. */}
+        {/* Chip cho biết đang lọc những gì */}
         {activeFilters.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
             <span className="text-muted-ink">Đang lọc:</span>
@@ -191,8 +368,10 @@ export default function Products() {
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
             <Stat label="Số mặt hàng" value={n(totals.count)} icon={Boxes} />
             <Stat label="Giá trị tồn kho" value={short(totals.value)} icon={Package} />
-            <Stat label="Sắp hết hàng" value={n(totals.low)} tone={totals.low > 0 ? 'warn' : 'default'} />
-            <Stat label="Đã hết hàng" value={n(totals.out)} tone={totals.out > 0 ? 'bad' : 'default'} />
+            <Stat label="Sắp hết hàng" value={n(totals.low)} tone={totals.low > 0 ? 'warn' : 'default'}
+              icon={AlertTriangle} />
+            <Stat label="Đã hết hàng" value={n(totals.out)} tone={totals.out > 0 ? 'bad' : 'default'}
+              icon={PackageX} />
           </div>
         )}
 
@@ -201,8 +380,12 @@ export default function Products() {
             : !data?.length ? (
               <Empty
                 icon={Boxes}
-                title="Chưa có hàng hoá nào"
-                message={q ? `Không tìm thấy hàng khớp "${q}".` : 'Thêm mặt hàng đầu tiên để bắt đầu bán.'}
+                title={q || activeFilters.length ? 'Không có mặt hàng nào khớp' : 'Chưa có hàng hoá nào'}
+                message={q
+                  ? `Không tìm thấy hàng khớp "${q}"${mode === 'exact' ? ' (đang tìm chính xác)' : ''}.`
+                  : activeFilters.length
+                    ? 'Thử bỏ bớt bộ lọc trên thanh công cụ.'
+                    : 'Thêm mặt hàng đầu tiên để bắt đầu bán.'}
                 action={<Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>}
               />
             ) : (
@@ -224,68 +407,35 @@ export default function Products() {
                             : <Square size={15} className="text-muted-ink" aria-hidden="true" />}
                         </button>
                       </th>
-                      <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th><th>ĐVT</th>
-                      <th className="text-right">Giá vốn</th>
-                      <th className="text-right">Tồn kho</th>
-                      <th className="text-right">Tối thiểu</th>
-                      <th className="text-right">Giá trị tồn</th>
-                      <th>Vị trí</th>
+                      <th style={{ width: 44 }}>Ảnh</th>
+                      <SortTh field="sku" label="Mã hàng" sort={sort} onSort={setSort} />
+                      <SortTh field="name" label="Tên hàng" sort={sort} onSort={setSort} />
+                      <SortTh field="category" label="Nhóm" sort={sort} onSort={setSort} />
+                      <SortTh field="unit" label="ĐVT" sort={sort} onSort={setSort} />
+                      {maySeeCost && (
+                        <SortTh field="cost_price" label="Giá vốn" sort={sort} onSort={setSort}
+                          className="text-right" />
+                      )}
+                      <SortTh field="sale_price" label="Giá bán" sort={sort} onSort={setSort}
+                        className="text-right" />
+                      <SortTh field="stock" label="Tồn kho" sort={sort} onSort={setSort}
+                        className="text-right" />
+                      <SortTh field="min_stock" label="Tối thiểu" sort={sort} onSort={setSort}
+                        className="text-right" />
+                      {maySeeCost && (
+                        <SortTh field="value" label="Giá trị tồn" sort={sort} onSort={setSort}
+                          className="text-right" />
+                      )}
+                      <SortTh field="location" label="Vị trí" sort={sort} onSort={setSort} />
+                      <th>Tình trạng</th>
                       <th className="text-right">Thao tác</th>
-                    </tr>
-                    {/* Hàng ô lọc: gõ hoặc chọn ngay dưới tên cột, khỏi phải
-                        nhớ bộ lọc nằm ở đâu trên đầu trang */}
-                    <tr className="filter-row">
-                      <th />
-                      <th>
-                        <Input size="sm" value={col.sku} onChange={(e) => setColField('sku')(e.target.value)}
-                          placeholder="Lọc mã..." aria-label="Lọc theo mã hàng" />
-                      </th>
-                      <th>
-                        <Input size="sm" value={col.name} onChange={(e) => setColField('name')(e.target.value)}
-                          placeholder="Lọc tên hoặc tên phụ..." aria-label="Lọc theo tên hàng" />
-                      </th>
-                      <th>
-                        <CategorySelect size="sm" value={categoryId} onChange={setCategoryId}
-                          categories={meta.categories} placeholder="Mọi nhóm"
-                          ariaLabel="Lọc theo nhóm hàng" />
-                      </th>
-                      <th>
-                        <Input size="sm" value={col.barcode} onChange={(e) => setColField('barcode')(e.target.value)}
-                          placeholder="Mã vạch..." aria-label="Lọc theo mã vạch" />
-                      </th>
-                      <th />
-                      <th>
-                        <Select size="sm" value={col.stock_status}
-                          onChange={(e) => setColField('stock_status')(e.target.value)}
-                          aria-label="Lọc theo tình trạng tồn kho">
-                          <option value="">Mọi tình trạng</option>
-                          <option value="in">Còn hàng</option>
-                          <option value="low">Dưới tồn tối thiểu</option>
-                          <option value="out">Đã hết hàng</option>
-                        </Select>
-                      </th>
-                      <th />
-                      <th>
-                        <Select size="sm" value={col.brand} onChange={(e) => setColField('brand')(e.target.value)}
-                          aria-label="Lọc theo hãng">
-                          <option value="">Mọi hãng</option>
-                          {(filterOpts?.brands || []).map((b) => <option key={b} value={b}>{b}</option>)}
-                        </Select>
-                      </th>
-                      <th>
-                        <Select size="sm" value={col.location} onChange={(e) => setColField('location')(e.target.value)}
-                          aria-label="Lọc theo vị trí để hàng">
-                          <option value="">Mọi vị trí</option>
-                          {(filterOpts?.locations || []).map((l) => <option key={l} value={l}>{l}</option>)}
-                        </Select>
-                      </th>
-                      <th />
                     </tr>
                   </thead>
                   <tbody>
                     {data.map((p) => {
-                      const out = p.track_stock && p.total_stock <= 0;
-                      const low = p.track_stock && p.min_stock > 0 && p.total_stock > 0 && p.total_stock <= p.min_stock;
+                      const [tone, label] = STATUS_BADGE[p.stock_status] || STATUS_BADGE.ok;
+                      const out = p.stock_status === 'out';
+                      const low = p.stock_status === 'low';
                       return (
                         <tr key={p.id} className={`hoverable ${p.active === 0 ? 'opacity-55' : ''} ${selected.has(p.id) ? 'bg-accent-soft/30' : ''}`}>
                           <td>
@@ -301,6 +451,17 @@ export default function Products() {
                               {selected.has(p.id)
                                 ? <CheckSquare size={15} className="text-accent" aria-hidden="true" />
                                 : <Square size={15} className="text-muted-ink" aria-hidden="true" />}
+                            </button>
+                          </td>
+                          <td>
+                            <button type="button" onClick={async () => setInfoOf(await api.product(p.id))}
+                              title={`Xem ảnh và mô tả ${p.name}`} className="cursor-pointer">
+                              <Thumb file={p.image} alt="" size={34} />
+                              {p.image_count > 1 && (
+                                <span className="block text-2xs text-muted-ink text-center leading-none">
+                                  {p.image_count} ảnh
+                                </span>
+                              )}
                             </button>
                           </td>
                           <td className="font-mono text-muted-ink">{p.sku}</td>
@@ -325,20 +486,50 @@ export default function Products() {
                             {p.active === 0 && <Badge tone="mute" className="ml-1">Ngừng KD</Badge>}
                           </td>
                           <td className="text-muted-ink">{p.category_name || '—'}</td>
-                          <td>{p.base_unit}</td>
-                          <td className="num">{money(p.cost_price)}</td>
+                          <td>
+                            {p.base_unit}
+                            {p.pack_spec && (
+                              <div className="text-2xs text-muted-ink">{p.pack_spec}</div>
+                            )}
+                          </td>
+                          {maySeeCost && (
+                            <td className="num">
+                              <QuickMoney value={p.cost_price} label={`giá vốn ${p.name}`}
+                                disabled={!mayManage} onSave={(v) => saveCost(p, v)} />
+                            </td>
+                          )}
+                          <td className="num">
+                            <QuickMoney value={p.sale_price || 0} label={`giá bán ${p.name}`}
+                              disabled={!mayManage} onSave={(v) => savePrice(p, v)} />
+                          </td>
                           <td className="num">
                             {p.track_stock
-                              ? <span className={out ? 'text-danger font-bold' : low ? 'text-warn font-semibold' : ''}>
+                              ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setAdjusting({ ...p, qty: p.total_stock })}
+                                  title={`Kiểm kho nhanh ${p.name}`}
+                                  className={`tabular cursor-pointer rounded px-1 -mx-1 hover:bg-accent-soft/60
+                                              hover:ring-1 hover:ring-accent/40
+                                              ${out ? 'text-danger font-bold' : low ? 'text-warn font-semibold' : ''}`}
+                                >
                                   {fq(p.total_stock)}
-                                </span>
+                                </button>
+                              )
                               : <span className="text-muted-ink text-2xs">Dịch vụ</span>}
                           </td>
                           <td className="num text-muted-ink">{p.min_stock > 0 ? fq(p.min_stock) : '—'}</td>
-                          <td className="num">{money(Math.round(p.total_stock * p.cost_price))}</td>
+                          {maySeeCost && (
+                            <td className="num">{money(p.stock_value ?? Math.round(p.total_stock * p.cost_price))}</td>
+                          )}
                           <td className="text-muted-ink text-2xs">{p.location || '—'}</td>
+                          <td><Badge tone={tone}>{label}</Badge></td>
                           <td>
                             <div className="flex items-center justify-end gap-0.5">
+                              {p.track_stock === 1 && (
+                                <IconButton icon={ClipboardCheck} label={`Kiểm kho nhanh ${p.name}`} size={14}
+                                  onClick={() => setAdjusting({ ...p, qty: p.total_stock })} />
+                              )}
                               <IconButton icon={History} label={`Thẻ kho ${p.name}`} size={14}
                                 onClick={() => setHistoryOf(p)} />
                               <IconButton icon={Pencil} label={`Sửa ${p.name}`} size={14}
@@ -375,6 +566,19 @@ export default function Products() {
       />
 
       <StockHistory product={historyOf} onClose={() => setHistoryOf(null)} />
+
+      {/* Kiểm kho nhanh ngay trên lưới (tài liệu 15, mục 1.2) */}
+      <AdjustModal
+        product={adjusting}
+        warehouseId={warehouseId || defaultWarehouse}
+        warehouses={meta.warehouses}
+        onClose={() => setAdjusting(null)}
+        onDone={() => { setAdjusting(null); reload(); toast('Đã cập nhật tồn kho', 'ok'); }}
+      />
+
+      {infoOf && (
+        <ProductInfoModal product={infoOf} onClose={() => setInfoOf(null)} priceListId={1} />
+      )}
 
       <PrintLabels
         open={labelOpen}

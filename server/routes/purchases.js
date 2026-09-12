@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost,
-  addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams } from '../db.js';
+  all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost, overwriteCost,
+  addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams, resolveUnitId,
+  searchMode } from '../db.js';
 
 const r = Router();
 
@@ -10,12 +11,12 @@ const badRequest = (message, code) => Object.assign(new Error(message), { status
 /* =========================== PHIẾU NHẬP HÀNG ======================== */
 
 r.get('/purchases', (req, res) => {
-  const { q = '', supplier_id, from, to, status, unpaid } = req.query;
+  const { q = '', supplier_id, from, to, status, unpaid, match = 'contains' } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
     where.push('(p.code LIKE ? OR s.name LIKE ? OR p.supplier_invoice LIKE ?)');
-    const like = `%${q.trim()}%`;
+    const like = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
     params.push(like, like, like);
   }
   if (supplier_id) { where.push('p.supplier_id = ?'); params.push(supplier_id); }
@@ -191,21 +192,33 @@ r.post('/purchases', (req, res) => {
 
         /* price là giá SAU chiết khấu — chính nó đi vào giá vốn.
            list_price giữ giá mối báo, để mở lại phiếu còn đối chiếu được. */
-        run(`INSERT INTO purchase_items(purchase_id, product_id, unit_name, factor, qty, price,
-                                        discount, vat_rate, amount, list_price, discount_percent)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [purchaseId, it.product_id, it.unit_name, factor, qty,
+        /* Ghi đè giá vốn: người lập phiếu tích ô ở dòng này, hoặc tích ô
+           "Ghi đè giá vốn toàn bộ" trên thanh tiêu đề (tài liệu 13, mục 1.2) */
+        const overwrite = b.overwrite_cost_all === true || it.overwrite_cost === true
+          || it.overwrite_cost === 1;
+
+        run(`INSERT INTO purchase_items(purchase_id, product_id, unit_id, unit_name, factor, qty, price,
+                                        discount, vat_rate, amount, list_price, discount_percent,
+                                        overwrite_cost)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [purchaseId, it.product_id, resolveUnitId(it.product_id, it.unit_id, it.unit_name),
+            it.unit_name, factor, qty,
             Math.round(Number(it.price) || 0), Math.round(Number(it.discount) || 0),
             Number(it.vat_rate) || 0, it._amount,
             Math.round(Number(it.list_price) || Number(it.price) || 0),
-            Number(it.discount_percent) || 0]);
+            Number(it.discount_percent) || 0,
+            overwrite ? 1 : 0]);
 
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: qtyBase,
           unitCost: unitCostBase, refType: 'purchase', refId: purchaseId, refCode: code,
           note: `Nhập ${qty} ${it.unit_name}`, ts: b.ts || null,
         });
-        updateAvgCost(it.product_id, qtyBase, unitCostBase);
+        /* Tích ô ghi đè thì lấy đúng đơn giá nhập lần này làm giá vốn; không
+           tích thì để luật giá vốn của mặt hàng tự lo (bình quân gia quyền,
+           hoặc giá cố định thì không đụng tới). */
+        if (overwrite) overwriteCost(it.product_id, unitCostBase);
+        else updateAvgCost(it.product_id, qtyBase, unitCostBase);
       }
 
       for (const c of custom) {
@@ -496,9 +509,11 @@ r.post('/purchase-returns', (req, res) => {
       for (const it of items) {
         const factor = Number(it.factor) || 1;
         const qtyBase = Number(it.qty) * factor;
-        run(`INSERT INTO purchase_return_items(return_id, product_id, unit_name, factor, qty, price, amount, purchase_item_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-          [returnId, it.product_id, it.unit_name, factor, Number(it.qty),
+        run(`INSERT INTO purchase_return_items(return_id, product_id, unit_id, unit_name, factor,
+                                               qty, price, amount, purchase_item_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [returnId, it.product_id, resolveUnitId(it.product_id, it.unit_id, it.unit_name),
+            it.unit_name, factor, Number(it.qty),
             Math.round(Number(it.price) || 0), it._amount, it.purchase_item_id || null]);
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -qtyBase,

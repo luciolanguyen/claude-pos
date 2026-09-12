@@ -323,7 +323,7 @@ export default function Dashboard() {
                 <AlertTriangle size={14} className="text-warn" aria-hidden="true" />
                 Cần nhập thêm hàng
               </h2>
-              <Link to="/stock?filter=low" className="text-2xs text-accent font-semibold hover:underline">
+              <Link to="/products?filter=low" className="text-2xs text-accent font-semibold hover:underline">
                 Xem kho
               </Link>
             </div>
@@ -387,7 +387,7 @@ export default function Dashboard() {
               </Link>
 
               <Link
-                to="/stock"
+                to="/products"
                 className="flex items-center gap-2.5 p-2 -m-2 rounded hover:bg-muted transition-colors duration-150"
               >
                 <Package size={17} className="text-info shrink-0" aria-hidden="true" />

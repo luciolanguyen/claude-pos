@@ -1,12 +1,73 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import {
   all, get, run, tx, moveStock, costOf, costMethodOf, pageParams,
-  categoryTree, categoryTreeIds, categoryFilter } from '../db.js';
+  categoryTree, categoryTreeIds, categoryFilter,
+  searchWhere, searchMode, orderBy, PRODUCT_DIR } from '../db.js';
 
 const r = Router();
 
 /** Chỉ nhận 'average' hoặc 'fixed'; còn lại là theo thiết lập chung của tiệm. */
 const normCostMethod = (v) => (v === 'average' || v === 'fixed' ? v : null);
+
+const badRequest = (message, code) => Object.assign(new Error(message), { status: 400, code });
+
+/* ==================================================================== */
+/* Ảnh hàng hoá (tài liệu 13, mục 1.4)                                   */
+/*                                                                      */
+/* Tối đa 4 ảnh một mặt hàng, một ảnh làm ảnh chính. File nằm cạnh CSDL  */
+/* trong data/products/ — nhét base64 vào CSDL thì file sao lưu phình to */
+/* và mỗi lần đọc danh mục là kéo về cả chục MB ảnh.                     */
+/* ==================================================================== */
+
+export const MAX_IMAGES = 4;
+
+const EXT_BY_MIME = {
+  'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+};
+
+function saveImageFile(dataUrl, productId) {
+  const m = String(dataUrl || '').match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+  if (!m) return null;
+  const ext = EXT_BY_MIME[m[1].toLowerCase()];
+  if (!ext) return null;                          // chỉ nhận ảnh, không nhận file khác
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 4 * 1024 * 1024) return null;  // 4MB một ảnh là quá đủ cho ảnh hàng
+  const name = `sp${productId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}${ext}`;
+  fs.writeFileSync(path.join(PRODUCT_DIR, name), buf);
+  return name;
+}
+
+function deleteImageFile(file) {
+  try { fs.unlinkSync(path.join(PRODUCT_DIR, path.basename(String(file)))); }
+  catch { /* ảnh mất rồi thì thôi, dòng trong CSDL vẫn phải xoá */ }
+}
+
+const imagesOf = (productId) =>
+  all('SELECT id, file, is_main, sort_order FROM product_images WHERE product_id = ? ORDER BY is_main DESC, sort_order, id',
+    [productId]);
+
+/** Luôn có đúng một ảnh chính, miễn là mặt hàng còn ảnh. */
+function fixMainImage(productId, preferId = null) {
+  const list = imagesOf(productId);
+  if (!list.length) return;
+  const keep = list.find((x) => x.id === Number(preferId))
+    || list.find((x) => x.is_main) || list[0];
+  run('UPDATE product_images SET is_main = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE product_id = ?',
+    [keep.id, productId]);
+}
+
+/** Trả ảnh về trình duyệt. Chặn đường dẫn lạ để không đọc được file ngoài thư mục. */
+r.get('/product-image/:file', (req, res) => {
+  const name = path.basename(req.params.file);
+  const full = path.join(PRODUCT_DIR, name);
+  if (!full.startsWith(PRODUCT_DIR) || !fs.existsSync(full)) {
+    return res.status(404).json({ error: 'Không tìm thấy ảnh' });
+  }
+  res.sendFile(full);
+});
 
 
 /* ----------------------------- Nhóm hàng ----------------------------- */
@@ -213,7 +274,11 @@ r.put('/warehouses/:id', (req, res) => {
 /** Gắn đơn vị + giá bán vào một sản phẩm. */
 function hydrate(p) {
   if (!p) return null;
-  p.units = all('SELECT * FROM product_units WHERE product_id = ? ORDER BY factor', [p.id]);
+  /* Đơn vị đã ngừng hoạt động vẫn trả về cho bảng khai báo và hoá đơn cũ,
+     kèm cờ used để màn hình biết món nào xoá vĩnh viễn được. */
+  p.units = all('SELECT * FROM product_units WHERE product_id = ? ORDER BY active DESC, factor', [p.id])
+    .map((u) => ({ ...u, used: unitUsage(u.id) > 0 }));
+  p.images = imagesOf(p.id);
   p.prices = all(`
     SELECT pp.*, pl.code AS price_list_code, pu.unit_name
     FROM product_prices pp
@@ -229,33 +294,47 @@ function hydrate(p) {
 }
 
 /* ==================================================================== *
- * DANH SÁCH HÀNG HOÁ
+ * DANH SÁCH HÀNG HOÁ & TỒN KHO (tài liệu 15, mục 1)
  *
- * Phân trang phía máy chủ, không còn chặn cứng 500 dòng như trước — tiệm
- * nhập cả nghìn mã hàng thì 500 dòng là mất hàng mà không ai biết.
+ * Một màn hình duy nhất thay cho hai trang Hàng hoá và Tồn kho tách rời.
+ * Mỗi dòng có đủ thông tin hành chính, tồn kho, giá vốn, giá bán và tình
+ * trạng tồn — sửa nhanh tại chỗ được.
  *
- * Bộ lọc theo từng cột: gõ tên/mã, chọn nhóm - hãng - vị trí, lọc theo
- * tình trạng tồn. Số tổng tính trên CẢ bộ lọc chứ không phải trang đang
- * xem, để thẻ "giá trị tồn kho" không đổi theo số trang.
+ * Phân trang phía máy chủ, không chặn cứng 500 dòng — tiệm nhập cả nghìn
+ * mã hàng thì 500 dòng là mất hàng mà không ai biết.
+ *
+ * Bộ lọc nằm trên thanh công cụ (tài liệu 13, mục 1.1 bỏ hàng ô lọc dưới
+ * tiêu đề cột). Sắp xếp theo cột nào thì gửi sort + dir. Số tổng tính trên
+ * CẢ bộ lọc chứ không phải trang đang xem, để thẻ "giá trị tồn kho" không
+ * đổi theo số trang.
  * ==================================================================== */
+
+/** Cột được phép sắp xếp. Khoá danh sách lại để không ghép chuỗi lạ vào SQL. */
+const PRODUCT_SORTS = {
+  sku: 't.sku', name: 't.name', category: 't.category_name', unit: 't.base_unit',
+  cost_price: 't.cost_price', sale_price: 't.sale_price', stock: 't.total_stock',
+  min_stock: 't.min_stock', value: '(t.total_stock * t.cost_price)', location: 't.location',
+};
 
 r.get('/products', (req, res) => {
   const {
-    q = '', category_id, active, low_stock,
+    q = '', category_id, active, low_stock, warehouse_id,
     name = '', sku = '', barcode = '', brand = '', location = '', stock_status = '',
+    sort = '', dir = 'asc', match = 'contains',
   } = req.query;
   const where = [];
   const params = [];
-  const like = (v) => `%${String(v).trim()}%`;
+  const mode = searchMode(match);
+  const push = (cols, v) => {
+    const c = searchWhere(cols, v, mode);
+    if (c.sql) { where.push(c.sql); params.push(...c.params); }
+  };
 
-  if (q.trim()) {
-    where.push('(p.name LIKE ? OR p.alias LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?)');
-    params.push(like(q), like(q), like(q), like(q), like(q));
-  }
-  /* Lọc riêng từng cột — gõ ở ô ngay dưới tên cột */
-  if (name.trim()) { where.push('(p.name LIKE ? OR p.alias LIKE ?)'); params.push(like(name), like(name)); }
-  if (sku.trim()) { where.push('p.sku LIKE ?'); params.push(like(sku)); }
-  if (barcode.trim()) { where.push('p.barcode LIKE ?'); params.push(like(barcode)); }
+  push(['p.name', 'p.alias', 'p.sku', 'p.barcode', 'p.brand'], q);
+  /* Bộ lọc theo từng cột vẫn nhận được từ đường dẫn cũ và từ thanh công cụ */
+  push(['p.name', 'p.alias'], name);
+  push('p.sku', sku);
+  push('p.barcode', barcode);
   if (brand.trim()) { where.push('p.brand = ?'); params.push(brand.trim()); }
   if (location.trim()) { where.push('p.location = ?'); params.push(location.trim()); }
   /* Lấy cả nhóm con cháu, không chỉ đúng nhóm được chọn */
@@ -266,10 +345,28 @@ r.get('/products', (req, res) => {
   if (active !== undefined && active !== '') { where.push('p.active = ?'); params.push(Number(active)); }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
+  /* Chọn một kho thì cột tồn là tồn của kho đó; không chọn thì cộng mọi kho */
+  const wid = Number(warehouse_id) || 0;
+  const stockExpr = wid
+    ? 'COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0)'
+    : 'COALESCE((SELECT SUM(qty) FROM stock s WHERE s.product_id = p.id), 0)';
+  const head = wid ? [wid] : [];
+
   /* Tồn kho là tổng của nhiều kho nên phải lọc ở lớp ngoài, sau khi cộng */
   const base = `
     SELECT p.*, c.name AS category_name,
-           COALESCE((SELECT SUM(qty) FROM stock s WHERE s.product_id = p.id), 0) AS total_stock
+           ${stockExpr} AS total_stock,
+           (SELECT file FROM product_images pi WHERE pi.product_id = p.id
+             ORDER BY pi.is_main DESC, pi.sort_order, pi.id LIMIT 1) AS image,
+           (SELECT COUNT(*) FROM product_images pi WHERE pi.product_id = p.id) AS image_count,
+           /* Giá bán của đơn vị bán chính theo bảng giá mặc định — để sửa
+              nhanh ngay trên lưới, khỏi mở cả thẻ hàng hoá (tài liệu 15) */
+           (SELECT pp.price FROM product_prices pp
+             WHERE pp.product_id = p.id
+               AND pp.unit_id = COALESCE(p.sell_unit_id, (SELECT id FROM product_units u
+                                  WHERE u.product_id = p.id AND u.factor = 1 LIMIT 1))
+             ORDER BY pp.price_list_id LIMIT 1) AS sale_price,
+           COALESCE(p.pack_spec, '') AS pack_spec
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
     ${w}`;
 
@@ -279,6 +376,7 @@ r.get('/products', (req, res) => {
   }
   if (stock_status === 'out') outer.push('t.track_stock = 1 AND t.total_stock <= 0');
   if (stock_status === 'in') outer.push('t.track_stock = 1 AND t.total_stock > 0');
+  if (stock_status === 'over') outer.push('t.track_stock = 1 AND t.max_stock > 0 AND t.total_stock > t.max_stock');
   const ow = outer.length ? 'WHERE ' + outer.join(' AND ') : '';
   const wrapped = `SELECT * FROM (${base}) t ${ow}`;
 
@@ -290,10 +388,20 @@ r.get('/products', (req, res) => {
                               AND t.total_stock > 0 THEN 1 ELSE 0 END), 0) AS low,
            COALESCE(SUM(CASE WHEN t.track_stock = 1 AND t.total_stock <= 0
                              THEN 1 ELSE 0 END), 0) AS out
-    FROM (${wrapped}) t`, params);
+    FROM (${wrapped}) t`, [...head, ...params]);
 
-  const rows = all(`${wrapped} ORDER BY t.name LIMIT ${size} OFFSET ${offset}`, params);
-  res.json({ rows, total: agg.count, page, page_size: size, totals: agg });
+  const order = orderBy(PRODUCT_SORTS, sort, dir, 't.name ASC');
+  const rows = all(`${wrapped} ORDER BY ${order} LIMIT ${size} OFFSET ${offset}`,
+    [...head, ...params]);
+  /* Tình trạng tồn tính một lần ở đây, để mọi màn hình dùng chung một luật */
+  for (const row of rows) {
+    row.stock_status = !row.track_stock ? 'service'
+      : row.total_stock <= 0 ? 'out'
+        : (row.min_stock > 0 && row.total_stock <= row.min_stock) ? 'low'
+          : (row.max_stock > 0 && row.total_stock > row.max_stock) ? 'over' : 'ok';
+    row.stock_value = Math.round(row.total_stock * row.cost_price);
+  }
+  res.json({ rows, total: agg.count, page, page_size: size, totals: agg, warehouse_id: wid || null });
 });
 
 /** Các giá trị có thật của hãng và vị trí, để đổ vào ô lọc. */
@@ -312,7 +420,8 @@ r.get('/products/pos', (req, res) => {
   const products = all(`
     SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.cost_price, p.vat_rate,
            p.track_stock, p.min_stock, p.category_id, p.brand, p.location, p.is_manufactured,
-           p.warranty_months, p.warranty_note,
+           p.warranty_months, p.warranty_note, p.description, p.pack_spec,
+           p.sell_unit_id, p.buy_unit_id,
            c.name AS category_name,
            /* Giá nhập gần nhất quy về đơn vị cơ bản — cho quản lý thấy biên lãi
               thật khi sửa giá (tài liệu 06). Người không có quyền giá vốn thì
@@ -325,7 +434,9 @@ r.get('/products/pos', (req, res) => {
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
     WHERE p.active = 1 ORDER BY p.name`, [warehouseId]);
 
-  const units = all('SELECT * FROM product_units ORDER BY factor');
+  /* Đơn vị ĐÃ NGỪNG HOẠT ĐỘNG không hiện ở màn hình bán hàng: không cho bán
+     mới nữa, nhưng hoá đơn cũ vẫn đọc được đơn vị đó (tài liệu 13, mục 1.3) */
+  const units = all('SELECT * FROM product_units WHERE active = 1 ORDER BY factor');
   const prices = all('SELECT * FROM product_prices');
   const byProduct = new Map();
   for (const u of units) {
@@ -338,8 +449,89 @@ r.get('/products/pos', (req, res) => {
     const u = unitIndex.get(pr.unit_id);
     if (u) u.prices[pr.price_list_id] = pr.price;
   }
-  for (const p of products) p.units = byProduct.get(p.id) || [];
+
+  /* Ảnh: ảnh chính để vẽ ô hàng, cả bộ để mở hộp xem chi tiết */
+  const imgs = all('SELECT product_id, id, file, is_main FROM product_images ORDER BY is_main DESC, sort_order, id');
+  const imgByProduct = new Map();
+  for (const im of imgs) {
+    if (!imgByProduct.has(im.product_id)) imgByProduct.set(im.product_id, []);
+    imgByProduct.get(im.product_id).push(im);
+  }
+
+  /* Hàng / nhóm hàng ghim đầu lưới theo mùa (tài liệu 14, mục 2). Số nhỏ hơn
+     là ưu tiên cao hơn; món không ghim để null để máy khách khỏi đoán. */
+  const featured = featuredRanks();
+
+  for (const p of products) {
+    p.units = byProduct.get(p.id) || [];
+    p.images = imgByProduct.get(p.id) || [];
+    p.image = p.images[0]?.file || null;
+    const rank = featured.product.get(p.id);
+    const catRank = featured.category.get(p.category_id);
+    const best = [rank, catRank].filter((x) => x !== undefined);
+    p.featured_rank = best.length ? Math.min(...best) : null;
+  }
   res.json(products);
+});
+
+/* ==================================================================== *
+ * HÀNG / NHÓM HÀNG GHIM ĐẦU LƯỚI POS (tài liệu 14, mục 2)
+ *
+ * Mùa nào bán chạy món nào thì ghim món đó lên đầu, thu ngân khỏi gõ tìm.
+ * Ghim được cả một NHÓM hàng: mùa mưa ghim nhóm "Đèn pin & pin", cả nhóm
+ * nhảy lên đầu mà không phải ghim từng mã.
+ * ==================================================================== */
+
+/** Thứ tự ưu tiên theo mã hàng và theo nhóm hàng (kèm nhóm con cháu). */
+function featuredRanks() {
+  const rows = all('SELECT kind, ref_id, sort_order FROM pos_featured ORDER BY sort_order, id');
+  const product = new Map();
+  const category = new Map();
+  rows.forEach((x, i) => {
+    const rank = Number(x.sort_order) || i;
+    if (x.kind === 'product') {
+      if (!product.has(x.ref_id)) product.set(x.ref_id, rank);
+    } else if (x.kind === 'category') {
+      /* Ghim nhóm cha thì cả nhánh con cháu ăn theo */
+      for (const cid of [x.ref_id, ...categoryTreeIds(x.ref_id)]) {
+        if (!category.has(cid)) category.set(cid, rank);
+      }
+    }
+  });
+  return { product, category };
+}
+
+r.get('/pos-featured', (req, res) => {
+  res.json(all(`
+    SELECT f.*,
+           CASE WHEN f.kind = 'product' THEN p.name ELSE c.name END AS label,
+           p.sku, p.active AS product_active
+    FROM pos_featured f
+    LEFT JOIN products p ON f.kind = 'product' AND p.id = f.ref_id
+    LEFT JOIN categories c ON f.kind = 'category' AND c.id = f.ref_id
+    ORDER BY f.sort_order, f.id`));
+});
+
+/** Lưu lại CẢ danh sách theo đúng thứ tự màn hình đang hiện. */
+r.put('/pos-featured', (req, res) => {
+  const list = Array.isArray(req.body?.items) ? req.body.items : [];
+  try {
+    tx(() => {
+      run('DELETE FROM pos_featured');
+      let i = 0;
+      for (const it of list) {
+        const kind = it.kind === 'category' ? 'category' : 'product';
+        const refId = Number(it.ref_id) || 0;
+        if (!refId) continue;
+        run(`INSERT INTO pos_featured(kind, ref_id, sort_order, note) VALUES(?, ?, ?, ?)
+             ON CONFLICT(kind, ref_id) DO UPDATE SET sort_order = excluded.sort_order`,
+          [kind, refId, i++, it.note || null]);
+      }
+    });
+    res.json({ ok: true, count: get('SELECT COUNT(*) AS n FROM pos_featured').n });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
 });
 
 r.get('/products/:id', (req, res) => {
@@ -409,27 +601,76 @@ r.get('/products/:id/purchase-history', (req, res) => {
   });
 });
 
+/* ==================================================================== *
+ * ĐƠN VỊ TÍNH (tài liệu 13 mục 1.3, tài liệu 15 mục 2.1)
+ *
+ * Mỗi đơn vị có MÃ RIÊNG. Chứng từ nối vào mã đó, nên đổi tên đơn vị không
+ * làm hoá đơn cũ đọc sai — hoá đơn cũ còn giữ thêm bản chụp tên và hệ số
+ * tại thời điểm bán, nên vẫn in lại đúng y như lúc xuất.
+ *
+ * Hệ số quy đổi bắt buộc là SỐ NGUYÊN DƯƠNG. Cho gõ 0.5 thì tồn kho lẻ ra
+ * số thập phân, và không ai đếm được nửa cái trong kho.
+ * ==================================================================== */
+
+/** Số chứng từ đã dùng một đơn vị. Còn dùng thì không xoá vĩnh viễn được. */
+function unitUsage(unitId) {
+  const id = Number(unitId) || 0;
+  if (!id) return 0;
+  return get(`
+    SELECT (SELECT COUNT(*) FROM sale_items WHERE unit_id = ?)
+         + (SELECT COUNT(*) FROM purchase_items WHERE unit_id = ?)
+         + (SELECT COUNT(*) FROM sale_order_items WHERE unit_id = ?)
+         + (SELECT COUNT(*) FROM sale_return_items WHERE unit_id = ?)
+         + (SELECT COUNT(*) FROM purchase_return_items WHERE unit_id = ?) AS n`,
+  [id, id, id, id, id]).n;
+}
+
+/** Hệ số quy đổi: số nguyên dương lớn hơn 0, không nhận số âm hay thập phân. */
+function checkFactor(value, unitName) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || !Number.isInteger(v) || v <= 0) {
+    throw badRequest(
+      `Hệ số quy đổi của "${unitName || 'đơn vị'}" phải là số nguyên dương lớn hơn 0`
+      + ' (ví dụ 12, 100). Không nhận số âm hay số thập phân.',
+      'BAD_FACTOR');
+  }
+  return v;
+}
+
 function saveUnitsAndPrices(productId, units = [], baseUnit) {
   const keepIds = [];
   let hasBase = false;
   for (const u of units) {
-    const factor = Number(u.factor) || 1;
+    const name = String(u.unit_name ?? '').trim();
+    if (!name) throw badRequest('Mỗi đơn vị tính phải có tên');
+    const factor = checkFactor(u.factor, name);
     const isBase = factor === 1;
     if (isBase) hasBase = true;
-    const existing = get('SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?',
-      [productId, u.unit_name]);
+    /* Có mã thì sửa đúng dòng đó (đổi tên vẫn là cùng một đơn vị). Không có
+       mã thì mới tra theo tên — trường hợp màn hình cũ hoặc phiếu tạm cũ. */
+    const existing = u.id
+      ? get('SELECT id FROM product_units WHERE id = ? AND product_id = ?', [Number(u.id), productId])
+      : get('SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?', [productId, name]);
+    const refUnit = Number(u.ref_unit_id) || null;
+    const refQty = Number(u.ref_qty) > 0 ? Number(u.ref_qty) : null;
     let unitId;
     if (existing) {
-      run('UPDATE product_units SET factor = ?, is_base = ?, barcode = ? WHERE id = ?',
-        [factor, isBase ? 1 : 0, u.barcode || null, existing.id]);
+      run(`UPDATE product_units SET unit_name = ?, factor = ?, is_base = ?, barcode = ?,
+             active = ?, ref_unit_id = ?, ref_qty = ? WHERE id = ?`,
+        [name, factor, isBase ? 1 : 0, u.barcode || null,
+          u.active === 0 ? 0 : 1, refUnit, refQty, existing.id]);
       unitId = existing.id;
     } else {
       unitId = Number(run(
-        'INSERT INTO product_units(product_id, unit_name, factor, is_base, barcode) VALUES(?, ?, ?, ?, ?)',
-        [productId, u.unit_name, factor, isBase ? 1 : 0, u.barcode || null]
+        `INSERT INTO product_units(product_id, unit_name, factor, is_base, barcode,
+                                   active, ref_unit_id, ref_qty)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [productId, name, factor, isBase ? 1 : 0, u.barcode || null,
+          u.active === 0 ? 0 : 1, refUnit, refQty]
       ).lastInsertRowid);
     }
     keepIds.push(unitId);
+    u._id = unitId;
     for (const [plId, price] of Object.entries(u.prices || {})) {
       run(`INSERT INTO product_prices(product_id, price_list_id, unit_id, price) VALUES(?, ?, ?, ?)
            ON CONFLICT(product_id, price_list_id, unit_id) DO UPDATE SET price = excluded.price`,
@@ -444,15 +685,162 @@ function saveUnitsAndPrices(productId, units = [], baseUnit) {
     ).lastInsertRowid);
     if (unitId) keepIds.push(unitId);
   }
-  if (keepIds.length) {
-    run(`DELETE FROM product_units WHERE product_id = ? AND id NOT IN (${keepIds.map(() => '?').join(',')})`,
-      [productId, ...keepIds]);
+
+  /* Đơn vị bị bỏ khỏi bảng khai báo: từng bán hoặc từng nhập thì KHÔNG xoá
+     khỏi CSDL, chỉ chuyển sang ngừng hoạt động — xoá là hoá đơn cũ mất đơn
+     vị, đổi trả hàng cũ không biết quy đổi ra sao. */
+  const dropped = all(
+    `SELECT id, unit_name FROM product_units WHERE product_id = ?
+       ${keepIds.length ? `AND id NOT IN (${keepIds.map(() => '?').join(',')})` : ''}`,
+    [productId, ...keepIds]);
+  for (const d of dropped) {
+    if (unitUsage(d.id) > 0) run('UPDATE product_units SET active = 0 WHERE id = ?', [d.id]);
+    else run('DELETE FROM product_units WHERE id = ?', [d.id]);
   }
 }
+
+/**
+ * Hai đơn vị mặc định của mặt hàng: bán thì nhảy đơn vị nào vào giỏ POS,
+ * nhập thì nhảy đơn vị nào vào phiếu nhập. Khai sai (đơn vị của mặt hàng
+ * khác, hoặc đơn vị đã ngừng) thì rơi về đơn vị cơ bản.
+ */
+function saveDefaultUnits(productId, body, units) {
+  const pick = (v, key) => {
+    /* Biểu mẫu gửi mã đơn vị cũ, hoặc gửi vị trí dòng trong bảng vừa lưu */
+    const byIndex = Number.isInteger(Number(body[`${key}_index`]))
+      ? units?.[Number(body[`${key}_index`])]?._id : null;
+    const id = Number(v) || byIndex || 0;
+    const row = id
+      ? get('SELECT id FROM product_units WHERE id = ? AND product_id = ? AND active = 1', [id, productId])
+      : null;
+    return row?.id
+      || get('SELECT id FROM product_units WHERE product_id = ? AND factor = 1 AND active = 1',
+        [productId])?.id
+      || null;
+  };
+  run('UPDATE products SET sell_unit_id = ?, buy_unit_id = ? WHERE id = ?',
+    [pick(body.sell_unit_id, 'sell_unit'), pick(body.buy_unit_id, 'buy_unit'), productId]);
+}
+
+/**
+ * Xoá một đơn vị tính (tài liệu 13, mục 1.3).
+ * Chưa phát sinh chứng từ thì xoá vĩnh viễn; đã từng nằm trong hoá đơn thì
+ * chuyển sang [Ngừng hoạt động] và ẩn khỏi màn hình bán hàng.
+ */
+r.delete('/products/:id/units/:unitId', (req, res) => {
+  const pid = Number(req.params.id);
+  const u = get('SELECT * FROM product_units WHERE id = ? AND product_id = ?',
+    [Number(req.params.unitId), pid]);
+  if (!u) return res.status(404).json({ error: 'Không tìm thấy đơn vị tính' });
+  if (u.factor === 1) {
+    return res.status(400).json({
+      error: 'Không xoá được đơn vị cơ bản. Mặt hàng luôn phải có một đơn vị hệ số 1.',
+      code: 'BASE_UNIT' });
+  }
+  const used = unitUsage(u.id);
+  tx(() => {
+    if (used > 0) {
+      run('UPDATE product_units SET active = 0 WHERE id = ?', [u.id]);
+    } else {
+      run('DELETE FROM product_prices WHERE unit_id = ?', [u.id]);
+      run('DELETE FROM product_units WHERE id = ?', [u.id]);
+    }
+    /* Đơn vị vừa bỏ đang là đơn vị bán / mua chính thì trả về đơn vị cơ bản */
+    const base = get('SELECT id FROM product_units WHERE product_id = ? AND factor = 1', [pid])?.id || null;
+    run(`UPDATE products
+           SET sell_unit_id = CASE WHEN sell_unit_id = ? THEN ? ELSE sell_unit_id END,
+               buy_unit_id  = CASE WHEN buy_unit_id  = ? THEN ? ELSE buy_unit_id  END
+         WHERE id = ?`, [u.id, base, u.id, base, pid]);
+  });
+  res.json({
+    ok: true, archived: used > 0, used,
+    message: used > 0
+      ? `Đơn vị "${u.unit_name}" đã nằm trong ${used} chứng từ nên được chuyển sang `
+        + 'Ngừng hoạt động: không bán mới được nữa, nhưng hoá đơn cũ vẫn đọc đúng.'
+      : `Đã xoá hẳn đơn vị "${u.unit_name}".`,
+  });
+});
+
+/** Mở lại một đơn vị đã ngừng hoạt động. */
+r.put('/products/:id/units/:unitId/restore', (req, res) => {
+  const u = get('SELECT * FROM product_units WHERE id = ? AND product_id = ?',
+    [Number(req.params.unitId), Number(req.params.id)]);
+  if (!u) return res.status(404).json({ error: 'Không tìm thấy đơn vị tính' });
+  run('UPDATE product_units SET active = 1 WHERE id = ?', [u.id]);
+  res.json({ ok: true });
+});
+
+/* ==================================================================== *
+ * ẢNH HÀNG HOÁ
+ * ==================================================================== */
+
+r.post('/products/:id/images', (req, res) => {
+  const pid = Number(req.params.id);
+  if (!get('SELECT id FROM products WHERE id = ?', [pid])) {
+    return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+  }
+  const incoming = Array.isArray(req.body?.images) ? req.body.images : [];
+  const have = get('SELECT COUNT(*) AS n FROM product_images WHERE product_id = ?', [pid]).n;
+  const room = MAX_IMAGES - have;
+  if (room <= 0) {
+    return res.status(400).json({
+      error: `Mỗi mặt hàng lưu tối đa ${MAX_IMAGES} ảnh. Xoá một ảnh cũ trước khi thêm ảnh mới.`,
+      code: 'IMAGE_LIMIT' });
+  }
+  let added = 0;
+  let skipped = 0;
+  tx(() => {
+    for (const src of incoming.slice(0, room)) {
+      const file = saveImageFile(src, pid);
+      if (!file) { skipped++; continue; }
+      run('INSERT INTO product_images(product_id, file, is_main, sort_order) VALUES(?, ?, 0, ?)',
+        [pid, file, have + added]);
+      added++;
+    }
+    fixMainImage(pid);
+  });
+  res.json({
+    ok: true, added, skipped, images: imagesOf(pid),
+    over_limit: incoming.length > room,
+  });
+});
+
+r.put('/products/:id/images/:imgId/main', (req, res) => {
+  const pid = Number(req.params.id);
+  const img = get('SELECT * FROM product_images WHERE id = ? AND product_id = ?',
+    [Number(req.params.imgId), pid]);
+  if (!img) return res.status(404).json({ error: 'Không tìm thấy ảnh' });
+  fixMainImage(pid, img.id);
+  res.json({ ok: true, images: imagesOf(pid) });
+});
+
+r.delete('/products/:id/images/:imgId', (req, res) => {
+  const pid = Number(req.params.id);
+  const img = get('SELECT * FROM product_images WHERE id = ? AND product_id = ?',
+    [Number(req.params.imgId), pid]);
+  if (!img) return res.status(404).json({ error: 'Không tìm thấy ảnh' });
+  run('DELETE FROM product_images WHERE id = ?', [img.id]);
+  deleteImageFile(img.file);
+  fixMainImage(pid);
+  res.json({ ok: true, images: imagesOf(pid) });
+});
 
 r.post('/products', (req, res) => {
   const b = req.body;
   if (!b.name?.trim()) return res.status(400).json({ error: 'Thiếu tên sản phẩm' });
+  /* Giá vốn ban đầu là con số BẮT BUỘC KHAI (tài liệu 13, mục 1.2): từ nay
+     phiếu nhập không tự chốt giá vốn giúp nữa, nên không khai ở đây thì
+     mặt hàng chạy với giá vốn 0 và mọi báo cáo lãi lỗ đều sai. Hàng dịch vụ
+     khai 0 vẫn được — nhưng phải tự tay khai 0. */
+  const costGiven = b.cost_price !== undefined && b.cost_price !== null && b.cost_price !== '';
+  if (!costGiven) {
+    return res.status(400).json({
+      error: 'Bắt buộc khai giá vốn ban đầu. Hàng dịch vụ / tiền công thì ghi 0.',
+      code: 'COST_REQUIRED' });
+  }
+  if (!(Number(b.cost_price) >= 0)) {
+    return res.status(400).json({ error: 'Giá vốn ban đầu không được là số âm', code: 'COST_REQUIRED' });
+  }
   let sku = b.sku?.trim();
   if (!sku) {
     const n = get('SELECT COUNT(*) AS n FROM products').n + 1;
@@ -466,19 +854,29 @@ r.post('/products', (req, res) => {
       const info = run(`
         INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
                              track_stock, min_stock, max_stock, brand, location, note, active,
-                             cost_method, cost_fixed, warranty_months, warranty_note)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             cost_method, cost_fixed, warranty_months, warranty_note,
+                             description, pack_spec)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
           normCostMethod(b.cost_method),
-          // Khai báo sẵn giá vốn lúc tạo hàng thì coi như đã chốt luôn
-          Math.round(b.cost_price || 0) > 0 ? 1 : 0,
+          /* Giá vốn khai lúc tạo hàng là con số đã chốt: phiếu nhập chỉ ghi đè
+             khi người lập phiếu tự tích ô "Ghi đè giá vốn" (tài liệu 13) */
+          1,
           Math.max(0, Math.round(Number(b.warranty_months) || 0)),
-          String(b.warranty_note ?? '').trim() || null]);
+          String(b.warranty_note ?? '').trim() || null,
+          String(b.description ?? '').trim() || null,
+          String(b.pack_spec ?? '').trim() || null]);
       const pid = Number(info.lastInsertRowid);
       saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái');
+      saveDefaultUnits(pid, b, b.units);
+      for (const src of (Array.isArray(b.images) ? b.images : []).slice(0, MAX_IMAGES)) {
+        const file = saveImageFile(src, pid);
+        if (file) run('INSERT INTO product_images(product_id, file, is_main, sort_order) VALUES(?, ?, 0, 0)', [pid, file]);
+      }
+      fixMainImage(pid);
 
       // Tồn kho đầu kỳ (nếu khai báo)
       const openingQty = Number(b.opening_qty) || 0;
@@ -495,7 +893,7 @@ r.post('/products', (req, res) => {
     });
     res.json(hydrate(get('SELECT * FROM products WHERE id = ?', [id])));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
 });
 
@@ -511,7 +909,9 @@ r.put('/products/:id', (req, res) => {
              vat_rate = ?, track_stock = ?, min_stock = ?, max_stock = ?,
              brand = ?, location = ?, note = ?, active = ?, cost_method = ?,
              warranty_months = COALESCE(?, warranty_months),
-             warranty_note = CASE WHEN ? = 1 THEN ? ELSE warranty_note END
+             warranty_note = CASE WHEN ? = 1 THEN ? ELSE warranty_note END,
+             description = CASE WHEN ? = 1 THEN ? ELSE description END,
+             pack_spec = CASE WHEN ? = 1 THEN ? ELSE pack_spec END
            WHERE id = ?`,
         [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
@@ -521,12 +921,18 @@ r.put('/products/:id', (req, res) => {
           /* Màn hình cũ không gửi hai ô bảo hành thì giữ nguyên giá trị đang có */
           b.warranty_months === undefined ? null : Math.max(0, Math.round(Number(b.warranty_months) || 0)),
           b.warranty_note === undefined ? 0 : 1, String(b.warranty_note ?? '').trim() || null,
+          b.description === undefined ? 0 : 1, String(b.description ?? '').trim() || null,
+          b.pack_spec === undefined ? 0 : 1, String(b.pack_spec ?? '').trim() || null,
           id]);
       saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái');
+      if (b.sell_unit_id !== undefined || b.buy_unit_id !== undefined
+        || b.sell_unit_index !== undefined || b.buy_unit_index !== undefined) {
+        saveDefaultUnits(Number(id), b, b.units);
+      }
     });
     res.json(hydrate(get('SELECT * FROM products WHERE id = ?', [id])));
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
 });
 
@@ -554,6 +960,34 @@ r.put('/products/:id/cost', (req, res) => {
   run('UPDATE products SET cost_price = ?, cost_fixed = 1 WHERE id = ?',
     [Math.round(Number(req.body.cost_price) || 0), id]);
   res.json({ ok: true, cost_price: costOf(id), method: costMethodOf(p) });
+});
+
+/**
+ * Sửa nhanh giá bán ngay trên lưới Hàng hoá & Tồn kho (tài liệu 15, mục 1.2).
+ * Không gửi bảng giá thì sửa bảng giá đầu tiên (giá lẻ); không gửi đơn vị thì
+ * sửa giá của ĐƠN VỊ BÁN CHÍNH — đúng con số thu ngân nhìn thấy ngoài POS.
+ */
+r.put('/products/:id/price', (req, res) => {
+  const id = Number(req.params.id);
+  if (!get('SELECT id FROM products WHERE id = ?', [id])) {
+    return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+  }
+  const price = Math.round(Number(req.body.price) || 0);
+  if (price < 0) return res.status(400).json({ error: 'Giá bán không được là số âm' });
+
+  const unitId = Number(req.body.unit_id)
+    || get(`SELECT COALESCE(p.sell_unit_id,
+                   (SELECT id FROM product_units u WHERE u.product_id = p.id AND u.factor = 1 LIMIT 1)) AS id
+            FROM products p WHERE p.id = ?`, [id])?.id;
+  if (!unitId) return res.status(400).json({ error: 'Mặt hàng chưa có đơn vị tính nào' });
+  const plId = Number(req.body.price_list_id)
+    || get('SELECT id FROM price_lists ORDER BY id LIMIT 1')?.id;
+  if (!plId) return res.status(400).json({ error: 'Chưa thiết lập bảng giá' });
+
+  run(`INSERT INTO product_prices(product_id, price_list_id, unit_id, price) VALUES(?, ?, ?, ?)
+       ON CONFLICT(product_id, price_list_id, unit_id) DO UPDATE SET price = excluded.price`,
+    [id, plId, unitId, price]);
+  res.json({ ok: true, price, unit_id: unitId, price_list_id: plId });
 });
 
 /* -------------------------------------------------------------------- */

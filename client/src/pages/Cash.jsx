@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/store';
-import { money, n, short, datetime, date, range, RANGES, CASH_LABEL, match } from '../lib/format';
+import { money, n, short, datetime, date, range, RANGES, CASH_LABEL, match, matchCustomer } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
   Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo, Pager,
@@ -433,7 +433,7 @@ function CashTxForm({ direction, categories, accounts, onClose, onSaved }) {
             value={partnerId}
             onChange={setPartnerId}
             placeholder="Chọn khách hàng..."
-            filter={(c, q) => match(c.name, q) || (c.phone || '').includes(q)}
+            filter={matchCustomer}
             render={(c) => ({ label: c.name, sub: c.phone })}
           />
         )}

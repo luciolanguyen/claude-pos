@@ -803,3 +803,31 @@ CREATE TABLE IF NOT EXISTS warranty_fees (
 );
 CREATE INDEX IF NOT EXISTS idx_wfee_ticket ON warranty_fees(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_wt_sale ON warranty_tickets(sale_id);
+
+-- ============================================================
+-- MO RONG v15: anh hang hoa, hang uu tien dau luoi POS, bao gia
+--              cua tung NCC cho tung ma hang
+-- ============================================================
+
+-- Toi da 4 anh moi mat hang, 1 anh chinh hien ngoai danh muc va luoi POS.
+-- File anh nam trong data/products/, khong nhet base64 vao CSDL.
+CREATE TABLE IF NOT EXISTS product_images (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  file       TEXT NOT NULL,
+  is_main    INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_pimg_product ON product_images(product_id);
+
+-- Hang / nhom hang ghim len dau luoi POS theo mua ban. Thu tu do chu tiem
+-- sap; kind = 'product' hoac 'category'.
+CREATE TABLE IF NOT EXISTS pos_featured (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,
+  ref_id     INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  note       TEXT,
+  UNIQUE(kind, ref_id)
+);

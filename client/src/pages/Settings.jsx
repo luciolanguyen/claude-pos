@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
-  ShieldCheck,
+  ShieldCheck, Star, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -12,11 +12,15 @@ import {
   Badge, Confirm, Tabs, MoneyInput,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { CategorySelect } from '../components/CategoryTree';
+import { ProductPicker } from '../components/ProductPicker';
+import { ErrorBox } from '../components/ui';
 
 const TABS = [
   { key: 'store', label: 'Thông tin cửa hàng' },
   { key: 'invoice', label: 'Hoá đơn & in ấn' },
   { key: 'pos', label: 'Màn hình bán hàng' },
+  { key: 'featured', label: 'Hàng ưu tiên đầu lưới' },
   { key: 'prices', label: 'Bảng giá' },
   { key: 'warehouses', label: 'Kho hàng' },
   { key: 'carriers', label: 'Vận chuyển' },
@@ -41,6 +45,7 @@ export default function Settings() {
         {tab === 'store' && <StoreSettings />}
         {tab === 'invoice' && <InvoiceSettings />}
         {tab === 'pos' && <PosSettings />}
+      {tab === 'featured' && <FeaturedSettings />}
         {tab === 'prices' && <PriceLists />}
         {tab === 'warehouses' && <Warehouses />}
         {tab === 'carriers' && <Carriers />}
@@ -148,18 +153,20 @@ function StoreSettings() {
 function InvoiceSettings() {
   const { settings, saveSettings, toast } = useApp();
   const [form, setForm] = useState(settings?.invoice || {});
+  const [printForm, setPrintForm] = useState(settings?.print || {});
   const [vatEnabled, setVatEnabled] = useState(settings?.vat_enabled !== false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setForm(settings?.invoice || {});
+    setPrintForm(settings?.print || {});
     setVatEnabled(settings?.vat_enabled !== false);
   }, [settings]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await saveSettings({ invoice: form, vat_enabled: vatEnabled });
+      await saveSettings({ invoice: form, print: printForm, vat_enabled: vatEnabled });
       toast('Đã lưu thiết lập hoá đơn', 'ok');
     } catch (e) {
       toast(e.message, 'bad');
@@ -242,6 +249,30 @@ function InvoiceSettings() {
         <Check2 k="show_cost" label="Hiện giá vốn và lãi trên bản in"
           hint="Chỉ bật khi in bản lưu nội bộ, đừng đưa cho khách" />
         <Check2 k="auto_print" label="Tự mở hộp thoại in ngay sau khi thanh toán" />
+      </div>
+
+      {/* Phiếu thu nợ khổ K80 (tài liệu 14, mục 1.2) */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Phiếu thu nợ khổ K80</h2>
+        <p className="text-2xs text-muted-ink mb-2">
+          Phiếu thu nợ mặc định in khổ K80 trên máy in nhiệt ngay tại quầy.
+          Lúc in vẫn đổi được sang A5 / A4 và bật tắt dòng công nợ cho từng lần.
+        </p>
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={printForm.debt_show_remaining !== false}
+            onChange={(e) => setPrintForm((f) => ({ ...f, debt_show_remaining: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Hiển thị số nợ còn lại của khách trên phiếu in
+            <span className="block text-2xs text-muted-ink">
+              Tắt thì phiếu chỉ ghi số tiền vừa thu, không ghi tổng nợ cũ và nợ còn lại —
+              quầy đông người, số nợ của khách là chuyện riêng của khách.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="card p-4">
@@ -359,6 +390,26 @@ function PosSettings() {
         </div>
       </div>
 
+      {/* Hiện nút chọn nhanh đơn vị tính trên lưới (tài liệu 13, mục 2.2) */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-2">Đơn vị tính trên lưới bán hàng</h2>
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.show_unit_picker === true}
+            onChange={(e) => setForm((f) => ({ ...f, show_unit_picker: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Hiển thị nút xem hàng cùng đơn vị tính ngoài màn hình bán hàng
+            <span className="block text-2xs text-muted-ink">
+              Mỗi ô hàng có thêm nút [ĐVT ▼] bung ra mọi đơn vị kèm giá. Bấm vào một đơn vị là
+              vào giỏ với đúng đơn vị đó; bấm vùng khác của ô thì vào giỏ với đơn vị bán chính.
+            </span>
+          </span>
+        </label>
+      </div>
+
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-2">Cách xử lý khi hết hàng</h2>
         <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
@@ -467,6 +518,146 @@ function PosSettings() {
 }
 
 /* ==================================================================== */
+
+/* ==================================================================== */
+/* HÀNG / NHÓM HÀNG ƯU TIÊN ĐẦU LƯỚI POS (tài liệu 14, mục 2)            */
+/*                                                                      */
+/* Mùa nào bán chạy món nào thì ghim món đó lên đầu lưới, thu ngân khỏi   */
+/* gõ tìm. Ghim được cả một NHÓM: mùa mưa ghim nhóm "Đèn pin & pin" là    */
+/* cả nhóm nhảy lên đầu, không phải ghim từng mã.                        */
+/* ==================================================================== */
+
+function FeaturedSettings() {
+  const { meta, toast, defaultWarehouse } = useApp();
+  const { data, busy, error, reload } = useFetch(() => api.posFeatured(), []);
+  const { data: products } = useFetch(
+    () => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse]);
+  const [list, setList] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [catPick, setCatPick] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (data) setList(data.map((x) => ({ kind: x.kind, ref_id: x.ref_id, label: x.label, sku: x.sku })));
+  }, [data]);
+
+  const move = (i, step) => setList((prev) => {
+    const j = i + step;
+    if (j < 0 || j >= prev.length) return prev;
+    const copy = [...prev];
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+    return copy;
+  });
+  const drop = (i) => setList((prev) => prev.filter((_, j) => j !== i));
+  const has = (kind, id) => list.some((x) => x.kind === kind && x.ref_id === id);
+
+  const addProduct = (p) => {
+    if (has('product', p.id)) { toast(`"${p.name}" đã có trong danh sách ưu tiên`, 'warn'); return; }
+    setList((prev) => [...prev, { kind: 'product', ref_id: p.id, label: p.name, sku: p.sku }]);
+    setAdding(false);
+  };
+  const addCategory = (id) => {
+    const c = meta.categories.find((x) => String(x.id) === String(id));
+    if (!c) return;
+    if (has('category', c.id)) { toast(`Nhóm "${c.name}" đã có trong danh sách`, 'warn'); return; }
+    setList((prev) => [...prev, { kind: 'category', ref_id: c.id, label: c.name }]);
+    setCatPick('');
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.savePosFeatured(list.map((x) => ({ kind: x.kind, ref_id: x.ref_id })));
+      reload();
+      toast(list.length
+        ? `Đã ghim ${n(list.length)} mục lên đầu lưới bán hàng`
+        : 'Đã bỏ hết hàng ghim — lưới bán hàng về thứ tự thường', 'ok', 6000);
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    } finally { setSaving(false); }
+  };
+
+  if (busy && !data) return <Spinner />;
+  if (error) return <ErrorBox error={error} onRetry={reload} />;
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Hàng ghim đầu lưới bán hàng</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Những mục ở đây được đẩy lên <b>các vị trí đầu tiên</b> của lưới hàng ngoài màn hình bán
+          hàng và mang dấu ★. Xếp từ trên xuống là thứ tự ưu tiên. Đổi theo mùa bất cứ lúc nào:
+          mùa nóng ghim quạt, mùa mưa ghim đèn pin và pin.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <Button size="sm" icon={Plus} onClick={() => setAdding(true)}>Thêm mặt hàng</Button>
+          <div className="flex items-center gap-1.5">
+            <CategorySelect
+              value={catPick}
+              onChange={(v) => { setCatPick(v); if (v) addCategory(v); }}
+              categories={meta.categories}
+              size="sm"
+              className="!w-auto"
+              placeholder="Thêm cả một nhóm hàng..."
+              ariaLabel="Chọn nhóm hàng để ghim đầu lưới"
+            />
+          </div>
+          <div className="flex-1" />
+          <Button size="sm" variant="primary" icon={Save} loading={saving} onClick={save}>
+            Lưu danh sách
+          </Button>
+        </div>
+
+        {list.length === 0 ? (
+          <Empty
+            icon={Star}
+            title="Chưa ghim mục nào"
+            message="Lưới bán hàng đang xếp theo thứ tự thường. Thêm mặt hàng hoặc nhóm hàng bán chạy để đẩy lên đầu."
+          />
+        ) : (
+          <ol className="space-y-1.5">
+            {list.map((x, i) => (
+              <li key={`${x.kind}-${x.ref_id}`}
+                className="flex items-center gap-2 rounded border border-line px-2.5 py-1.5">
+                <span className="w-6 text-center text-2xs font-bold text-muted-ink tabular">{i + 1}</span>
+                <Star size={13} className="text-amber-500 fill-amber-400 shrink-0" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold truncate">
+                    {x.label || `#${x.ref_id}`}
+                  </div>
+                  <div className="text-2xs text-muted-ink">
+                    {x.kind === 'category'
+                      ? 'Cả nhóm hàng — mọi mặt hàng trong nhóm và nhóm con đều lên đầu'
+                      : `Mặt hàng · ${x.sku || ''}`}
+                  </div>
+                </div>
+                <Badge tone={x.kind === 'category' ? 'info' : 'ok'}>
+                  {x.kind === 'category' ? 'Nhóm hàng' : 'Mặt hàng'}
+                </Badge>
+                <IconButton icon={ChevronUp} size={14} label={`Đưa "${x.label}" lên trên`}
+                  disabled={i === 0} onClick={() => move(i, -1)} />
+                <IconButton icon={ChevronDown} size={14} label={`Đưa "${x.label}" xuống dưới`}
+                  disabled={i === list.length - 1} onClick={() => move(i, 1)} />
+                <IconButton icon={Trash2} size={14} label={`Bỏ ghim "${x.label}"`}
+                  className="!text-danger hover:!bg-red-50" onClick={() => drop(i)} />
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      <ProductPicker
+        open={adding}
+        onClose={() => setAdding(false)}
+        products={(products || []).filter((p) => !has('product', p.id))}
+        onPick={addProduct}
+        withQty={false}
+        title="Chọn mặt hàng ghim lên đầu lưới"
+      />
+    </div>
+  );
+}
 
 function PriceLists() {
   const { toast, loadMeta } = useApp();

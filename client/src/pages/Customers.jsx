@@ -4,7 +4,7 @@ import {
   Users, UserPlus, Pencil, Trash2, HandCoins, ArrowLeft, Download, TrendingUp, AlertTriangle, Clock,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
 import { money, n, short, smartTime, date } from '../lib/format';
 import {
@@ -38,8 +38,10 @@ export default function Customers() {
 
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
+  const [mode, setMode] = useSearchMode();
   const { data, busy, error, reload } = useFetch(
-    () => api.customers({ q: dq, filter, type, detail: filter ? 1 : '' }), [dq, filter, type]);
+    () => api.customers({ q: dq, match: mode, filter, type, detail: filter ? 1 : '' }),
+    [dq, mode, filter, type]);
   useLiveReload(reload);
 
   const [editing, setEditing] = useState(null);   // đối tượng hoặc 'new'
@@ -115,6 +117,8 @@ export default function Customers() {
           <SearchInput
             value={q}
             onChange={setQ}
+            mode={mode}
+            onMode={setMode}
             placeholder="Tìm tên, số điện thoại, mã khách..."
             className="w-full sm:w-72"
           />

@@ -17,7 +17,7 @@
    ==================================================================== */
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf, pageParams, getSettings,
+  all, get, run, tx, nextCode, moveStock, costOf, pageParams, getSettings, searchMode,
 } from '../db.js';
 
 const r = Router();
@@ -35,7 +35,7 @@ r.get('/requisitions', (req, res) => {
   if (to) { where.push('date(rq.ts) <= date(?)'); params.push(to); }
   if (q.trim()) {
     where.push('(rq.code LIKE ? OR rq.note LIKE ? OR u.full_name LIKE ?)');
-    const like = `%${q.trim()}%`;
+    const like = searchMode(req.query.match) === 'exact' ? q.trim() : `%${q.trim()}%`;
     params.push(like, like, like);
   }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -47,16 +47,32 @@ r.get('/requisitions', (req, res) => {
 
   const rows = all(`
     SELECT rq.*, u.full_name AS user_name, w.name AS warehouse_name,
+           m.code AS merged_into_code,
            (SELECT COUNT(*) FROM requisition_items i WHERE i.requisition_id = rq.id) AS line_count,
            (SELECT COUNT(*) FROM requisition_items i
-             WHERE i.requisition_id = rq.id AND i.adjusted = 1) AS adjusted_count
+             WHERE i.requisition_id = rq.id AND i.adjusted = 1) AS adjusted_count,
+           (SELECT COUNT(*) FROM requisition_items i
+             WHERE i.requisition_id = rq.id AND i.buy_qty > 0) AS buy_count,
+           (SELECT COUNT(*) FROM requisition_items i
+             WHERE i.requisition_id = rq.id AND i.buy_qty > 0 AND i.split_at IS NOT NULL) AS split_count
     FROM requisitions rq
     LEFT JOIN users u ON u.id = rq.user_id
     LEFT JOIN warehouses w ON w.id = rq.warehouse_id
+    LEFT JOIN requisitions m ON m.id = rq.merged_into
     ${w}
     ORDER BY rq.id DESC LIMIT ${size} OFFSET ${offset}`, params);
 
-  res.json({ rows, total, page, page_size: size });
+  /* Chặng vòng đời lập phiếu mua tạm — nhìn danh sách là biết phiếu nào còn
+     dở dang, khỏi phải mở từng phiếu ra soát (tài liệu 15, mục 4.1) */
+  for (const x of rows) {
+    x.split_state = x.buy_count === 0 || x.split_count === 0 ? 'none'
+      : x.split_count >= x.buy_count ? 'all' : 'partial';
+    x.split_state_label = SPLIT_STATES[x.split_state];
+  }
+  const wantState = String(req.query.split_state || '');
+  const out = SPLIT_STATES[wantState] ? rows.filter((x) => x.split_state === wantState) : rows;
+
+  res.json({ rows: out, total, page, page_size: size });
 });
 
 /** Số phiếu còn đang mở — cho cái chuông trên thanh đầu. */
@@ -70,43 +86,135 @@ r.get('/requisitions-summary', (req, res) => {
 
 /* ------------------------------ Chi tiết ----------------------------- */
 
+/* ==================================================================== *
+ * VÒNG ĐỜI PHIẾU (tài liệu 15, mục 4.1)
+ *
+ *   Chưa lập phiếu tạm  →  Đã lập một phần  →  Đã lập hết
+ *
+ * Tính trên những dòng CÓ SỐ DỰ MUA: dòng số mua 0 là dòng chỉ ghi nhận để
+ * đếm lại, không có gì để chuyển sang phiếu mua.
+ * ==================================================================== */
+
+export const SPLIT_STATES = {
+  none: 'Chưa lập phiếu tạm',
+  partial: 'Đã lập một phần',
+  all: 'Đã lập hết',
+};
+
+function splitStateOf(items) {
+  const wanted = items.filter((x) => Number(x.buy_qty) > 0);
+  if (!wanted.length) return 'none';
+  const done = wanted.filter((x) => x.split_at).length;
+  if (done === 0) return 'none';
+  return done >= wanted.length ? 'all' : 'partial';
+}
+
+/**
+ * Mối gợi ý cho một mặt hàng (tài liệu 15, mục 4.2).
+ *
+ * Ưu tiên 1 là mối ĐÃ TỪNG GIAO món này — đọc thẳng từ lịch sử phiếu nhập,
+ * không chỉ dựa vào danh sách mối đã khai trong thẻ hàng hoá, vì mối giao
+ * một lần rồi thường không ai khai vào thẻ.
+ *
+ * Giá gợi ý xếp theo: báo giá của mối > giá mối bán lần trước > giá nhập
+ * gần nhất trên hệ thống > giá vốn.
+ */
+export function supplierOptions(productId) {
+  const rows = all(`
+    SELECT s.id AS supplier_id, s.name, s.phone, s.active,
+           ps.is_primary, ps.last_price, ps.supplier_sku, ps.quote_price, ps.quote_at,
+           (SELECT COUNT(*) FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+             WHERE pi.product_id = ? AND pu.supplier_id = s.id AND pu.status = 'done') AS times,
+           (SELECT CAST(ROUND(pi.price * 1.0 / COALESCE(NULLIF(pi.factor, 0), 1)) AS INTEGER)
+              FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+             WHERE pi.product_id = ? AND pu.supplier_id = s.id AND pu.status = 'done'
+             ORDER BY pu.ts DESC, pi.id DESC LIMIT 1) AS last_purchase_price,
+           (SELECT MAX(pu.ts) FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+             WHERE pi.product_id = ? AND pu.supplier_id = s.id AND pu.status = 'done') AS last_ts
+    FROM suppliers s
+    LEFT JOIN product_suppliers ps ON ps.supplier_id = s.id AND ps.product_id = ?
+    WHERE s.active = 1
+      AND (ps.id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+                       WHERE pi.product_id = ? AND pu.supplier_id = s.id AND pu.status = 'done'))
+    ORDER BY times DESC, ps.is_primary DESC, s.name`,
+  [productId, productId, productId, productId, productId]);
+  for (const x of rows) x.supplied_before = Number(x.times) > 0;
+  return rows;
+}
+
+/**
+ * Giá đổ vào phiếu mua tạm (tài liệu 15, mục 4.3).
+ * Có báo giá của mối thì LẤY ĐÚNG con số đó; chưa có thì rơi về giá mua gần
+ * nhất của mối, rồi giá nhập gần nhất của hệ thống, cuối cùng là giá vốn.
+ */
+export function injectedPrice(productId, supplierId, costPrice = 0) {
+  const link = get(`SELECT quote_price, last_price FROM product_suppliers
+                    WHERE product_id = ? AND supplier_id = ?`, [productId, supplierId]);
+  if (Number(link?.quote_price) > 0) {
+    return { price: Number(link.quote_price), source: 'quote' };
+  }
+  if (Number(link?.last_price) > 0) {
+    return { price: Number(link.last_price), source: 'last_supplier_price' };
+  }
+  const last = get(`
+    SELECT CAST(ROUND(pi.price * 1.0 / COALESCE(NULLIF(pi.factor, 0), 1)) AS INTEGER) AS p
+    FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+    WHERE pi.product_id = ? AND pu.status = 'done'
+    ORDER BY pu.ts DESC, pi.id DESC LIMIT 1`, [productId])?.p;
+  if (Number(last) > 0) return { price: Number(last), source: 'last_purchase' };
+  return { price: Math.max(0, Math.round(Number(costPrice) || 0)), source: 'cost' };
+}
+
 function detail(id) {
   const rq = get(`
-    SELECT rq.*, u.full_name AS user_name, w.name AS warehouse_name
+    SELECT rq.*, u.full_name AS user_name, w.name AS warehouse_name,
+           m.code AS merged_into_code
     FROM requisitions rq
     LEFT JOIN users u ON u.id = rq.user_id
     LEFT JOIN warehouses w ON w.id = rq.warehouse_id
+    LEFT JOIN requisitions m ON m.id = rq.merged_into
     WHERE rq.id = ?`, [id]);
   if (!rq) return null;
 
   rq.items = all(`
-    SELECT i.*, p.sku, p.base_unit, p.barcode, p.cost_price,
+    SELECT i.*, p.sku, p.base_unit, p.barcode, p.cost_price, p.pack_spec,
            c.name AS category_name,
+           d.code AS split_draft_code,
            COALESCE((SELECT SUM(s.qty) FROM stock s
                       WHERE s.product_id = i.product_id AND s.warehouse_id = ?), 0) AS stock_now
     FROM requisition_items i
     LEFT JOIN products p ON p.id = i.product_id
     LEFT JOIN categories c ON c.id = p.category_id
+    LEFT JOIN doc_drafts d ON d.id = i.split_draft_id
     WHERE i.requisition_id = ? ORDER BY i.id`, [rq.warehouse_id, id]);
 
   /* Mối nào bán món này, và mối nào đang được chọn trên phiếu */
   for (const it of rq.items) {
-    it.suppliers = all(`
-      SELECT ps.supplier_id, s.name, ps.is_primary, ps.last_price, ps.supplier_sku
-      FROM product_suppliers ps
-      JOIN suppliers s ON s.id = ps.supplier_id
-      WHERE ps.product_id = ? AND s.active = 1
-      ORDER BY ps.is_primary DESC, s.name`, [it.product_id]);
+    it.suppliers = supplierOptions(it.product_id);
     it.chosen = all('SELECT supplier_id FROM requisition_item_suppliers WHERE item_id = ?',
       [it.id]).map((x) => x.supplier_id);
+    /* Đã chuyển sang phiếu mua tạm thì KHOÁ: không sửa số, không lập lại */
+    it.locked = !!it.split_at;
   }
+  rq.split_state = splitStateOf(rq.items);
+  rq.split_state_label = SPLIT_STATES[rq.split_state];
 
   /* Phiếu nhập tạm đã sinh ra từ phiếu này */
   rq.drafts = all(`
     SELECT id, code, kind, title, partner_name, item_count, total, updated_at
     FROM doc_drafts WHERE source = ? ORDER BY id`, [`req:${id}`]);
+  /* Phiếu lẻ đã gộp vào phiếu này */
+  rq.merged_from = all('SELECT id, code, ts FROM requisitions WHERE merged_into = ? ORDER BY id', [id]);
   return rq;
 }
+
+/** Danh sách mối gợi ý cho một mặt hàng — hộp chọn NCC hàng loạt gọi tới. */
+r.get('/requisition-supplier-options', (req, res) => {
+  const pid = Number(req.query.product_id) || 0;
+  if (!pid) return res.status(400).json({ error: 'Thiếu mã mặt hàng' });
+  res.json({ rows: supplierOptions(pid) });
+});
 
 r.get('/requisitions/:id', (req, res) => {
   const rq = detail(Number(req.params.id));
@@ -180,6 +288,14 @@ r.put('/requisitions/:id/items/:itemId', (req, res) => {
     const it = get(`SELECT i.* FROM requisition_items i WHERE i.id = ? AND i.requisition_id = ?`,
       [req.params.itemId, req.params.id]);
     if (!it) throw badRequest('Không tìm thấy dòng hàng trên phiếu');
+    /* Đã chuyển sang phiếu mua tạm thì khoá cứng (tài liệu 15, mục 4.4): sửa
+       số hay lập lại lần nữa là tiệm đặt mua trùng, mà không ai thấy. */
+    if (it.split_at) {
+      throw badRequest(
+        `"${it.name_snapshot}" đã chuyển sang phiếu mua tạm nên không sửa được nữa.`
+        + ' Muốn đổi số lượng thì sửa ngay trên phiếu mua tạm đó.',
+        'ITEM_LOCKED');
+    }
 
     const out = tx(() => {
       const num = (v, old) => {
@@ -209,10 +325,148 @@ r.put('/requisitions/:id/items/:itemId', (req, res) => {
   }
 });
 
+/**
+ * Gán một nhà cung cấp cho NHIỀU dòng cùng lúc (tài liệu 15, mục 4.2).
+ * Tích chọn cả trang rồi gán một mối — nhanh hơn mở từng dòng.
+ * replace = true thì thay hẳn danh sách mối của dòng đó.
+ */
+r.post('/requisitions/:id/assign-supplier', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!get('SELECT id FROM requisitions WHERE id = ?', [id])) {
+      throw badRequest('Không tìm thấy phiếu báo hết hàng');
+    }
+    const supplierId = Number(req.body.supplier_id) || 0;
+    const sup = supplierId ? get('SELECT id, name FROM suppliers WHERE id = ?', [supplierId]) : null;
+    if (!sup) throw badRequest('Chưa chọn nhà cung cấp');
+    const wanted = Array.isArray(req.body.item_ids)
+      ? req.body.item_ids.map(Number).filter(Boolean) : [];
+    if (!wanted.length) throw badRequest('Chưa chọn dòng hàng nào để gán nhà cung cấp');
+
+    const out = tx(() => {
+      const assigned = [];
+      const locked = [];
+      for (const itemId of wanted) {
+        const it = get('SELECT * FROM requisition_items WHERE id = ? AND requisition_id = ?',
+          [itemId, id]);
+        if (!it) continue;
+        if (it.split_at) { locked.push(it.name_snapshot); continue; }
+        if (req.body.replace === true) {
+          run('DELETE FROM requisition_item_suppliers WHERE item_id = ?', [it.id]);
+        }
+        run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
+          [it.id, sup.id]);
+        assigned.push(it.name_snapshot);
+      }
+      return {
+        ok: true, supplier: sup, assigned: assigned.length, locked,
+        requisition: detail(id),
+      };
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/**
+ * Gộp nhiều phiếu báo hết hàng lẻ thành một phiếu tổng (tài liệu 15, mục 4.4).
+ *
+ * Cùng một mặt hàng xuất hiện ở hai phiếu thì CỘNG số dự mua lại — hai lần
+ * báo thiếu trong tuần là thiếu thật hai lần đó. Dòng đã chuyển sang phiếu
+ * mua tạm thì không gộp: đã đặt mua rồi, gộp vào là đặt lần nữa.
+ */
+r.post('/requisitions/merge', (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+    if (ids.length < 2) throw badRequest('Chọn ít nhất 2 phiếu để gộp');
+    const sources = ids.map((id) => get('SELECT * FROM requisitions WHERE id = ?', [id])).filter(Boolean);
+    if (sources.length < 2) throw badRequest('Không tìm thấy đủ phiếu để gộp');
+    const already = sources.find((x) => x.merged_into);
+    if (already) throw badRequest(`Phiếu ${already.code} đã được gộp vào phiếu khác rồi.`, 'ALREADY_MERGED');
+    const warehouses = [...new Set(sources.map((x) => x.warehouse_id))];
+    if (warehouses.length > 1) {
+      throw badRequest('Chỉ gộp được các phiếu của cùng một kho.', 'MIXED_WAREHOUSE');
+    }
+
+    const out = tx(() => {
+      const code = nextCode('requisitions', 'BH');
+      const info = run(`
+        INSERT INTO requisitions(code, warehouse_id, user_id, status, note)
+        VALUES(?, ?, ?, 'open', ?)`,
+        [code, warehouses[0], req.body.user_id || null,
+          `Gộp từ ${sources.map((x) => x.code).join(', ')}`]);
+      const newId = Number(info.lastInsertRowid);
+
+      const byProduct = new Map();
+      const skipped = [];
+      for (const src of sources) {
+        const items = all('SELECT * FROM requisition_items WHERE requisition_id = ? ORDER BY id', [src.id]);
+        for (const it of items) {
+          if (it.split_at) { skipped.push(`${it.name_snapshot} (${src.code})`); continue; }
+          const cur = byProduct.get(it.product_id);
+          const chosen = all('SELECT supplier_id FROM requisition_item_suppliers WHERE item_id = ?',
+            [it.id]).map((x) => x.supplier_id);
+          if (cur) {
+            cur.buy_qty += Number(it.buy_qty) || 0;
+            /* Số đếm thật: lần đếm SAU đè lên lần trước, vì đó là số mới nhất */
+            if (it.actual_qty !== null && it.actual_qty !== undefined) cur.actual_qty = it.actual_qty;
+            cur.notes.push(...(it.note ? [it.note] : []));
+            for (const s of chosen) cur.chosen.add(s);
+          } else {
+            byProduct.set(it.product_id, {
+              product_id: it.product_id, name: it.name_snapshot, unit_name: it.unit_name,
+              system_qty: it.system_qty, actual_qty: it.actual_qty,
+              buy_qty: Number(it.buy_qty) || 0,
+              notes: it.note ? [it.note] : [], chosen: new Set(chosen),
+            });
+          }
+        }
+      }
+      if (!byProduct.size) throw badRequest('Các phiếu đã chọn không còn dòng nào để gộp.');
+
+      for (const x of byProduct.values()) {
+        const line = run(`
+          INSERT INTO requisition_items(requisition_id, product_id, name_snapshot, unit_name,
+                                        system_qty, actual_qty, buy_qty, note)
+          VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+          [newId, x.product_id, x.name, x.unit_name, x.system_qty, x.actual_qty, x.buy_qty,
+            x.notes.length ? [...new Set(x.notes)].join(' · ') : null]);
+        const itemId = Number(line.lastInsertRowid);
+        for (const sid of x.chosen) {
+          run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
+            [itemId, sid]);
+        }
+      }
+
+      /* Phiếu lẻ đóng lại và trỏ về phiếu tổng: còn tra lại được, nhưng không
+         ai lập phiếu mua từ nó lần nữa. */
+      for (const src of sources) {
+        run(`UPDATE requisitions SET status = 'done', merged_into = ?,
+               closed_at = datetime('now','localtime'),
+               note = TRIM(COALESCE(note, '') || ' · Đã gộp vào ' || ?)
+             WHERE id = ?`, [newId, code, src.id]);
+      }
+      return {
+        ok: true, requisition: detail(newId),
+        merged: sources.map((x) => x.code), skipped, line_count: byProduct.size,
+      };
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
 r.delete('/requisitions/:id/items/:itemId', (req, res) => {
   const it = get('SELECT * FROM requisition_items WHERE id = ? AND requisition_id = ?',
     [req.params.itemId, req.params.id]);
   if (!it) return res.status(404).json({ error: 'Không tìm thấy dòng hàng' });
+  if (it.split_at) {
+    return res.status(400).json({
+      error: `"${it.name_snapshot}" đã chuyển sang phiếu mua tạm nên không xoá được khỏi phiếu này.`,
+      code: 'ITEM_LOCKED' });
+  }
   if (it.adjusted) {
     return res.status(400).json({
       error: 'Dòng này đã cân bằng kho rồi, xoá đi thì mất dấu lần chỉnh tồn. Hãy giữ lại để đối chiếu.' });
@@ -310,14 +564,20 @@ r.post('/requisitions/:id/split', (req, res) => {
     const bySupplier = new Map();
     const noSupplier = [];
     const duplicated = [];
+    const locked = [];
+    const takenIds = new Set();
 
     for (const it of rq.items) {
       if (only && !only.has(it.id)) continue;
       if (!(Number(it.buy_qty) > 0)) continue;
+      /* Đã lập phiếu mua tạm rồi thì BỎ QUA, không lập lần thứ hai — chốt
+         chống trùng của tài liệu 15, mục 4.4 */
+      if (it.split_at) { locked.push(it.name_snapshot); continue; }
       if (!it.chosen.length) { noSupplier.push(it.name_snapshot); continue; }
       if (it.chosen.length > 1) {
         duplicated.push({ name: it.name_snapshot, qty: it.buy_qty, suppliers: it.chosen.length });
       }
+      takenIds.add(it.id);
       for (const sid of it.chosen) {
         if (!bySupplier.has(sid)) bySupplier.set(sid, []);
         bySupplier.get(sid).push(it);
@@ -328,7 +588,10 @@ r.post('/requisitions/:id/split', (req, res) => {
       throw badRequest(noSupplier.length
         ? `Chưa chọn nhà cung cấp cho: ${noSupplier.slice(0, 3).join(', ')}`
           + (noSupplier.length > 3 ? `... và ${noSupplier.length - 3} món nữa` : '')
-        : 'Không có dòng nào có số lượng dự mua để tách phiếu.');
+        : locked.length
+          ? `Những món đã chọn đều đã chuyển sang phiếu mua tạm: ${locked.slice(0, 3).join(', ')}`
+            + (locked.length > 3 ? `... và ${locked.length - 3} món nữa` : '')
+          : 'Không có dòng nào có số lượng dự mua để tách phiếu.');
     }
 
     const out = tx(() => {
@@ -338,33 +601,42 @@ r.post('/requisitions/:id/split', (req, res) => {
         if (!sup) continue;
 
         const lines = items.map((it) => {
-          const link = get(`SELECT last_price FROM product_suppliers
-                            WHERE product_id = ? AND supplier_id = ?`, [it.product_id, supplierId]);
-          /* Giá gợi ý: giá mối này báo lần trước, không có thì lấy giá vốn.
-             Chỉ là gợi ý — người lập phiếu nhập vẫn sửa lại được. */
-          const price = Number(link?.last_price) || Number(it.cost_price) || 0;
+          /* Đổ giá tự động (tài liệu 15, mục 4.3): ưu tiên báo giá của mối,
+             rồi giá mối bán lần trước, rồi giá nhập gần nhất, rồi giá vốn.
+             Chỉ là con số đổ sẵn — người lập phiếu nhập vẫn sửa lại được. */
+          const inj = injectedPrice(it.product_id, supplierId, it.cost_price);
           /* Kèm luôn danh sách đơn vị: biểu mẫu phiếu nhập cần nó để vẽ
-             ô chọn cái / hộp / thùng. Thiếu là biểu mẫu nổ khi mở lại. */
-          const units = all(`SELECT * FROM product_units WHERE product_id = ?
+             ô chọn cái / hộp / thùng. Thiếu là biểu mẫu nổ khi mở lại.
+             Đơn vị đã ngừng hoạt động không đưa vào — không nhập mới bằng nó. */
+          const units = all(`SELECT * FROM product_units WHERE product_id = ? AND active = 1
                              ORDER BY factor`, [it.product_id]);
-          const baseUnit = units.find((u) => u.factor === 1) || units[0] || null;
+          /* Nhảy sẵn ĐƠN VỊ MUA CHÍNH của mặt hàng (tài liệu 13, mục 1.3) */
+          const buyId = get('SELECT buy_unit_id FROM products WHERE id = ?', [it.product_id])?.buy_unit_id;
+          const buyUnit = units.find((u) => u.id === buyId)
+            || units.find((u) => u.factor === 1) || units[0] || null;
+          const factor = buyUnit?.factor || 1;
+          /* Giá báo tính theo đơn vị cơ bản; nhảy sang đơn vị lớn thì nhân lên */
+          const price = Math.round(inj.price * factor);
           return {
             key: `req-${it.id}-${supplierId}`,
             product_id: it.product_id,
             name: it.name_snapshot,
             sku: it.sku,
             base_unit: it.base_unit,
+            pack_spec: it.pack_spec || null,
             units,
-            unit_id: baseUnit?.id ?? null,
-            unit_name: baseUnit?.unit_name || it.unit_name,
-            factor: baseUnit?.factor || 1,
+            unit_id: buyUnit?.id ?? null,
+            unit_name: buyUnit?.unit_name || it.unit_name,
+            factor,
             current_stock: it.stock_now,
             discount: 0,
             qty: Number(it.buy_qty),
             price,
             list_price: price,
+            price_source: inj.source,
             discount_percent: 0,
             vat_rate: 0,
+            overwrite_cost: false,
             note: `Theo phiếu báo hết hàng ${rq.code}`,
           };
         });
@@ -384,13 +656,26 @@ r.post('/requisitions/:id/split', (req, res) => {
               note: `Sinh tự động từ phiếu báo hết hàng ${rq.code}`,
               from_requisition: { id, code: rq.code },
             })]);
+        const draftId = Number(info.lastInsertRowid);
         drafts.push({
-          id: Number(info.lastInsertRowid), code, supplier_id: supplierId,
+          id: draftId, code, supplier_id: supplierId,
           supplier_name: sup.name, item_count: lines.length, total,
         });
+        /* Khoá từng dòng vừa chuyển đi, ghi luôn số phiếu tạm nó rơi vào.
+           Một món chọn hai mối thì nhớ phiếu đầu — dòng nào cũng khoá. */
+        for (const it of items) {
+          run(`UPDATE requisition_items
+                 SET split_at = datetime('now','localtime'),
+                     split_draft_id = COALESCE(split_draft_id, ?)
+               WHERE id = ? AND split_at IS NULL`, [draftId, it.id]);
+        }
       }
       run("UPDATE requisitions SET split_at = datetime('now','localtime') WHERE id = ?", [id]);
-      return { ok: true, drafts, no_supplier: noSupplier, duplicated, requisition: detail(id) };
+      const after = detail(id);
+      return {
+        ok: true, drafts, no_supplier: noSupplier, duplicated, locked,
+        split_state: after.split_state, requisition: after,
+      };
     });
     res.json(out);
   } catch (e) {

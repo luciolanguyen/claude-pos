@@ -11,19 +11,20 @@
    ==================================================================== */
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
-  ClipboardList, Plus, Eye, Search, Clock, AlertTriangle, Printer, XCircle,
+  ClipboardList, Plus, Minus, Eye, Search, Clock, AlertTriangle, Printer, XCircle,
   PackageCheck, HandCoins, Truck, ShoppingBag, Phone, CheckCircle2, Trash2, ShoppingCart,
   Store, MapPin, History,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
-import { money, n, qty as fq, date, datetime, isoDate, match, readMoney, ROLE_LABEL } from '../lib/format';
+import { money, n, qty as fq, date, datetime, isoDate, match, matchMode, readMoney, ROLE_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
   Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs, Pager,
   TotalRow,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { themeOf } from '../components/CartPickerModal';
 import { CategorySelect } from '../components/CategoryTree';
 import { EMPTY_DELIVERY, deliveryBody } from '../components/PosDeliveryForm';
 
@@ -571,8 +572,10 @@ function OrderForm({ order, onClose, onSaved }) {
         products={products || []}
         priceListId={priceListId}
         cartQty={cartQty}
-        lineCount={lines.length}
+        lines={lines}
         onSetQty={setProductQty}
+        onPatchLine={setLine}
+        onDelLine={delLine}
       />
     </>
   );
@@ -581,10 +584,15 @@ function OrderForm({ order, onClose, onSaved }) {
 /* Bảng chọn hàng riêng cho đặt hàng: hiện GIÁ BÁN và tồn kho, không hiện
    giá vốn. Mỗi dòng có ô số lượng và nút giỏ (tài liệu 12, mục 1): bấm lần
    đầu là thêm, nút sáng lên kèm số; gõ số khác rồi bấm lại là ghi đè. */
-function OrderProductPicker({ open, onClose, products, priceListId, cartQty, lineCount, onSetQty }) {
+function OrderProductPicker({
+  open, onClose, products, priceListId, cartQty, lines = [], onSetQty, onPatchLine, onDelLine,
+}) {
   const { meta, defaultPriceList } = useApp();
   const [q, setQ] = useState('');
+  const [mode, setMode] = useState('contains');
   const [cat, setCat] = useState('');
+  const theme = themeOf('sale_order');
+  const lineCount = lines.length;
   const [want, setWant] = useState({});   // product_id -> số đang gõ, chưa bấm giỏ
 
   useEffect(() => { if (open) { setQ(''); setWant({}); } }, [open]);
@@ -593,11 +601,12 @@ function OrderProductPicker({ open, onClose, products, priceListId, cartQty, lin
     let l = products;
     if (cat) l = l.filter((p) => p.category_id === Number(cat));
     if (q.trim()) {
-      l = l.filter((p) => match(p.name, q) || match(p.alias, q) || match(p.sku, q)
-        || (p.barcode || '').includes(q.trim()));
+      l = l.filter((p) => matchMode(p.name, q, mode) || matchMode(p.alias || '', q, mode)
+        || matchMode(p.sku, q, mode)
+        || (mode === 'exact' ? (p.barcode || '') === q.trim() : (p.barcode || '').includes(q.trim())));
     }
     return l.slice(0, 300);
-  }, [products, q, cat]);
+  }, [products, q, mode, cat]);
 
   /* Quét mã vạch đúng một món thì Enter là cho vào giỏ luôn */
   const onSearchKey = (e) => {
@@ -613,15 +622,23 @@ function OrderProductPicker({ open, onClose, products, priceListId, cartQty, lin
       onClose={onClose}
       title="Chọn hàng khách đặt"
       subtitle="Gõ số lượng rồi bấm nút giỏ. Hàng hết tồn vẫn đặt được — đó là chuyện thường của đơn đặt hàng."
-      size="lg"
+      size="xl"
       footer={<>
         <span className="mr-auto text-[13px] text-muted-ink">Đơn đang có <b className="text-ink">{n(lineCount)}</b> món</span>
         <Button variant="primary" onClick={onClose}>Xong</Button>
       </>}
     >
-      <div className="space-y-2">
+      {/* Màu và biểu tượng riêng cho loại phiếu đặt hàng (tài liệu 15, mục 3.4) */}
+      <div className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 mb-2.5 ${theme.head}`}>
+        <ClipboardList size={16} aria-hidden="true" />
+        <span className="text-[13px] font-bold">{theme.label}</span>
+        <span className="text-2xs">· {theme.flow}. Hàng hết tồn vẫn đặt được.</span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="space-y-2 min-w-0">
         <div className="flex gap-2" onKeyDown={onSearchKey}>
-          <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng, tên phụ hoặc quét mã vạch..."
+          <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode}
+            placeholder="Gõ tên hàng, tên phụ hoặc quét mã vạch..."
             className="flex-1" autoFocus />
           <CategorySelect value={cat} onChange={setCat}
             categories={meta.categories} className="!w-auto"
@@ -698,6 +715,62 @@ function OrderProductPicker({ open, onClose, products, priceListId, cartQty, lin
             </table>
           </div>
         )}
+      </div>
+
+      {/* Giỏ thu nhỏ của đúng đơn đang lập: sửa ồ đây hay sửa ở phiếu chính
+          cũng là một danh sách, nên hai bên không bao giờ lệch (tài liệu 15) */}
+      <aside className="card p-2.5 h-fit" aria-label="Hàng đang có trong đơn">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[13px] font-bold">Giỏ của đơn</span>
+          <span className={`text-2xs font-bold rounded-full px-2 py-0.5 ${theme.chip}`}>
+            {n(lineCount)} món
+          </span>
+        </div>
+        {lineCount === 0 ? (
+          <p className="text-[13px] text-muted-ink py-4 text-center">
+            Chưa chọn hàng nào. Gõ số lượng rồi bấm nút giỏ bên trái.
+          </p>
+        ) : (
+          <ul className="divide-y divide-line max-h-[52vh] overflow-y-auto">
+            {lines.map((l, i) => {
+              const floor = Number(l.delivered_qty) || 0;
+              return (
+                <li key={`${l.product_id}-${l.unit_name}-${i}`} className="py-2">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-semibold leading-snug">{l.name_snapshot}</div>
+                      <div className="text-2xs text-muted-ink">
+                        {l.unit_name}
+                        {floor > 0 && ` · đã giao ${fq(floor)}`}
+                      </div>
+                    </div>
+                    <IconButton icon={Trash2} size={14} label={`Bỏ ${l.name_snapshot} khỏi đơn`}
+                      className="!text-danger hover:!bg-red-50"
+                      disabled={floor > 0}
+                      onClick={() => onDelLine?.(i)} />
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    <IconButton icon={Minus} size={14} variant="outline" label={`Bớt 1 ${l.name_snapshot}`}
+                      disabled={Number(l.qty) <= Math.max(1, floor)}
+                      onClick={() => onPatchLine?.(i, { qty: Math.max(Math.max(1, floor), Number(l.qty) - 1) })} />
+                    <QtyInput value={l.qty} min={Math.max(1, floor)} className="!w-16"
+                      onChange={(v) => onPatchLine?.(i, { qty: Math.max(Math.max(1, floor), Number(v) || 1) })}
+                      aria-label={`Số lượng ${l.name_snapshot}`} />
+                    <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name_snapshot}`}
+                      onClick={() => onPatchLine?.(i, { qty: Number(l.qty) + 1 })} />
+                    <MoneyInput size="sm" value={l.price} className="!w-28 ml-auto"
+                      onChange={(v) => onPatchLine?.(i, { price: v })}
+                      aria-label={`Đơn giá ${l.name_snapshot}`} />
+                  </div>
+                  <div className="text-right text-[13px] font-semibold tabular mt-0.5">
+                    {money(Math.round((Number(l.qty) || 0) * (Number(l.price) || 0)))}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </aside>
       </div>
     </Modal>
   );

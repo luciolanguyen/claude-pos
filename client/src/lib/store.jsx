@@ -152,6 +152,18 @@ export function useLocal(key, initial) {
   return [v, setV];
 }
 
+/**
+ * Kiểu tìm kiếm dùng chung cho MỌI ô tìm trong phần mềm (tài liệu 13, mục 2.1).
+ *
+ * Nhớ một chỗ duy nhất: người quen gõ một khúc tên thì mọi màn hình đều tìm
+ * kiểu "có chứa"; người hay quét mã vạch bật "chính xác" một lần là cả phần
+ * mềm theo. Đổi ở màn hình nào thì các màn hình khác cũng theo lần sau mở.
+ */
+export function useSearchMode() {
+  const [mode, setMode] = useLocal('thpos.search_mode', 'contains');
+  return [mode === 'exact' ? 'exact' : 'contains', setMode];
+}
+
 /* ------------------------------------------------------------------ */
 /* Hook cho danh sách có phân trang phía máy chủ                       */
 /*                                                                     */

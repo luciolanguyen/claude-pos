@@ -134,8 +134,14 @@ export function QtyInput({ value, onChange, size = 'sm', className = '', min = 0
   );
 }
 
-export function SearchInput({ value, onChange, placeholder = 'Tìm kiếm...', size = 'md', className = '', autoFocus }) {
+export function SearchInput({
+  value, onChange, placeholder = 'Tìm kiếm...', size = 'md', className = '', autoFocus,
+  mode, onMode, onKeyDown,
+}) {
   const s = { sm: 'field-sm', md: '', lg: 'field-lg' }[size] || '';
+  /* Nút chọn kiểu tìm (tài liệu 13, mục 2.1) chỉ hiện khi nơi gọi có chỗ
+     lưu lựa chọn — ô tìm nào không cần thì vẫn gọn như cũ. */
+  const exact = mode === 'exact';
   return (
     <div className={`relative ${className}`}>
       <Search
@@ -145,23 +151,43 @@ export function SearchInput({ value, onChange, placeholder = 'Tìm kiếm...', s
       />
       <input
         type="search"
-        className={`field ${s} pl-8`}
+        className={`field ${s} pl-8 ${onMode ? 'pr-[6.5rem]' : ''}`}
         value={value}
         placeholder={placeholder}
         aria-label={placeholder}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
       />
-      {value && (
-        <button
-          type="button"
-          onClick={() => onChange('')}
-          aria-label="Xoá từ khoá tìm kiếm"
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-ink hover:text-ink p-0.5 rounded"
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
-      )}
+      <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+        {value && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            aria-label="Xoá từ khoá tìm kiếm"
+            className="text-muted-ink hover:text-ink p-0.5 rounded cursor-pointer"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        )}
+        {onMode && (
+          <button
+            type="button"
+            onClick={() => onMode(exact ? 'contains' : 'exact')}
+            aria-pressed={exact}
+            title={exact
+              ? 'Đang tìm CHÍNH XÁC: chỉ ra kết quả khớp trọn từ khoá. Bấm để đổi sang tìm có chứa.'
+              : 'Đang tìm CÓ CHỨA: ra mọi kết quả chứa từ khoá. Bấm để đổi sang tìm chính xác.'}
+            className={`text-2xs font-semibold rounded px-1.5 py-0.5 border cursor-pointer whitespace-nowrap
+                        transition-colors duration-100
+                        ${exact
+                          ? 'bg-accent text-white border-accent'
+                          : 'bg-muted text-muted-ink border-line hover:text-ink'}`}
+          >
+            {exact ? 'Chính xác' : 'Có chứa'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

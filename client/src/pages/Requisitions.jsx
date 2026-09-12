@@ -20,11 +20,11 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   ClipboardList, Plus, Trash2, Search, PackageX, AlertTriangle, Truck,
-  CheckCircle2, RefreshCcw, FileText, Warehouse, Wand2, X, Eye,
+  CheckCircle2, RefreshCcw, FileText, Warehouse, Wand2, X, Eye, Layers, Lock, Users,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
-import { money, n, qty as fq, date, datetime } from '../lib/format';
+import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
+import { money, n, qty as fq, date, datetime, match } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, Empty, Spinner, Badge,
   Textarea, QtyInput, SearchInput, ErrorBox, Confirm, Pager,
@@ -39,15 +39,29 @@ const STATUS = {
   cancelled: { label: 'Đã huỷ', tone: 'default' },
 };
 
+/* Ba chặng lập phiếu mua tạm (tài liệu 15, mục 4.1). Nhìn danh sách là biết
+   phiếu nào còn dở dang, khỏi phải mở từng phiếu ra soát. */
+const SPLIT_STATE = {
+  none: { label: 'Chưa lập phiếu tạm', tone: 'mute' },
+  partial: { label: 'Đã lập một phần', tone: 'warn' },
+  all: { label: 'Đã lập hết', tone: 'ok' },
+};
+
 export default function Requisitions() {
-  const { can } = useApp();
+  const { can, toast } = useApp();
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
   const [status, setStatus] = useState('');
+  const [splitState, setSplitState] = useState('');
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState(null);
+  /* Gộp phiếu lẻ thành phiếu tổng (tài liệu 15, mục 4.4) */
+  const [chosen, setChosen] = useState(() => new Set());
+  const [merging, setMerging] = useState(false);
+  const [mode, setMode] = useSearchMode();
 
-  const filters = useMemo(() => ({ q: dq, status }), [dq, status]);
+  const filters = useMemo(() => ({ q: dq, match: mode, status, split_state: splitState }),
+    [dq, mode, status, splitState]);
   const {
     rows, total, busy, error, reload, page, setPage, pageSize, setPageSize,
   } = usePaged((pg) => api.get('/requisitions', { ...filters, ...pg }), [filters],
@@ -68,18 +82,65 @@ export default function Requisitions() {
         }
       >
         <div className="flex flex-wrap gap-2">
-          <SearchInput value={q} onChange={setQ}
+          <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode}
             placeholder="Tìm mã phiếu, người lập, ghi chú..." className="w-full sm:w-80" />
           <Select value={status} onChange={(e) => setStatus(e.target.value)} size="sm" className="!w-auto">
             <option value="">Mọi trạng thái</option>
-            {Object.entries(STATUS).map(([k, s]) => (
-              <option key={k} value={k}>{s.label}</option>
+            {Object.entries(STATUS).map(([k, st]) => (
+              <option key={k} value={k}>{st.label}</option>
+            ))}
+          </Select>
+          <Select value={splitState} onChange={(e) => setSplitState(e.target.value)} size="sm"
+            className="!w-auto" aria-label="Lọc theo chặng lập phiếu mua tạm">
+            <option value="">Mọi chặng lập phiếu</option>
+            {Object.entries(SPLIT_STATE).map(([k, st]) => (
+              <option key={k} value={k}>{st.label}</option>
             ))}
           </Select>
         </div>
       </PageHeader>
 
-      <Page>
+      <Page className="space-y-3">
+        {/* Gộp nhiều phiếu lẻ trong tuần thành một phiếu tổng (tài liệu 15) */}
+        {chosen.size > 0 && (
+          <div className="card p-2.5 flex flex-wrap items-center gap-2 border-accent bg-accent-soft/25"
+            role="region" aria-label="Thao tác với phiếu đã chọn">
+            <span className="text-[13px] font-semibold">Đã chọn {n(chosen.size)} phiếu</span>
+            <span className="text-2xs text-muted-ink">
+              Gộp lại thành một phiếu tổng; món trùng sẽ cộng số dự mua.
+              Dòng đã chuyển sang phiếu mua tạm thì không gộp theo.
+            </span>
+            <div className="flex-1" />
+            <Button
+              size="sm"
+              variant="primary"
+              icon={Layers}
+              loading={merging}
+              disabled={chosen.size < 2 || merging}
+              title={chosen.size < 2 ? 'Chọn ít nhất 2 phiếu để gộp' : undefined}
+              onClick={async () => {
+                setMerging(true);
+                try {
+                  const res = await api.mergeRequisitions({ ids: [...chosen] });
+                  toast(
+                    `Đã gộp ${res.merged.length} phiếu thành ${res.requisition.code}`
+                    + ` (${n(res.line_count)} mặt hàng)`
+                    + (res.skipped.length ? ` · bỏ qua ${res.skipped.length} dòng đã lập phiếu mua` : ''),
+                    res.skipped.length ? 'warn' : 'ok', 8000);
+                  setChosen(new Set());
+                  reload();
+                  setOpenId(res.requisition.id);
+                } catch (e) {
+                  toast(e.message, 'bad', 8000);
+                } finally { setMerging(false); }
+              }}
+            >
+              Gộp phiếu ({n(chosen.size)})
+            </Button>
+            <Button size="sm" onClick={() => setChosen(new Set())}>Bỏ chọn</Button>
+          </div>
+        )}
+
         {error ? <ErrorBox error={error} onRetry={reload} />
           : busy && !rows.length ? <Spinner />
             : !rows.length ? (
@@ -97,12 +158,23 @@ export default function Requisitions() {
                   <table className="data">
                     <thead>
                       <tr>
+                        <th style={{ width: 34 }}>
+                          <input
+                            type="checkbox"
+                            checked={rows.length > 0 && rows.every((r) => chosen.has(r.id))}
+                            onChange={(e) => setChosen(e.target.checked
+                              ? new Set(rows.filter((r) => !r.merged_into).map((r) => r.id))
+                              : new Set())}
+                            aria-label="Chọn tất cả phiếu để gộp"
+                          />
+                        </th>
                         <th>Mã phiếu</th>
                         <th>Ngày lập</th>
                         <th>Người lập</th>
                         <th>Kho</th>
                         <th className="text-right">Số dòng</th>
                         <th className="text-right">Đã cập nhật kho</th>
+                        <th>Lập phiếu mua tạm</th>
                         <th>Trạng thái</th>
                         <th style={{ width: 60 }} />
                       </tr>
@@ -110,7 +182,27 @@ export default function Requisitions() {
                     <tbody>
                       {rows.map((r) => (
                         <tr key={r.id} className="hoverable clickable" onClick={() => setOpenId(r.id)}>
-                          <td className="font-mono font-semibold text-accent">{r.code}</td>
+                          <td onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={chosen.has(r.id)}
+                              disabled={!!r.merged_into}
+                              onChange={() => setChosen((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(r.id)) next.delete(r.id); else next.add(r.id);
+                                return next;
+                              })}
+                              aria-label={`Chọn phiếu ${r.code} để gộp`}
+                            />
+                          </td>
+                          <td className="font-mono font-semibold text-accent">
+                            {r.code}
+                            {r.merged_into_code && (
+                              <div className="text-2xs text-muted-ink font-sans">
+                                đã gộp vào {r.merged_into_code}
+                              </div>
+                            )}
+                          </td>
                           <td className="text-muted-ink whitespace-nowrap">{datetime(r.ts)}</td>
                           <td>{r.user_name || '—'}</td>
                           <td className="text-muted-ink">{r.warehouse_name}</td>
@@ -121,6 +213,16 @@ export default function Requisitions() {
                                   {n(r.adjusted_count)}/{n(r.line_count)}
                                 </span>
                               : <span className="text-muted-ink">—</span>}
+                          </td>
+                          <td>
+                            <Badge tone={SPLIT_STATE[r.split_state]?.tone}>
+                              {SPLIT_STATE[r.split_state]?.label}
+                            </Badge>
+                            {r.buy_count > 0 && r.split_state === 'partial' && (
+                              <div className="text-2xs text-muted-ink">
+                                {n(r.split_count)}/{n(r.buy_count)} món
+                              </div>
+                            )}
                           </td>
                           <td><Badge tone={STATUS[r.status]?.tone}>{STATUS[r.status]?.label}</Badge></td>
                           <td>
@@ -370,16 +472,20 @@ function RequisitionDetail({ id, onClose, onChanged }) {
   const [picked, setPicked] = useState(() => new Set());
   const [working, setWorking] = useState(false);
   const [splitResult, setSplitResult] = useState(null);
+  /* Gán một mối cho nhiều dòng cùng lúc (tài liệu 15, mục 4.2) */
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const items = rq?.items || [];
-  const allPicked = items.length > 0 && items.every((i) => picked.has(i.id));
+  /* Dòng đã chuyển sang phiếu mua tạm thì khoá: không sửa, không chọn lại */
+  const openItems = items.filter((i) => !i.locked);
+  const allPicked = openItems.length > 0 && openItems.every((i) => picked.has(i.id));
 
   const toggle = (itemId) => setPicked((s) => {
     const next = new Set(s);
     if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
     return next;
   });
-  const toggleAll = () => setPicked(allPicked ? new Set() : new Set(items.map((i) => i.id)));
+  const toggleAll = () => setPicked(allPicked ? new Set() : new Set(openItems.map((i) => i.id)));
 
   const patchItem = async (item, body) => {
     try {
@@ -428,6 +534,8 @@ function RequisitionDetail({ id, onClose, onChanged }) {
 
   const chosenCount = items.reduce((a, i) => a + (i.chosen?.length ? 1 : 0), 0);
   const buyable = items.filter((i) => Number(i.buy_qty) > 0);
+  /* Còn lập được phiếu mua cho những dòng nào: có số mua và CHƯA bị khoá */
+  const splittable = buyable.filter((i) => !i.locked);
 
   return (
     <>
@@ -452,13 +560,26 @@ function RequisitionDetail({ id, onClose, onChanged }) {
             )}
             {rq && can('purchase.manage') && (
               <Button
+                icon={Users}
+                onClick={() => setBulkOpen(true)}
+                disabled={working || !picked.size}
+                title="Gán một nhà cung cấp cho tất cả các dòng đang tích chọn"
+              >
+                Chọn NCC ({picked.size})
+              </Button>
+            )}
+            {rq && can('purchase.manage') && (
+              <Button
                 variant="primary"
                 icon={Truck}
                 loading={working}
                 onClick={split}
-                disabled={working || !buyable.length}
+                disabled={working || !splittable.length}
+                title={splittable.length
+                  ? undefined
+                  : 'Mọi món có số dự mua đều đã chuyển sang phiếu mua tạm'}
               >
-                Tạo phiếu nhập tạm
+                Lập phiếu mua tạm
               </Button>
             )}
             <div className="flex-1" />
@@ -481,9 +602,10 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                   </div>
                   <div className="rounded-lg border border-line bg-muted p-2.5 text-[13px]">
                     <div className="font-semibold mb-0.5 flex items-center gap-1.5">
-                      <Truck size={14} aria-hidden="true" /> Tạo phiếu nhập tạm
+                      <Truck size={14} aria-hidden="true" /> Lập phiếu mua tạm
                     </div>
-                    Gom hàng theo mối, mỗi mối một phiếu nhập tạm.
+                    Gom hàng theo mối, mỗi mối một phiếu mua tạm. Món đã lập rồi thì khoá lại,
+                    bấm lần nữa cũng không đặt trùng.
                     {chosenCount < buyable.length && (
                       <span className="text-danger font-semibold">
                         {' '}Còn {n(buyable.length - chosenCount)} món chưa chọn mối.
@@ -492,10 +614,29 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                   </div>
                 </div>
 
+                <div className="flex flex-wrap items-center gap-2 text-2xs">
+                  <Badge tone={SPLIT_STATE[rq.split_state]?.tone}>
+                    {SPLIT_STATE[rq.split_state]?.label}
+                  </Badge>
+                  {buyable.length > 0 && (
+                    <span className="text-muted-ink">
+                      {n(buyable.length - splittable.length)}/{n(buyable.length)} món đã chuyển sang phiếu mua tạm
+                    </span>
+                  )}
+                  {rq.merged_into_code && (
+                    <Badge tone="info">Đã gộp vào {rq.merged_into_code}</Badge>
+                  )}
+                  {rq.merged_from?.length > 0 && (
+                    <span className="text-muted-ink">
+                      Gộp từ {rq.merged_from.map((x) => x.code).join(', ')}
+                    </span>
+                  )}
+                </div>
+
                 {rq.adjusted_at && (
                   <div className="text-2xs text-muted-ink">
                     Lần cập nhật kho gần nhất: {datetime(rq.adjusted_at)}
-                    {rq.split_at && ` · Lần tách phiếu gần nhất: ${datetime(rq.split_at)}`}
+                    {rq.split_at && ` · Lần lập phiếu mua gần nhất: ${datetime(rq.split_at)}`}
                   </div>
                 )}
 
@@ -523,11 +664,13 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                         const counted = it.actual_qty !== null && it.actual_qty !== undefined;
                         const diff = counted ? Number(it.actual_qty) - Number(it.system_qty) : null;
                         return (
-                          <tr key={it.id} className={picked.has(it.id) ? 'bg-accent-soft/40' : ''}>
+                          <tr key={it.id}
+                            className={`${picked.has(it.id) ? 'bg-accent-soft/40' : ''} ${it.locked ? 'opacity-60 bg-muted/40' : ''}`}>
                             <td>
                               <input
                                 type="checkbox"
                                 checked={picked.has(it.id)}
+                                disabled={it.locked}
                                 onChange={() => toggle(it.id)}
                                 aria-label={`Chọn ${it.name_snapshot}`}
                               />
@@ -542,6 +685,18 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                                   </span>
                                 )}
                               </div>
+                              {it.pack_spec && (
+                                <div className="text-2xs text-muted-ink">Quy cách: {it.pack_spec}</div>
+                              )}
+                              {/* Khoá chống lập trùng (tài liệu 15, mục 4.4) */}
+                              {it.locked && (
+                                <div className="text-2xs font-semibold text-muted-ink flex items-center gap-1 mt-0.5">
+                                  <Lock size={10} aria-hidden="true" />
+                                  Đã lập phiếu mua tạm
+                                  {it.split_draft_code && ` ${it.split_draft_code}`}
+                                  {' '}— không sửa được nữa
+                                </div>
+                              )}
                             </td>
                             <td className="num text-muted-ink">
                               {fq(it.system_qty)}
@@ -552,7 +707,7 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                               )}
                             </td>
                             <td>
-                              {rq.status === 'open' && it.adjusted !== 1 ? (
+                              {rq.status === 'open' && it.adjusted !== 1 && !it.locked ? (
                                 <QtyInput
                                   value={it.actual_qty ?? ''}
                                   placeholder="chưa đếm"
@@ -569,7 +724,7 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                               )}
                             </td>
                             <td>
-                              {rq.status === 'open' ? (
+                              {rq.status === 'open' && !it.locked ? (
                                 <QtyInput value={it.buy_qty} min={0}
                                   onChange={(v) => patchItem(it, { buy_qty: v })}
                                   aria-label={`Dự mua ${it.name_snapshot}`} />
@@ -579,7 +734,7 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                               <SupplierTags
                                 item={it}
                                 suppliers={suppliers || []}
-                                readOnly={rq.status !== 'open'}
+                                readOnly={rq.status !== 'open' || it.locked}
                                 onChange={(ids) => patchItem(it, { supplier_ids: ids })}
                               />
                             </td>
@@ -617,6 +772,31 @@ function RequisitionDetail({ id, onClose, onChanged }) {
 
       {splitResult && (
         <SplitResult result={splitResult} onClose={() => setSplitResult(null)} />
+      )}
+
+      {bulkOpen && (
+        <BulkSupplierModal
+          items={items.filter((i) => picked.has(i.id))}
+          suppliers={suppliers || []}
+          onClose={() => setBulkOpen(false)}
+          onDone={async (supplierId, replace) => {
+            setWorking(true);
+            try {
+              const res = await api.assignRequisitionSupplier(id, {
+                supplier_id: supplierId, item_ids: [...picked], replace,
+              });
+              toast(
+                `Đã gán ${res.supplier.name} cho ${n(res.assigned)} món`
+                + (res.locked.length ? ` · bỏ qua ${res.locked.length} món đã lập phiếu mua` : ''),
+                res.locked.length ? 'warn' : 'ok', 7000);
+              setBulkOpen(false);
+              reload();
+              onChanged?.();
+            } catch (e) {
+              toast(e.message, 'bad', 7000);
+            } finally { setWorking(false); }
+          }}
+        />
       )}
     </>
   );
@@ -686,6 +866,165 @@ function SupplierTags({ item, suppliers, readOnly, onChange }) {
         </Select>
       )}
     </div>
+  );
+}
+
+/* ================ GÁN NHÀ CUNG CẤP HÀNG LOẠT ======================= */
+
+/**
+ * Chọn một mối cho tất cả các dòng đang tích (tài liệu 15, mục 4.2).
+ *
+ * Danh sách gợi ý xếp MỐI ĐÃ TỪNG GIAO những món này lên đầu — đọc từ lịch
+ * sử phiếu nhập, không chỉ từ danh sách mối đã khai trong thẻ hàng hoá, vì
+ * mối giao một lần rồi thường chẳng ai khai vào thẻ. Muốn mối mới thì gõ
+ * tìm trong toàn bộ danh mục.
+ */
+function BulkSupplierModal({ items, suppliers, onClose, onDone }) {
+  const [q, setQ] = useState('');
+  const [picked, setPicked] = useState(null);
+  const [replace, setReplace] = useState(false);
+  const [opts, setOpts] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  /* Gom gợi ý của mọi món đang chọn: mối nào giao được nhiều món nhất thì
+     xếp trước — đặt một mối cho cả phiếu là đỡ nhất. */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const byId = new Map();
+      for (const it of items) {
+        try {
+          const res = await api.supplierOptions(it.product_id);
+          for (const x of res.rows || []) {
+            const cur = byId.get(x.supplier_id) || { ...x, covers: 0, supplied: 0 };
+            cur.covers += 1;
+            if (x.supplied_before) cur.supplied += 1;
+            byId.set(x.supplier_id, cur);
+          }
+        } catch { /* món này không tra được thì thôi, còn món khác */ }
+      }
+      if (!alive) return;
+      setOpts([...byId.values()].sort((a, b) => b.supplied - a.supplied || b.covers - a.covers
+        || a.name.localeCompare(b.name)));
+    })();
+    return () => { alive = false; };
+  }, [items]);
+
+  const suggested = opts || [];
+  const suggestedIds = new Set(suggested.map((x) => x.supplier_id));
+  const others = useMemo(() => {
+    const list = (suppliers || []).filter((s) => !suggestedIds.has(s.id));
+    const k = q.trim();
+    return (k ? list.filter((s) => match(s.name, k) || (s.phone || '').includes(k)) : list).slice(0, 40);
+  }, [suppliers, q, opts]);
+
+  const pickedName = picked
+    ? (suggested.find((x) => x.supplier_id === picked)?.name
+      || suppliers.find((s) => s.id === picked)?.name)
+    : '';
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Chọn nhà cung cấp cho các món đã tích"
+      subtitle={`${n(items.length)} mặt hàng · mối đã từng giao những món này xếp lên đầu`}
+      size="lg"
+      footer={<>
+        <label className="mr-auto flex items-center gap-1.5 text-[13px] cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer"
+            checked={replace}
+            onChange={(e) => setReplace(e.target.checked)}
+          />
+          Thay hẳn mối đang chọn (bỏ chọn = gán thêm để hỏi giá nhiều nơi)
+        </label>
+        <Button onClick={onClose}>Huỷ</Button>
+        <Button
+          variant="primary"
+          loading={busy}
+          disabled={!picked || busy}
+          onClick={async () => { setBusy(true); await onDone(picked, replace); setBusy(false); }}
+        >
+          Gán {pickedName ? `"${pickedName}"` : 'nhà cung cấp'}
+        </Button>
+      </>}
+    >
+      <div className="space-y-3">
+        <div className="rounded-lg border border-line bg-muted/40 p-2.5 text-[13px]">
+          <b>Các món đang chọn:</b>{' '}
+          {items.slice(0, 6).map((x) => x.name_snapshot).join(', ')}
+          {items.length > 6 && ` ... và ${n(items.length - 6)} món nữa`}
+        </div>
+
+        <div>
+          <h3 className="text-[13px] font-bold mb-1.5">
+            Mối gợi ý {opts === null && <span className="text-2xs text-muted-ink">(đang tra lịch sử...)</span>}
+          </h3>
+          {suggested.length === 0 ? (
+            <p className="text-[13px] text-muted-ink">
+              Chưa có mối nào từng giao những món này. Tìm trong danh mục bên dưới.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {suggested.map((x) => (
+                <li key={x.supplier_id}>
+                  <button
+                    type="button"
+                    onClick={() => setPicked(x.supplier_id)}
+                    aria-pressed={picked === x.supplier_id}
+                    className={`w-full flex items-center gap-2 rounded border px-2.5 py-1.5 text-left
+                                cursor-pointer transition-colors duration-100
+                                ${picked === x.supplier_id
+                                  ? 'border-accent bg-accent-soft'
+                                  : 'border-line hover:bg-muted'}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-semibold">{x.name}</div>
+                      <div className="text-2xs text-muted-ink">
+                        {x.supplied > 0
+                          ? `Đã từng giao ${n(x.supplied)}/${n(items.length)} món đang chọn`
+                          : 'Có khai trong thẻ hàng hoá'}
+                        {x.phone && ` · ${x.phone}`}
+                      </div>
+                    </div>
+                    {x.quote_price > 0 && (
+                      <Badge tone="info">Có báo giá {money(x.quote_price)}</Badge>
+                    )}
+                    {x.is_primary === 1 && <Badge tone="ok">Mối chính</Badge>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-[13px] font-bold mb-1.5">Tìm mối khác trong danh mục</h3>
+          <SearchInput value={q} onChange={setQ} placeholder="Gõ tên nhà cung cấp..." />
+          {others.length === 0 ? (
+            <p className="text-[13px] text-muted-ink mt-1.5">
+              {q ? `Không có nhà cung cấp nào khớp "${q}".` : 'Hết danh sách.'}
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5 mt-1.5 max-h-40 overflow-y-auto">
+              {others.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setPicked(s.id)}
+                  aria-pressed={picked === s.id}
+                  className={`btn btn-sm ${picked === s.id ? 'btn-primary' : 'btn-outline'}`}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

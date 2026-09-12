@@ -20,6 +20,10 @@ export const ACCESS_RULES = [
   ['GET',  /^\/system-info/,              null],
   ['GET',  /^\/carriers/,                 null],
   ['GET',  /^\/users$/,                   null],   // màn hình đăng nhập cần
+  /* Ảnh hàng hoá và danh sách hàng ghim đầu lưới: màn hình bán hàng cần,
+     mà ảnh thì không có gì bí mật (tài liệu 13, 14) */
+  ['GET',  /^\/product-image\//,          null],
+  ['GET',  /^\/pos-featured$/,            null],
 
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],
@@ -53,6 +57,11 @@ export const ACCESS_RULES = [
      thẳng tồn kho, một cái mở đường cho việc chi tiền mua hàng. */
   ['POST', /^\/requisitions\/\d+\/adjust$/, 'stock.manage'],
   ['POST', /^\/requisitions\/\d+\/split$/,  'purchase.manage'],
+  /* Gộp phiếu và gán mối hàng loạt: hai việc của kế toán mua hàng */
+  ['POST', /^\/requisitions\/merge$/,       'purchase.manage'],
+  ['POST', /^\/requisitions\/\d+\/assign-supplier$/, 'purchase.manage'],
+  /* Gợi ý mối kèm giá mối báo — là giá vốn, khoá theo quyền mua hàng */
+  ['GET',  /^\/requisition-supplier-options$/, 'purchase.manage'],
   ['*',    /^\/requisition/,               'product.view'],
 
   /* Danh sách mối của một mặt hàng: xem thì cần biết giá nhập lần trước,
@@ -72,6 +81,8 @@ export const ACCESS_RULES = [
   ['GET',  /^\/products/,                 'product.view'],
   ['PUT',  /^\/products\/\d+\/cost$/,     'cost.view'],
   ['*',    /^\/products/,                 'product.manage'],
+  /* Hàng ghim đầu lưới POS: chủ tiệm quyết bán mùa nào món nào */
+  ['PUT',  /^\/pos-featured$/,            'product.manage'],
   ['*',    /^\/categories/,               'product.manage'],
   ['GET',  /^\/stock$/,                   'product.view'],
   ['*',    /^\/stock/,                    'stock.manage'],

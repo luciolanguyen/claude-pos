@@ -131,8 +131,8 @@ export const COST_METHOD_LABEL = {
 export const COST_METHOD_HINT = {
   average: 'Mỗi lần nhập hàng thì tính bình quân lại theo số đang tồn. '
     + 'Trả hàng cho mối thì rút phần đó ra. Hợp với hàng hay đổi giá.',
-  fixed: 'Chốt một lần rồi thôi: lần nhập đầu tiên lấy luôn giá nhập làm giá vốn, '
-    + 'sau đó giá nhập lên xuống cũng không đổi. Muốn đổi thì sửa tay.',
+  fixed: 'Giữ nguyên con số đã khai: giá nhập lên xuống cũng không đổi giá vốn. '
+    + 'Muốn đổi thì sửa tay ở thẻ hàng hoá, hoặc tích ô "Ghi đè giá vốn" trên phiếu nhập.',
 };
 
 export const ROLE_LABEL = {
@@ -209,3 +209,37 @@ export function match(haystack, needle) {
   if (!needle) return true;
   return noAccent(haystack).includes(noAccent(needle));
 }
+
+/**
+ * Khớp theo kiểu tìm người dùng chọn (tài liệu 13, mục 2.1).
+ *   'exact'    — khớp trọn cả ô, dùng khi quét mã vạch hay dò đúng một mã
+ *   'contains' — khớp một khúc, kiểu quen dùng
+ */
+export function matchMode(haystack, needle, mode = 'contains') {
+  if (!needle) return true;
+  const h = noAccent(haystack);
+  const n = noAccent(needle);
+  return mode === 'exact' ? h === n : h.includes(n);
+}
+
+/**
+ * Ba số điện thoại của một khách (tài liệu 14, mục 4.2). Gõ số nào cũng
+ * phải ra đúng hồ sơ đó, nên mọi ô chọn khách đều tra cả ba.
+ */
+export const customerPhones = (c) =>
+  [c?.phone, c?.phone2, c?.phone3].filter(Boolean);
+
+/** Khớp một khách theo tên, mã khách hoặc bất kỳ số nào trong ba số. */
+export function matchCustomer(c, q) {
+  const k = String(q ?? '').trim();
+  if (!k) return true;
+  return match(c.name, k) || match(c.code || '', k)
+    || customerPhones(c).some((ph) => ph.includes(k))
+    || match(c.company_name || '', k);
+}
+
+/** Ô tìm nào cũng nhớ kiểu tìm người dùng chọn lần trước. */
+export const SEARCH_MODES = [
+  ['contains', 'Tìm có chứa', 'Ra mọi kết quả chứa từ khoá — kiểu quen dùng'],
+  ['exact', 'Tìm chính xác', 'Chỉ ra kết quả khớp trọn từ khoá, ví dụ đúng một mã hàng'],
+];

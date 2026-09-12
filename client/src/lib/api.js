@@ -147,6 +147,25 @@ export const api = {
   codReceivables: () => request('GET', '/cod-receivables'),
   reconcileCod: (id, body) => request('PUT', `/sales/${id}/cod`, body),
 
+  /* --- Đợt 15: ảnh hàng hoá, đơn vị tính, hàng ghim, báo giá NCC --- */
+  productImages: (id, images) => request('POST', `/products/${id}/images`, { images }),
+  setMainImage: (id, imgId) => request('PUT', `/products/${id}/images/${imgId}/main`),
+  deleteImage: (id, imgId) => request('DELETE', `/products/${id}/images/${imgId}`),
+  imageUrl: (file) => (file ? `/api/product-image/${encodeURIComponent(file)}` : null),
+  deleteUnit: (id, unitId) => request('DELETE', `/products/${id}/units/${unitId}`),
+  restoreUnit: (id, unitId) => request('PUT', `/products/${id}/units/${unitId}/restore`),
+  quickPrice: (id, body) => request('PUT', `/products/${id}/price`, body),
+  posFeatured: () => request('GET', '/pos-featured'),
+  savePosFeatured: (items) => request('PUT', '/pos-featured', { items }),
+  supplierQuotes: (id) => request('GET', `/suppliers/${id}/quotes`),
+  saveSupplierQuotes: (id, rows) => request('PUT', `/suppliers/${id}/quotes`, { rows }),
+  requisitions: (params) => request('GET', '/requisitions' + qs(params)),
+  requisition: (id) => request('GET', `/requisitions/${id}`),
+  supplierOptions: (productId) =>
+    request('GET', '/requisition-supplier-options' + qs({ product_id: productId })),
+  assignRequisitionSupplier: (id, body) => request('POST', `/requisitions/${id}/assign-supplier`, body),
+  mergeRequisitions: (body) => request('POST', '/requisitions/merge', body),
+
   /* --- Hệ thống --- */
   me: () => request('GET', '/me'),
   settings: () => request('GET', '/settings'),

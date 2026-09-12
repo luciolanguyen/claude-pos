@@ -285,6 +285,7 @@ function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
 
 export function CartLine({
   l, hist, showCost, onQty, onUnit, onPrice, onAmount, onDiscount, onRemove, onHistory, onNote,
+  highlight = false, lineRef = null,
 }) {
   const { gross, disc, amount } = lineAmount(l);
   const [tagAnchor, setTagAnchor] = useState(null);
@@ -293,7 +294,15 @@ export function CartLine({
   const profit = amount - cost;
 
   return (
-    <li className="p-2.5 hover:bg-muted/40 transition-colors duration-100">
+    /* highlight: thu ngân đang rê chuột vào ô hàng này ở lưới bên trái
+       (tài liệu 14, mục 3) — đổi màu để nhìn một cái là thấy nó nằm đâu */
+    <li
+      ref={lineRef}
+      className={`p-2.5 transition-colors duration-150
+                  ${highlight
+                    ? 'bg-amber-100 ring-2 ring-inset ring-amber-400'
+                    : 'hover:bg-muted/40'}`}
+    >
       <div className="flex items-start gap-1">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold leading-snug">{l.name}</div>
@@ -350,8 +359,14 @@ export function CartLine({
           <button
             type="button"
             className="w-7 h-7 flex items-center justify-center hover:bg-muted transition-colors duration-100 cursor-pointer"
-            aria-label={`Giảm số lượng ${l.name}`}
-            onClick={() => onQty(Math.max(0.01, l.qty - 1))}
+            aria-label={l.qty <= 1 ? `Bỏ ${l.name} khỏi giỏ` : `Giảm số lượng ${l.name}`}
+            onClick={() => {
+              /* Bớt về 0 thì xoá hẳn khỏi giỏ, khỏi phải bấm thêm nút xoá
+                 (tài liệu 13, mục 3.2) */
+              const next = l.qty - 1;
+              if (next <= 0) onRemove();
+              else onQty(next);
+            }}
           >
             <Minus size={13} aria-hidden="true" />
           </button>
@@ -363,7 +378,13 @@ export function CartLine({
             value={l.qty}
             onFocus={(e) => e.target.select()}
             onChange={(e) => onQty(e.target.value === '' ? '' : Number(e.target.value))}
-            onBlur={(e) => { if (!Number(e.target.value)) onQty(1); }}
+            onBlur={(e) => {
+              /* Gõ 0 rồi rời ô cũng là ý muốn bỏ món đó ra khỏi giỏ. Để
+                 trống thì coi như chưa gõ xong, trả về 1. */
+              const v = e.target.value;
+              if (v === '') { onQty(1); return; }
+              if (Number(v) <= 0) onRemove();
+            }}
           />
           <button
             type="button"

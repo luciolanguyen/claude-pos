@@ -4,7 +4,7 @@ import {
   FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
+import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
@@ -12,7 +12,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
-import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal, { CartPickerButton } from '../components/CartPickerModal';
 import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
@@ -25,13 +25,16 @@ export default function Purchases() {
   const [rangeKey, setRangeKey] = useState('day30');
   const [onlyUnpaid, setOnlyUnpaid] = useState(false);
   const r = useMemo(() => range(rangeKey), [rangeKey]);
+  const [mode, setMode] = useSearchMode();
 
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
   } = usePaged(
-    (pg) => api.purchases({ q: dq, from: r.from, to: r.to, unpaid: onlyUnpaid ? 1 : '', ...pg }),
-    [dq, r.from, r.to, onlyUnpaid],
+    (pg) => api.purchases({
+      q: dq, match: mode, from: r.from, to: r.to, unpaid: onlyUnpaid ? 1 : '', ...pg,
+    }),
+    [dq, mode, r.from, r.to, onlyUnpaid],
     { key: 'purchases' }
   );
 
@@ -127,7 +130,7 @@ export default function Purchases() {
         }
       >
         <div className="flex flex-wrap gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Tìm mã phiếu, tên NCC, số hoá đơn..." className="w-full sm:w-80" />
+          <SearchInput value={q} onChange={setQ} mode={mode} onMode={setMode} placeholder="Tìm mã phiếu, tên NCC, số hoá đơn..." className="w-full sm:w-80" />
           <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
             {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </Select>
@@ -531,7 +534,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
 
   const addProduct = (p, qty = 1) => {
     const add = Number(qty) > 0 ? Number(qty) : 1;
-    const unit = p.units.find((u) => u.factor === 1) || p.units[0];
+    /* Nhảy sẵn ĐƠN VỊ MUA CHÍNH đã khai ở thẻ hàng hoá (tài liệu 13, mục 1.3):
+       hàng bán lẻ theo mét nhưng nhập theo cuộn thì khỏi phải đổi tay mỗi lần. */
+    const unit = p.units.find((u) => u.id === p.buy_unit_id)
+      || p.units.find((u) => u.factor === 1) || p.units[0];
     const key = `${p.id}:${unit.id}`;
     setLines((prev) => {
       if (prev.some((l) => l.key === key)) {
@@ -539,9 +545,11 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
       }
       return [...prev, {
         key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
+        pack_spec: p.pack_spec || null,
         units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
         qty: add, price: Math.round(p.cost_price * unit.factor), discount: 0,
-        vat_rate: p.vat_rate, current_stock: p.stock,
+        vat_rate: p.vat_rate, current_stock: p.stock, current_cost: p.cost_price,
+        overwrite_cost: false,
       }];
     });
   };
@@ -613,6 +621,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
           discount_percent: Number(l.discount_percent) || 0,
           discount: l.discount || 0,
           vat_rate: applyVat ? l.vat_rate : 0,
+          unit_id: l.unit_id,
+          /* Tích ô thì giá vốn mặt hàng lấy đúng giá nhập lần này
+             (tài liệu 13, mục 1.2) */
+          overwrite_cost: !!l.overwrite_cost,
         })),
         custom_items: customLines.map((c) => ({
           name: String(c.name).trim(), unit_name: c.unit_name || null, qty: Number(c.qty),
@@ -696,9 +708,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
 
           <div className="flex items-center justify-between gap-2">
             <span className="label !mb-0">Danh sách hàng nhập ({lines.length})</span>
-            <Button variant="primary" size="sm" icon={Plus} onClick={() => setPickerOpen(true)}>
-              Chọn hàng
-            </Button>
+            <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
           </div>
 
           {lines.length === 0 ? (
@@ -706,7 +716,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
               icon={FileText}
               title="Chưa chọn hàng nào"
               message="Bấm Chọn hàng để thêm các mặt hàng lấy về từ nhà cung cấp."
-              action={<Button variant="primary" icon={Plus} onClick={() => setPickerOpen(true)}>Chọn hàng</Button>}
+              action={<CartPickerButton kind="purchase" size="md" onClick={() => setPickerOpen(true)} />}
             />
           ) : (
             <div className="table-wrap">
@@ -721,6 +731,28 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                     <th style={{ width: 130 }} className="text-right">Giá sau CK</th>
                     <th className="text-right">Quy đổi</th>
                     <th className="text-right">Thành tiền</th>
+                    {/* Ghi đè giá vốn (tài liệu 13, mục 1.2): tích ở đầu cột là
+                        tích cả phiếu, hoặc tích lẻ từng dòng bên dưới */}
+                    <th style={{ width: 92 }} className="text-center">
+                      <label className="flex flex-col items-center gap-0.5 cursor-pointer"
+                        title="Tích để ghi đè giá vốn của TẤT CẢ các dòng bằng đơn giá nhập trên phiếu này">
+                        <span className="leading-tight">Ghi đè<br />giá vốn</span>
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                          checked={lines.length > 0 && lines.every((l) => l.overwrite_cost)}
+                          ref={(el) => {
+                            if (el) {
+                              el.indeterminate = lines.some((l) => l.overwrite_cost)
+                                && !lines.every((l) => l.overwrite_cost);
+                            }
+                          }}
+                          onChange={(e) => setLines((prev) =>
+                            prev.map((l) => ({ ...l, overwrite_cost: e.target.checked })))}
+                          aria-label="Ghi đè giá vốn toàn bộ các dòng"
+                        />
+                      </label>
+                    </th>
                     <th style={{ width: 40 }} />
                   </tr>
                 </thead>
@@ -732,6 +764,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                         <div className="text-2xs text-muted-ink font-mono">
                           {l.sku} · tồn hiện tại {fq(l.current_stock)} {l.base_unit}
                         </div>
+                        {l.pack_spec && (
+                          <div className="text-2xs text-muted-ink">Quy cách: {l.pack_spec}</div>
+                        )}
                       </td>
                       <td>
                         {l.units.length > 1 ? (
@@ -778,6 +813,18 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                           : '—'}
                       </td>
                       <td className="num font-semibold">{money(Math.round(l.qty * netPrice(l)))}</td>
+                      <td className="text-center">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                          checked={!!l.overwrite_cost}
+                          onChange={(e) => updateLine(l.key, { overwrite_cost: e.target.checked })}
+                          aria-label={`Ghi đè giá vốn của ${l.name} bằng giá nhập lần này`}
+                          title={l.current_cost === undefined
+                            ? `Tích để đổi giá vốn thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`
+                            : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
+                        />
+                      </td>
                       <td>
                         <IconButton icon={Trash2} label={`Bỏ ${l.name}`} size={14}
                           className="!text-danger hover:!bg-red-50" onClick={() => removeLine(l.key)} />
@@ -939,11 +986,20 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         </div>
       </Modal>
 
-      <ProductPicker
+      {/* Hộp chọn hàng đồng bộ hai chiều với phiếu (tài liệu 15, mục 3) */}
+      <CartPickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
+        kind="purchase"
         products={products || []}
-        onPick={addProduct}
+        lines={lines}
+        onAdd={addProduct}
+        onPatch={updateLine}
+        onRemove={removeLine}
+        amountOf={(l) => Math.round(l.qty * netPrice(l))}
+        priceOf={(p) => p.cost_price}
+        priceLabel="Giá nhập"
+        footerNote="Tiền hàng trên phiếu"
         onCreateRequest={() => setCreatingProduct(true)}
       />
 

@@ -15,7 +15,7 @@
    ==================================================================== */
 import { useState, useEffect, useMemo } from 'react';
 import {
-  HandCoins, AlertTriangle, CheckCircle2, Wallet, CreditCard, Printer, Lock,
+  HandCoins, AlertTriangle, CheckCircle2, Wallet, CreditCard, Printer, Lock, Users,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -54,6 +54,35 @@ export function DebtButton({ customer, onOpen }) {
       <HandCoins size={14} aria-hidden="true" />
       Thu nợ
       {debt > 0 && <span className="tabular">{n(debt)}</span>}
+    </button>
+  );
+}
+
+/**
+ * Nút thứ hai, luôn hiện (tài liệu 13, mục 3.3): mang nhãn số khách đang nợ
+ * và mở thẳng danh sách tất cả khách còn nợ, thu được ngay tại đó mà không
+ * phải quay ra chọn khách cho tab đang bán.
+ */
+export function AllDebtsButton({ customers = [], onOpen }) {
+  const owing = customers.filter((c) => Number(c.debt) > 0);
+  const total = owing.reduce((a, c) => a + Number(c.debt || 0), 0);
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={owing.length
+        ? `${owing.length} khách đang nợ, tổng ${money(total)} — bấm để xem và thu`
+        : 'Không có khách nào đang nợ'}
+      aria-label={`Thu nợ — ${owing.length} khách đang nợ`}
+      className={`h-9 px-2.5 rounded border text-[13px] font-semibold hidden lg:flex items-center gap-1.5
+                  transition-colors duration-150 cursor-pointer
+                  ${owing.length
+                    ? 'bg-white/10 border-white/15 text-slate-200 hover:text-white hover:bg-white/20'
+                    : 'bg-white/5 border-white/10 text-slate-400'}`}
+    >
+      <Users size={14} aria-hidden="true" />
+      Thu nợ
+      <span className="tabular">({n(owing.length)})</span>
     </button>
   );
 }

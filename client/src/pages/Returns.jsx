@@ -11,7 +11,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
-import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal, { CartPickerButton } from '../components/CartPickerModal';
 
 /* ==================================================================== */
 /* Khách trả hàng — danh sách                                            */
@@ -743,7 +743,8 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
 
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="label !mb-0">Hàng trả lại ({lines.length})</span>
-                <Button variant="primary" size="sm" icon={Plus} onClick={() => setPickerOpen(true)}>Chọn hàng</Button>
+                <CartPickerButton kind="purchase_return" count={lines.length}
+                  onClick={() => setPickerOpen(true)} />
               </div>
 
               {lines.length === 0 ? (
@@ -920,12 +921,22 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
         </div>
       </Modal>
 
-      <ProductPicker
+      {/* Hộp chọn hàng đồng bộ hai chiều, màu cam của luồng hàng đi ra
+          (tài liệu 15, mục 3) */}
+      <CartPickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        products={products || []}
-        onPick={addProduct}
+        kind="purchase_return"
         title="Chọn hàng cần trả lại NCC"
+        products={products || []}
+        lines={lines}
+        onAdd={addProduct}
+        onPatch={updateLine}
+        onRemove={removeLine}
+        amountOf={(l) => Math.round((Number(l.qty) || 0) * (Number(l.price) || 0))}
+        priceOf={(p) => p.cost_price}
+        priceLabel="Giá trả"
+        footerNote="Giá trị hàng trả"
       />
     </>
   );
