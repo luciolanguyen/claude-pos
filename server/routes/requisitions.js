@@ -17,7 +17,7 @@
    ==================================================================== */
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf, pageParams, getSettings, searchMode,
+  all, get, run, tx, nextCode, moveStock, costOf, pageParams, getSettings, searchWhere,
 } from '../db.js';
 
 const r = Router();
@@ -34,9 +34,9 @@ r.get('/requisitions', (req, res) => {
   if (from) { where.push('date(rq.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(rq.ts) <= date(?)'); params.push(to); }
   if (q.trim()) {
-    where.push('(rq.code LIKE ? OR rq.note LIKE ? OR u.full_name LIKE ?)');
-    const like = searchMode(req.query.match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    params.push(like, like, like);
+    const c = searchWhere(['rq.code', 'rq.note', 'u.full_name'], q, req.query.match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query, 20);
@@ -148,7 +148,14 @@ export function supplierOptions(productId) {
  * Có báo giá của mối thì LẤY ĐÚNG con số đó; chưa có thì rơi về giá mua gần
  * nhất của mối, rồi giá nhập gần nhất của hệ thống, cuối cùng là giá vốn.
  */
-export function injectedPrice(productId, supplierId, costPrice = 0) {
+export function injectedPrice(productId, supplierId, costPrice = 0, itemId = null) {
+  /* Kế toán vừa gõ báo giá ngay trên phiếu thì lấy ĐÚNG con số đó — đó là
+     giá mối báo hôm nay, mới hơn mọi thứ đang lưu (tài liệu 17, mục 2.2). */
+  if (itemId) {
+    const typed = get(`SELECT quote_price FROM requisition_item_suppliers
+                       WHERE item_id = ? AND supplier_id = ?`, [itemId, supplierId])?.quote_price;
+    if (Number(typed) > 0) return { price: Number(typed), source: 'typed_quote' };
+  }
   const link = get(`SELECT quote_price, last_price FROM product_suppliers
                     WHERE product_id = ? AND supplier_id = ?`, [productId, supplierId]);
   if (Number(link?.quote_price) > 0) {
@@ -192,8 +199,13 @@ function detail(id) {
   /* Mối nào bán món này, và mối nào đang được chọn trên phiếu */
   for (const it of rq.items) {
     it.suppliers = supplierOptions(it.product_id);
-    it.chosen = all('SELECT supplier_id FROM requisition_item_suppliers WHERE item_id = ?',
-      [it.id]).map((x) => x.supplier_id);
+    const picked = all(`SELECT supplier_id, quote_price FROM requisition_item_suppliers
+                        WHERE item_id = ?`, [it.id]);
+    it.chosen = picked.map((x) => x.supplier_id);
+    /* Báo giá kế toán gõ thẳng trên phiếu cho từng mối (tài liệu 17, mục 2.2) */
+    it.quotes = Object.fromEntries(picked
+      .filter((x) => Number(x.quote_price) > 0)
+      .map((x) => [x.supplier_id, x.quote_price]));
     /* Đã chuyển sang phiếu mua tạm thì KHOÁ: không sửa số, không lập lại */
     it.locked = !!it.split_at;
   }
@@ -311,11 +323,24 @@ r.put('/requisitions/:id/items/:itemId', (req, res) => {
           it.id]);
 
       if (Array.isArray(b.supplier_ids)) {
+        /* Giữ lại báo giá đã gõ cho những mối vẫn còn được chọn */
+        const keep = new Map(all(`SELECT supplier_id, quote_price FROM requisition_item_suppliers
+                                  WHERE item_id = ?`, [it.id]).map((x) => [x.supplier_id, x.quote_price]));
         run('DELETE FROM requisition_item_suppliers WHERE item_id = ?', [it.id]);
         for (const sid of [...new Set(b.supplier_ids.map(Number).filter(Boolean))]) {
-          run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
-            [it.id, sid]);
+          run(`INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id, quote_price)
+               VALUES(?, ?, ?)`, [it.id, sid, keep.get(sid) ?? null]);
         }
+      }
+      /* Gõ báo giá mới cho một mối: { supplier_id, quote_price }.
+         Gõ 0 hoặc để trống là xoá báo giá, quay về giá nhập mặc định. */
+      if (b.quote && Number(b.quote.supplier_id)) {
+        const sid = Number(b.quote.supplier_id);
+        const price = Math.max(0, Math.round(Number(b.quote.quote_price) || 0));
+        run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
+          [it.id, sid]);
+        run(`UPDATE requisition_item_suppliers SET quote_price = ?
+             WHERE item_id = ? AND supplier_id = ?`, [price > 0 ? price : null, it.id, sid]);
       }
       return detail(Number(req.params.id));
     });
@@ -342,6 +367,7 @@ r.post('/requisitions/:id/assign-supplier', (req, res) => {
     const wanted = Array.isArray(req.body.item_ids)
       ? req.body.item_ids.map(Number).filter(Boolean) : [];
     if (!wanted.length) throw badRequest('Chưa chọn dòng hàng nào để gán nhà cung cấp');
+    const quote = Math.max(0, Math.round(Number(req.body.quote_price) || 0));
 
     const out = tx(() => {
       const assigned = [];
@@ -356,6 +382,11 @@ r.post('/requisitions/:id/assign-supplier', (req, res) => {
         }
         run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
           [it.id, sup.id]);
+        /* Gán hàng loạt kèm luôn một mức báo giá chung, nếu kế toán có gõ */
+        if (quote > 0) {
+          run(`UPDATE requisition_item_suppliers SET quote_price = ?
+               WHERE item_id = ? AND supplier_id = ?`, [quote, it.id, sup.id]);
+        }
         assigned.push(it.name_snapshot);
       }
       return {
@@ -604,7 +635,7 @@ r.post('/requisitions/:id/split', (req, res) => {
           /* Đổ giá tự động (tài liệu 15, mục 4.3): ưu tiên báo giá của mối,
              rồi giá mối bán lần trước, rồi giá nhập gần nhất, rồi giá vốn.
              Chỉ là con số đổ sẵn — người lập phiếu nhập vẫn sửa lại được. */
-          const inj = injectedPrice(it.product_id, supplierId, it.cost_price);
+          const inj = injectedPrice(it.product_id, supplierId, it.cost_price, it.id);
           /* Kèm luôn danh sách đơn vị: biểu mẫu phiếu nhập cần nó để vẽ
              ô chọn cái / hộp / thùng. Thiếu là biểu mẫu nổ khi mở lại.
              Đơn vị đã ngừng hoạt động không đưa vào — không nhập mới bằng nó. */

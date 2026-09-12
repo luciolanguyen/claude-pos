@@ -6,7 +6,10 @@
    chỗ rồi thêm thẳng vào phiếu nhập.
    ==================================================================== */
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, Wrench, ChevronDown, RotateCcw, AlertTriangle } from 'lucide-react';
+import {
+  Plus, Trash2, Wrench, ChevronDown, RotateCcw, AlertTriangle, FileText, Layers,
+  Image as ImageIcon,
+} from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
 import { money, n, qty as fq, COST_METHOD_LABEL } from '../lib/format';
@@ -23,7 +26,7 @@ const EMPTY = {
   cost_price: '', vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
   warranty_months: 0, warranty_note: '',
-  description: '', pack_spec: '',
+  description: '', pack_spec: '', purchase_note: '',
   opening_qty: 0, opening_warehouse_id: '',
   cost_method: '',        // rỗng = theo thiết lập chung của tiệm
 };
@@ -48,11 +51,20 @@ export function ProductForm({ open, product, onClose, onSaved }) {
      rồi gửi kèm lúc lưu mặt hàng (tài liệu 13, mục 1.4) */
   const [images, setImages] = useState([]);
   const [staged, setStaged] = useState([]);
-  /* Đơn vị bán chính / mua chính, nhớ theo VỊ TRÍ dòng vì dòng mới chưa có mã */
-  const [sellIdx, setSellIdx] = useState(0);
-  const [buyIdx, setBuyIdx] = useState(0);
+  /* Dòng nào là ĐƠN VỊ CƠ BẢN — nhớ theo VỊ TRÍ dòng, KHÔNG suy ra từ con số
+     đang gõ. Suy ra từ con số là lỗi cũ: gõ "1" để rồi thành "10" thì ngay ký
+     tự đầu dòng đó đã bị coi là đơn vị cơ bản và ô bị khoá (tài liệu 16, mục 1). */
+  const [baseIdx, setBaseIdx] = useState(0);
   /* Cách tính thật sự áp cho món này: đặt riêng thì theo riêng, không thì theo tiệm */
   const effectiveCostMethod = form.cost_method || shopCostMethod;
+  /* Công tắc cho phép tích NHIỀU đơn vị bán chính / mua chính (tài liệu 16, mục 2.1).
+     Tắt đi chỉ đổi cách ô tích hoạt động, KHÔNG đụng tới dữ liệu đã lưu. */
+  const multiMain = settings?.pos?.multi_main_units === true;
+  /* "Giá bán gốc" ở vùng 1 chính là giá của đơn vị cơ bản theo bảng giá đầu
+     tiên — cùng một con số với ô trong lưới đơn vị bên dưới, không tách đôi. */
+  const basePriceListId = meta.priceLists?.[0]?.id ?? null;
+  const basePriceListName = meta.priceLists?.[0]?.name || 'bảng giá lẻ';
+  const basePrice = baseIdx >= 0 ? (units[baseIdx]?.prices?.[basePriceListId] || 0) : 0;
 
   /**
    * Gõ tay giá vốn.
@@ -97,23 +109,22 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           id: u.id, unit_name: u.unit_name, factor: u.factor, barcode: u.barcode || '',
           active: u.active === 0 ? 0 : 1, used: !!u.used,
           ref_unit_id: u.ref_unit_id || '', ref_qty: u.ref_qty || '',
+          pack_spec: u.pack_spec || '',
+          /* Hồ sơ cũ chưa có hai cờ này thì lấy theo hai cột cũ của mặt hàng */
+          is_sell_main: u.is_sell_main ? 1 : (u.id && u.id === product.sell_unit_id ? 1 : 0),
+          is_buy_main: u.is_buy_main ? 1 : (u.id && u.id === product.buy_unit_id ? 1 : 0),
           prices,
         };
       });
       const rows = list.length ? list : [{ unit_name: product.base_unit, factor: 1, prices: {} }];
       setUnits(rows);
-      const idxOf = (unitId) => {
-        const i = rows.findIndex((u) => u.id === unitId);
-        return i >= 0 ? i : rows.findIndex((u) => Number(u.factor) === 1);
-      };
-      setSellIdx(Math.max(0, idxOf(product.sell_unit_id)));
-      setBuyIdx(Math.max(0, idxOf(product.buy_unit_id)));
+      const bi = rows.findIndex((u) => Number(u.factor) === 1);
+      setBaseIdx(bi >= 0 ? bi : 0);
     } else {
       setForm({ ...EMPTY, opening_warehouse_id: defaultWarehouse || '' });
-      setUnits([{ unit_name: 'Cái', factor: 1, prices: {} }]);
+      setUnits([{ unit_name: 'Cái', factor: 1, prices: {}, is_sell_main: 1, is_buy_main: 1, active: 1 }]);
       setImages([]);
-      setSellIdx(0);
-      setBuyIdx(0);
+      setBaseIdx(0);
     }
   }, [open, product, defaultWarehouse]);
 
@@ -123,7 +134,43 @@ export function ProductForm({ open, product, onClose, onSaved }) {
   const setUnit = (i, patch) => setUnits((prev) => prev.map((u, j) => j === i ? { ...u, ...patch } : u));
   const setUnitPrice = (i, plId, price) => setUnits((prev) =>
     prev.map((u, j) => j === i ? { ...u, prices: { ...u.prices, [plId]: price } } : u));
-  const addUnit = () => setUnits((prev) => [...prev, { unit_name: '', factor: 10, prices: {}, active: 1 }]);
+  const addUnit = () => setUnits((prev) => [...prev,
+    { unit_name: '', factor: '', prices: {}, active: 1, is_sell_main: 0, is_buy_main: 0 }]);
+
+  /* Đơn vị bán chính / mua chính. Tắt công tắc đa ĐVT thì tích ô này là bỏ
+     tích mọi ô khác — về đúng nếp cũ một đơn vị (tài liệu 16, mục 2.1). */
+  const toggleMain = (i, key, on) => setUnits((prev) => prev.map((u, j) => {
+    if (j === i) return { ...u, [key]: on ? 1 : 0 };
+    return multiMain || !on ? u : { ...u, [key]: 0 };
+  }));
+
+  /**
+   * Soát bảng đơn vị. CHỈ gọi lúc rời ô (onBlur) hoặc lúc bấm Lưu — không
+   * bao giờ gọi lúc đang gõ (tài liệu 16, mục 1).
+   * Trả về câu báo lỗi, hoặc chuỗi rỗng nếu sạch.
+   */
+  const unitsError = (list = units, bi = baseIdx) => {
+    const seen = new Map();
+    for (const [i, u] of list.entries()) {
+      const name = String(u.unit_name ?? '').trim();
+      if (!name) return `Đơn vị dòng ${i + 1} chưa có tên.`;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return `Tên đơn vị "${name}" bị trùng ở dòng ${seen.get(key) + 1} và ${i + 1}.`;
+      seen.set(key, i);
+      if (i === bi) continue;
+      const v = Number(u.factor);
+      if (!u.factor && u.factor !== 0) return `Đơn vị "${name}" chưa có hệ số quy đổi.`;
+      if (!Number.isInteger(v) || v <= 0) {
+        return `Hệ số quy đổi của "${name}" phải là số nguyên dương lớn hơn 0.`;
+      }
+      if (v === 1) {
+        return `Hệ số 1 là của đơn vị cơ bản "${list[bi]?.unit_name || ''}".`
+          + ` Đơn vị "${name}" phải có hệ số khác 1.`;
+      }
+    }
+    return '';
+  };
+  const checkRows = () => setErr(unitsError());
 
   /**
    * Bỏ một đơn vị khỏi bảng.
@@ -147,8 +194,7 @@ export function ProductForm({ open, product, onClose, onSaved }) {
       }
     }
     setUnits((prev) => prev.filter((_, j) => j !== i));
-    setSellIdx((x) => (x === i ? 0 : x > i ? x - 1 : x));
-    setBuyIdx((x) => (x === i ? 0 : x > i ? x - 1 : x));
+    setBaseIdx((x) => (x > i ? x - 1 : x));
   };
 
   const restoreUnit = async (i) => {
@@ -175,24 +221,23 @@ export function ProductForm({ open, product, onClose, onSaved }) {
     return { ...u, ref_unit_id: ref?.id || '', ref_idx: refIdx, ref_qty: q || '', factor };
   }));
 
-  /* Đổi tên đơn vị cơ bản ở phần thông tin chung -> đồng bộ xuống bảng đơn vị */
+  /* Đổi tên đơn vị cơ bản ở phần thông tin chung -> đồng bộ xuống bảng đơn vị.
+     Bám theo VỊ TRÍ dòng cơ bản, không bám theo con số đang gõ. */
   useEffect(() => {
-    setUnits((prev) => prev.map((u) => u.factor === 1 ? { ...u, unit_name: form.base_unit } : u));
-  }, [form.base_unit]);
+    setUnits((prev) => prev.map((u, i) => (i === baseIdx ? { ...u, unit_name: form.base_unit } : u)));
+  }, [form.base_unit, baseIdx]);
 
   const save = async () => {
     if (!form.name.trim()) { setErr('Bắt buộc nhập tên hàng hoá.'); return; }
-    if (units.some((u) => !u.unit_name.trim())) { setErr('Mỗi đơn vị tính phải có tên.'); return; }
-    if (!units.some((u) => Number(u.factor) === 1)) { setErr('Phải có một đơn vị cơ bản với hệ số quy đổi bằng 1.'); return; }
-    /* Hệ số phải là số nguyên dương (tài liệu 15, mục 2.1). Chặn ngay ở đây
-       để người dùng thấy lỗi ở đúng dòng, khỏi phải đọc lời báo của máy chủ. */
-    const badUnit = units.find((u) => {
-      const v = Number(u.factor);
-      return !Number.isInteger(v) || v <= 0;
-    });
-    if (badUnit) {
-      setErr(`Hệ số quy đổi của "${badUnit.unit_name || 'đơn vị'}" phải là số nguyên dương lớn hơn 0.`
-        + ' Không nhận số âm hay số thập phân.');
+    /* Mọi phép soát bảng đơn vị dồn hết vào đây, lúc bấm Lưu (tài liệu 16, mục 1) */
+    const bad = unitsError();
+    if (bad) { setErr(bad); return; }
+    if (!units.some((u) => u.is_sell_main)) {
+      setErr('Chọn ít nhất một đơn vị bán chính (cột BC) — đó là đơn vị tự nhảy vào giỏ khi bán.');
+      return;
+    }
+    if (!units.some((u) => u.is_buy_main)) {
+      setErr('Chọn ít nhất một đơn vị mua chính (cột MC) — đó là đơn vị tự nhảy vào phiếu nhập.');
       return;
     }
     /* Giá vốn ban đầu là con số bắt buộc khai (tài liệu 13, mục 1.2) */
@@ -208,10 +253,15 @@ export function ProductForm({ open, product, onClose, onSaved }) {
         ...form,
         cost_price: Math.round(Number(form.cost_price) || 0),
         category_id: form.category_id ? Number(form.category_id) : null,
-        units: units.map((u) => ({ ...u, factor: Number(u.factor) || 1 })),
-        /* Máy chủ nhận theo vị trí dòng: dòng mới chưa có mã đơn vị */
-        sell_unit_index: sellIdx,
-        buy_unit_index: buyIdx,
+        /* Đơn vị cơ bản luôn là dòng đang giữ vai trò đó, hệ số cứng bằng 1 */
+        units: units.map((u, i) => ({
+          ...u,
+          factor: i === baseIdx ? 1 : Number(u.factor) || 1,
+          is_sell_main: u.is_sell_main ? 1 : 0,
+          is_buy_main: u.is_buy_main ? 1 : 0,
+        })),
+        /* Quy cách của mặt hàng lấy theo đơn vị cơ bản, cho màn hình cũ đọc */
+        pack_spec: units[baseIdx]?.pack_spec || '',
         ...(product ? {} : { images: staged }),
       };
       /* Trả lại bản ghi vừa lưu cho nơi gọi. Màn hình Nhập hàng cần nó để
@@ -232,88 +282,150 @@ export function ProductForm({ open, product, onClose, onSaved }) {
     <Modal
       open={open}
       onClose={onClose}
-      title={product ? `Sửa hàng hoá: ${product.name}` : 'Thêm hàng hoá mới'}
+      title={product ? `Thông tin hàng hoá: ${product.name}` : 'Thêm hàng hoá mới'}
       size="xl"
       footer={<>
-        <Button onClick={onClose}>Huỷ</Button>
+        <Button onClick={onClose}>Huỷ bỏ</Button>
         <Button variant="primary" onClick={save} loading={busy}>
-          {product ? 'Lưu thay đổi' : 'Thêm hàng hoá'}
+          {product ? 'LƯU' : 'Thêm hàng hoá'}
         </Button>
       </>}
     >
-      <div className="space-y-4">
-        {/* Thông tin chung */}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Tên hàng hoá" required className="sm:col-span-2" htmlFor="pf-name">
-            <Input id="pf-name" value={form.name} onChange={set('name')}
-              placeholder="Ví dụ: Dây điện Cadivi VCm 1x2.5" />
-          </Field>
+      <div className="space-y-3">
+        {/* ============ VÙNG 1 + VÙNG 2 (tài liệu 18, mục 1) ============ */}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
 
-          <Field
-            label="Tên phụ / tên thường gọi"
-            className="sm:col-span-4"
-            hint="Cách gọi quen ở tiệm, gõ không dấu cũng được. Tìm được ở kho và màn hình bán hàng, KHÔNG in lên hoá đơn của khách."
-            htmlFor="pf-alias"
-          >
-            <Input id="pf-alias" value={form.alias || ''} onChange={set('alias')}
-              placeholder="Ví dụ: day do 2.5, day cadivi do, day 2 ly ruoi" />
-          </Field>
-          <Field label="Mã hàng" hint={product ? 'Không đổi được' : 'Bỏ trống để tự đặt'} htmlFor="pf-sku">
-            <Input id="pf-sku" value={form.sku} onChange={set('sku')} disabled={!!product} />
-          </Field>
-          <Field label="Mã vạch" htmlFor="pf-barcode">
-            <Input id="pf-barcode" value={form.barcode || ''} onChange={set('barcode')}
-              placeholder="Quét mã vạch vào đây" />
-          </Field>
+          {/* -------- Vùng 1: thông tin cơ bản, xếp dọc -------- */}
+          <section className="space-y-2.5 min-w-0" aria-labelledby="pf-h-basic">
+            <h3 id="pf-h-basic" className="text-[13px] font-bold flex items-center gap-1.5">
+              <FileText size={14} aria-hidden="true" /> Thông tin cơ bản
+            </h3>
 
-          <Field label="Nhóm hàng" htmlFor="pf-cat">
-            {/* leafOnly: hàng hoá gán vào nhóm NHỎ NHẤT của nhánh. Gán vào
-                nhóm còn con thì báo cáo theo nhóm đếm hai lần. */}
-            <CategorySelect
-              id="pf-cat"
-              value={form.category_id}
-              onChange={(v) => set('category_id')({ target: { value: v } })}
-              categories={meta.categories}
-              placeholder="— Chưa phân nhóm —"
-              leafOnly
-            />
-          </Field>
-          <Field label="Đơn vị cơ bản" required hint="Đơn vị nhỏ nhất khi bán" htmlFor="pf-unit">
-            <Input id="pf-unit" value={form.base_unit} onChange={set('base_unit')} placeholder="Cái, Mét, Cuộn..." />
-          </Field>
-          <Field label="Hãng sản xuất" htmlFor="pf-brand">
-            <Input id="pf-brand" value={form.brand || ''} onChange={set('brand')} placeholder="CADIVI, Panasonic..." />
-          </Field>
-          <Field label="Vị trí trên kệ" htmlFor="pf-loc">
-            <Input id="pf-loc" value={form.location || ''} onChange={set('location')} placeholder="Kệ A1" />
-          </Field>
-          {/* Bảo hành mặc định (tài liệu 09, mục 4): tự điền khi bán, in lên phiếu bảo hành */}
-          <Field label="Bảo hành mặc định (tháng)" hint="0 = không bảo hành" htmlFor="pf-wm">
-            <div className="flex items-center gap-1.5">
-              <QtyInput id="pf-wm" size="md" value={form.warranty_months || 0} min={0} className="flex-1"
-                onChange={(v) => setForm((f) => ({ ...f, warranty_months: Math.max(0, Math.round(Number(v) || 0)) }))} />
-              {[6, 12, 24].map((m) => (
-                <button key={m} type="button" onClick={() => setForm((f) => ({ ...f, warranty_months: m }))}
-                  className={`btn btn-sm ${Number(form.warranty_months) === m ? 'btn-soft' : 'btn-outline'}`}>
-                  {m}
-                </button>
-              ))}
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <Field label="Mã hàng hoá" hint={product ? 'Không đổi được' : 'Bỏ trống để tự đặt'} htmlFor="pf-sku">
+                <Input id="pf-sku" value={form.sku} onChange={set('sku')} disabled={!!product} />
+              </Field>
+              <Field label="Mã vạch" hint="Quét thẳng bằng máy quét" htmlFor="pf-barcode">
+                <Input id="pf-barcode" value={form.barcode || ''} onChange={set('barcode')}
+                  placeholder="Quét mã vạch vào đây" />
+              </Field>
             </div>
-          </Field>
-          <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành khi bán" htmlFor="pf-wn">
-            <Input id="pf-wn" value={form.warranty_note || ''} onChange={set('warranty_note')}
-              disabled={!(Number(form.warranty_months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
-          </Field>
+
+            <Field label="Tên hàng hoá" required htmlFor="pf-name">
+              <Input id="pf-name" value={form.name} onChange={set('name')}
+                placeholder="Ví dụ: Dây điện Cadivi VCm 1x2.5" />
+            </Field>
+
+            <Field
+              label="Tên phụ / tên thường gọi"
+              hint="Cách gọi quen ở tiệm, gõ không dấu cũng tìm được. KHÔNG in lên hoá đơn của khách."
+              htmlFor="pf-alias"
+            >
+              <Input id="pf-alias" value={form.alias || ''} onChange={set('alias')}
+                placeholder="Ví dụ: day do 2.5, day cadivi do" />
+            </Field>
+
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <Field label="Nhóm hàng" htmlFor="pf-cat">
+                {/* leafOnly: hàng hoá gán vào nhóm NHỎ NHẤT của nhánh. Gán vào
+                    nhóm còn con thì báo cáo theo nhóm đếm hai lần. */}
+                <CategorySelect
+                  id="pf-cat"
+                  value={form.category_id}
+                  onChange={(v) => set('category_id')({ target: { value: v } })}
+                  categories={meta.categories}
+                  placeholder="— Chưa phân nhóm —"
+                  leafOnly
+                />
+              </Field>
+              <Field label="Đơn vị cơ bản" required hint="Đơn vị nhỏ nhất khi bán" htmlFor="pf-unit">
+                <Input id="pf-unit" value={form.base_unit} onChange={set('base_unit')}
+                  placeholder="Cái, Mét, Cuộn..." />
+              </Field>
+            </div>
+
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {/* Giá bán gốc = giá của đơn vị cơ bản theo bảng giá đầu tiên.
+                  Sửa ở đây hay sửa ở lưới đơn vị bên dưới đều là một con số. */}
+              <Field label="Giá bán gốc" hint={`Giá 1 ${form.base_unit || 'đơn vị'} theo ${basePriceListName}`} htmlFor="pf-baseprice">
+                <MoneyInput
+                  id="pf-baseprice"
+                  value={basePrice}
+                  onChange={(v) => { if (baseIdx >= 0) setUnitPrice(baseIdx, basePriceListId, v); }}
+                  disabled={baseIdx < 0 || !basePriceListId}
+                />
+              </Field>
+              <Field
+                label="Giá vốn cố định"
+                required={!product}
+                hint={product
+                  ? (effectiveCostMethod === 'fixed'
+                    ? 'Chỉ đổi khi gõ tay, hoặc phiếu nhập tích ô ghi đè'
+                    : 'Tự tính lại mỗi lần nhập hàng')
+                  : 'Bắt buộc khai. Hàng dịch vụ thì ghi 0.'}
+                htmlFor="pf-cost"
+              >
+                <MoneyInput id="pf-cost" value={form.cost_price}
+                  onChange={(v) => setForm((f) => ({ ...f, cost_price: v }))} disabled={!!product} />
+                {product && canSeeCost && (
+                  <button
+                    type="button"
+                    className="text-2xs text-accent font-semibold hover:underline mt-1 cursor-pointer"
+                    onClick={() => { setCostInput(form.cost_price); setCostOpen(true); }}
+                  >
+                    Sửa giá vốn
+                  </button>
+                )}
+              </Field>
+            </div>
+
+            <Field
+              label="Ghi chú khi mua hàng"
+              hint="Ưu đãi mặc định của mối, hiện lại lúc lập phiếu nhập"
+              htmlFor="pf-pnote"
+            >
+              <Input id="pf-pnote" value={form.purchase_note || ''} onChange={set('purchase_note')}
+                placeholder="Ví dụ: Mua 50 tặng 5, hàng dễ vỡ" />
+            </Field>
+
+            <Field
+              label="Mô tả hàng hoá"
+              hint="Thông số kỹ thuật, chất liệu, hướng dẫn dùng — thu ngân mở ra tư vấn cho khách"
+              htmlFor="pf-desc"
+            >
+              <Textarea id="pf-desc" rows={3} value={form.description || ''} onChange={set('description')}
+                placeholder="Ví dụ: 220V - 50Hz, ruột đồng nguyên chất, vỏ PVC chịu nhiệt 70°C" />
+            </Field>
+          </section>
+
+          {/* -------- Vùng 2: thư viện ảnh -------- */}
+          <section className="space-y-2.5" aria-labelledby="pf-h-img">
+            <h3 id="pf-h-img" className="text-[13px] font-bold flex items-center gap-1.5">
+              <ImageIcon size={14} aria-hidden="true" /> Thư viện hình ảnh
+            </h3>
+            <ProductImageManager
+              productId={product?.id || null}
+              images={images}
+              staged={staged}
+              onChange={setImages}
+              onStage={setStaged}
+            />
+          </section>
         </div>
 
-        {/* Đơn vị quy đổi + giá bán (tài liệu 13 mục 1.3, tài liệu 15 mục 2.1) */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
+        {/* ============ VÙNG 3: LƯỚI ĐƠN VỊ TÍNH (tài liệu 18, mục 2.3) ============ */}
+        <section aria-labelledby="pf-h-units">
+          <div className="flex items-center justify-between mb-1.5">
             <div>
-              <span className="label !mb-0">Đơn vị tính &amp; giá bán</span>
+              <h3 id="pf-h-units" className="text-[13px] font-bold flex items-center gap-1.5">
+                <Layers size={14} aria-hidden="true" /> Đơn vị tính quy đổi
+              </h3>
               <p className="text-2xs text-muted-ink">
-                Thêm đơn vị lớn để bán nguyên cuộn/thùng. Hệ số phải là số nguyên dương.
-                Khai bắc cầu được: 1 Thùng = 12 Lố thì hệ số về {form.base_unit || 'đơn vị cơ bản'} tự tính.
+                Gõ xong một ô thì nhấn <b>Tab</b> để sang ô kế bên trên cùng dòng, hết dòng mới
+                xuống dòng dưới — khỏi nhấc tay khỏi bàn phím.
+                {multiMain
+                  ? ' Tích được NHIỀU đơn vị bán chính / mua chính.'
+                  : ' Chỉ chọn được 1 đơn vị bán chính và 1 đơn vị mua chính.'}
               </p>
             </div>
             <Button size="sm" icon={Plus} onClick={addUnit}>Thêm đơn vị</Button>
@@ -323,23 +435,21 @@ export function ProductForm({ open, product, onClose, onSaved }) {
             <table className="data">
               <thead>
                 <tr>
-                  <th style={{ width: 150 }}>Tên đơn vị</th>
-                  <th style={{ width: 190 }}>Quy đổi</th>
-                  <th style={{ width: 100 }} className="text-right">
-                    Hệ số về {form.base_unit || 'ĐVT gốc'}
-                  </th>
+                  <th style={{ width: 150 }}>Tên ĐVT</th>
+                  <th style={{ width: 96 }} className="text-right">Hệ số QĐ</th>
+                  <th style={{ width: 170 }}>Quy cách đóng gói</th>
                   {meta.priceLists.map((pl) => (
                     <th key={pl.id} className="text-right">{pl.name}</th>
                   ))}
-                  <th style={{ width: 96 }} className="text-center">Bán / Mua</th>
-                  <th style={{ width: 40 }} />
+                  <th style={{ width: 52 }} className="text-center" title="Đơn vị bán chính">BC</th>
+                  <th style={{ width: 52 }} className="text-center" title="Đơn vị mua chính">MC</th>
+                  <th style={{ width: 38 }} />
                 </tr>
               </thead>
               <tbody>
                 {units.map((u, i) => {
-                  const isBase = Number(u.factor) === 1;
+                  const isBase = i === baseIdx;
                   const off = u.active === 0;
-                  const refIdx = u.ref_idx ?? units.findIndex((x) => x.id && x.id === u.ref_unit_id);
                   return (
                     <tr key={u.id ?? `new${i}`}
                       className={`${isBase ? 'bg-accent-soft/25' : ''} ${off ? 'opacity-55' : ''}`}>
@@ -348,6 +458,7 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                           size="sm"
                           value={u.unit_name}
                           onChange={(e) => setUnit(i, { unit_name: e.target.value })}
+                          onBlur={checkRows}
                           disabled={isBase || off}
                           aria-label={`Tên đơn vị dòng ${i + 1}`}
                         />
@@ -358,49 +469,38 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                         )}
                       </td>
                       <td>
-                        {isBase ? (
-                          <span className="text-2xs text-muted-ink">Đơn vị nhỏ nhất</span>
-                        ) : (
-                          <div className="flex items-center gap-1">
-                            <span className="text-2xs text-muted-ink whitespace-nowrap">1 =</span>
-                            <QtyInput
-                              value={u.ref_qty || ''}
-                              min={1}
-                              className="!w-16"
-                              disabled={off}
-                              onChange={(v) => setChain(i, refIdx >= 0 ? refIdx : units.findIndex((x) => Number(x.factor) === 1), v)}
-                              aria-label={`Số lượng quy đổi của dòng ${i + 1}`}
-                            />
-                            <Select
-                              size="sm"
-                              className="!w-auto min-w-[5.5rem]"
-                              disabled={off}
-                              value={refIdx >= 0 ? refIdx : units.findIndex((x) => Number(x.factor) === 1)}
-                              onChange={(e) => setChain(i, Number(e.target.value), u.ref_qty)}
-                              aria-label={`Quy đổi theo đơn vị nào, dòng ${i + 1}`}
-                            >
-                              {units.map((x, j) => (
-                                j === i ? null : (
-                                  <option key={j} value={j}>{x.unit_name || `ĐVT ${j + 1}`}</option>
-                                )
-                              ))}
-                            </Select>
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <QtyInput
-                          value={u.factor}
-                          onChange={(v) => setUnit(i, { factor: v, ref_qty: '', ref_idx: undefined })}
+                        {/* Ô hệ số: KHÔNG soát gì lúc đang gõ (tài liệu 16, mục 1).
+                            Gõ "1" để rồi thành "10" mà bị khoá ngay là lỗi cũ. */}
+                        <Input
+                          size="sm"
+                          className="num"
+                          inputMode="numeric"
+                          value={u.factor ?? ''}
+                          onChange={(e) => setUnit(i, {
+                            factor: e.target.value.replace(/[^\d]/g, ''),
+                            ref_qty: '', ref_idx: undefined,
+                          })}
+                          onBlur={checkRows}
                           disabled={isBase || off}
-                          min={1}
                           aria-label={`Hệ số quy đổi dòng ${i + 1}`}
                         />
-                        {!isBase && u.factor > 1 && (
-                          <div className="text-2xs text-muted-ink text-right">
-                            = {fq(u.factor)} {form.base_unit}
-                          </div>
-                        )}
+                        {isBase
+                          ? <span className="block text-2xs text-muted-ink text-right">luôn bằng 1</span>
+                          : Number(u.factor) > 1 && (
+                            <span className="block text-2xs text-muted-ink text-right">
+                              = {fq(u.factor)} {form.base_unit}
+                            </span>
+                          )}
+                      </td>
+                      <td>
+                        <Input
+                          size="sm"
+                          value={u.pack_spec || ''}
+                          onChange={(e) => setUnit(i, { pack_spec: e.target.value })}
+                          disabled={off}
+                          placeholder={isBase ? 'Cái lẻ độc lập' : 'Lố 12 cái'}
+                          aria-label={`Quy cách đóng gói dòng ${i + 1}`}
+                        />
                       </td>
                       {meta.priceLists.map((pl) => (
                         <td key={pl.id}>
@@ -413,34 +513,27 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                           />
                         </td>
                       ))}
-                      {/* Đơn vị nào tự nhảy vào giỏ khi BÁN, đơn vị nào khi NHẬP */}
-                      <td>
-                        <div className="flex items-center justify-center gap-2.5">
-                          <label className="flex flex-col items-center gap-0.5 cursor-pointer"
-                            title="Đơn vị bán chính — tự nhảy vào giỏ ở màn hình bán hàng">
-                            <input
-                              type="radio"
-                              name="pf-sell-unit"
-                              className="w-3.5 h-3.5 accent-emerald-700 cursor-pointer"
-                              checked={sellIdx === i}
-                              disabled={off}
-                              onChange={() => setSellIdx(i)}
-                            />
-                            <span className="text-2xs text-muted-ink">Bán</span>
-                          </label>
-                          <label className="flex flex-col items-center gap-0.5 cursor-pointer"
-                            title="Đơn vị mua chính — tự nhảy vào phiếu nhập hàng">
-                            <input
-                              type="radio"
-                              name="pf-buy-unit"
-                              className="w-3.5 h-3.5 accent-blue-700 cursor-pointer"
-                              checked={buyIdx === i}
-                              disabled={off}
-                              onChange={() => setBuyIdx(i)}
-                            />
-                            <span className="text-2xs text-muted-ink">Mua</span>
-                          </label>
-                        </div>
+                      <td className="text-center">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                          checked={!!u.is_sell_main}
+                          disabled={off}
+                          onChange={(e) => toggleMain(i, 'is_sell_main', e.target.checked)}
+                          aria-label={`Dùng ${u.unit_name || 'đơn vị này'} làm đơn vị bán chính`}
+                          title="Đơn vị bán chính — tự nhảy vào giỏ ở màn hình bán hàng"
+                        />
+                      </td>
+                      <td className="text-center">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-blue-700 cursor-pointer"
+                          checked={!!u.is_buy_main}
+                          disabled={off}
+                          onChange={(e) => toggleMain(i, 'is_buy_main', e.target.checked)}
+                          aria-label={`Dùng ${u.unit_name || 'đơn vị này'} làm đơn vị mua chính`}
+                          title="Đơn vị mua chính — tự nhảy vào phiếu nhập hàng"
+                        />
                       </td>
                       <td>
                         {!isBase && (off
@@ -463,132 +556,106 @@ export function ProductForm({ open, product, onClose, onSaved }) {
             Đơn vị đã từng nằm trong hoá đơn thì không xoá hẳn được: hệ thống chuyển sang
             <b className="mx-1">Ngừng hoạt động</b> — không bán mới được nữa nhưng hoá đơn cũ vẫn đọc đúng.
           </p>
-        </div>
+        </section>
 
-        {/* Ảnh và mô tả để thu ngân tư vấn (tài liệu 13, mục 1.4 và 3.1) */}
-        <div className="card p-3 space-y-3">
-          <ProductImageManager
-            productId={product?.id || null}
-            images={images}
-            staged={staged}
-            onChange={setImages}
-            onStage={setStaged}
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field
-              label="Quy cách đóng gói"
-              hint="Hiện cạnh tên đơn vị lúc kiểm hàng, lập phiếu và in tem"
-              htmlFor="pf-pack"
-            >
-              <Input id="pf-pack" value={form.pack_spec || ''} onChange={set('pack_spec')}
-                placeholder="Ví dụ: Lố 12 cái, Thùng 360 cái, Bao 10 cuộn" />
+        {/* ============ Phần còn lại: kho, thuế, cấu hình ============ */}
+        <details className="card p-3">
+          <summary className="text-[13px] font-semibold cursor-pointer hover:text-accent">
+            Kho, thuế và bảo hành
+          </summary>
+          <div className="grid gap-3 sm:grid-cols-4 mt-3">
+            <Field label="Hãng sản xuất" htmlFor="pf-brand">
+              <Input id="pf-brand" value={form.brand || ''} onChange={set('brand')} placeholder="CADIVI, Panasonic..." />
             </Field>
-            <Field
-              label="Thông tin mô tả"
-              hint="Thông số, chất liệu, cách dùng — thu ngân mở ra tư vấn cho khách"
-              htmlFor="pf-desc"
-            >
-              <Textarea id="pf-desc" rows={2} value={form.description || ''} onChange={set('description')}
-                placeholder="Ví dụ: 220V - 50Hz, vỏ nhựa ABS chống cháy, dùng trong nhà" />
+            <Field label="Vị trí trên kệ" htmlFor="pf-loc">
+              <Input id="pf-loc" value={form.location || ''} onChange={set('location')} placeholder="Kệ A1" />
             </Field>
-          </div>
-        </div>
-
-        {/* Kho & thuế */}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field
-            label="Giá vốn / đơn vị cơ bản"
-            required={!product}
-            hint={product
-              ? (effectiveCostMethod === 'fixed'
-                ? 'Cố định — chỉ đổi khi gõ tay, hoặc khi phiếu nhập tích ô ghi đè'
-                : 'Tự tính lại mỗi lần nhập hàng')
-              : 'Bắt buộc khai. Hàng dịch vụ / tiền công thì ghi 0.'}
-            htmlFor="pf-cost"
-          >
-            <MoneyInput id="pf-cost" value={form.cost_price} onChange={(v) => setForm((f) => ({ ...f, cost_price: v }))} disabled={!!product} />
-            {product && canSeeCost && (
-              <button
-                type="button"
-                className="text-2xs text-accent font-semibold hover:underline mt-1 cursor-pointer"
-                onClick={() => { setCostInput(form.cost_price); setCostOpen(true); }}
-              >
-                Sửa giá vốn
-              </button>
-            )}
-          </Field>
-          <Field
-            label="Cách tính giá vốn"
-            hint={form.cost_method ? 'Riêng cho món này' : 'Theo thiết lập chung'}
-            htmlFor="pf-costmethod"
-          >
-            <Select
-              id="pf-costmethod"
-              value={form.cost_method || ''}
-              onChange={(e) => setForm((f) => ({ ...f, cost_method: e.target.value }))}
-            >
-              <option value="">
-                Theo tiệm — {COST_METHOD_LABEL[shopCostMethod]}
-              </option>
-              <option value="average">{COST_METHOD_LABEL.average}</option>
-              <option value="fixed">{COST_METHOD_LABEL.fixed}</option>
-            </Select>
-          </Field>
-          <Field label="Thuế GTGT (%)" htmlFor="pf-vat">
-            <Select id="pf-vat" value={form.vat_rate} onChange={(e) => setForm((f) => ({ ...f, vat_rate: Number(e.target.value) }))}>
-              <option value={0}>0% — không chịu thuế</option>
-              <option value={5}>5%</option>
-              <option value={8}>8%</option>
-              <option value={10}>10%</option>
-            </Select>
-          </Field>
-          <Field label="Tồn tối thiểu" hint="Dưới mức này sẽ cảnh báo" htmlFor="pf-min">
-            <QtyInput size="md" value={form.min_stock} onChange={(v) => setForm((f) => ({ ...f, min_stock: v }))} />
-          </Field>
-          <Field label="Tồn tối đa" hint="0 = không giới hạn" htmlFor="pf-max">
-            <QtyInput size="md" value={form.max_stock} onChange={(v) => setForm((f) => ({ ...f, max_stock: v }))} />
-          </Field>
-        </div>
-
-        {!product && (
-          <div className="grid gap-3 sm:grid-cols-2 card p-3 bg-muted/40">
-            <Field label="Tồn kho hiện có" hint="Số lượng đang có sẵn tại tiệm (theo đơn vị cơ bản)" htmlFor="pf-open">
-              <QtyInput size="md" value={form.opening_qty} onChange={(v) => setForm((f) => ({ ...f, opening_qty: v }))} />
-            </Field>
-            <Field label="Nhập vào kho" htmlFor="pf-openwh">
-              <Select id="pf-openwh" value={form.opening_warehouse_id}
-                onChange={(e) => setForm((f) => ({ ...f, opening_warehouse_id: Number(e.target.value) }))}>
-                {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            <Field label="Thuế GTGT (%)" htmlFor="pf-vat">
+              <Select id="pf-vat" value={form.vat_rate} onChange={(e) => setForm((f) => ({ ...f, vat_rate: Number(e.target.value) }))}>
+                <option value={0}>0% — không chịu thuế</option>
+                <option value={5}>5%</option>
+                <option value={8}>8%</option>
+                <option value={10}>10%</option>
               </Select>
             </Field>
-          </div>
-        )}
+            <Field
+              label="Cách tính giá vốn"
+              hint={form.cost_method ? 'Riêng cho món này' : 'Theo thiết lập chung'}
+              htmlFor="pf-costmethod"
+            >
+              <Select
+                id="pf-costmethod"
+                value={form.cost_method || ''}
+                onChange={(e) => setForm((f) => ({ ...f, cost_method: e.target.value }))}
+              >
+                <option value="">Theo tiệm — {COST_METHOD_LABEL[shopCostMethod]}</option>
+                <option value="average">{COST_METHOD_LABEL.average}</option>
+                <option value="fixed">{COST_METHOD_LABEL.fixed}</option>
+              </Select>
+            </Field>
+            <Field label="Tồn tối thiểu" hint="Dưới mức này sẽ cảnh báo" htmlFor="pf-min">
+              <QtyInput size="md" value={form.min_stock} onChange={(v) => setForm((f) => ({ ...f, min_stock: v }))} />
+            </Field>
+            <Field label="Tồn tối đa" hint="0 = không giới hạn" htmlFor="pf-max">
+              <QtyInput size="md" value={form.max_stock} onChange={(v) => setForm((f) => ({ ...f, max_stock: v }))} />
+            </Field>
+            {/* Bảo hành mặc định (tài liệu 09, mục 4): tự điền khi bán, in lên phiếu bảo hành */}
+            <Field label="Bảo hành mặc định (tháng)" hint="0 = không bảo hành" htmlFor="pf-wm">
+              <div className="flex items-center gap-1.5">
+                <QtyInput id="pf-wm" size="md" value={form.warranty_months || 0} min={0} className="flex-1"
+                  onChange={(v) => setForm((f) => ({ ...f, warranty_months: Math.max(0, Math.round(Number(v) || 0)) }))} />
+                {[6, 12, 24].map((m) => (
+                  <button key={m} type="button" onClick={() => setForm((f) => ({ ...f, warranty_months: m }))}
+                    className={`btn btn-sm ${Number(form.warranty_months) === m ? 'btn-soft' : 'btn-outline'}`}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành khi bán" htmlFor="pf-wn">
+              <Input id="pf-wn" value={form.warranty_note || ''} onChange={set('warranty_note')}
+                disabled={!(Number(form.warranty_months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
+            </Field>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Ghi chú" htmlFor="pf-note">
-            <Textarea id="pf-note" rows={2} value={form.note || ''} onChange={set('note')} />
-          </Field>
-          <div className="space-y-2 pt-6">
-            <label className="flex items-center gap-2 text-[13px] cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
-                checked={form.track_stock !== 0}
-                onChange={(e) => setForm((f) => ({ ...f, track_stock: e.target.checked ? 1 : 0 }))} />
-              Quản lý tồn kho
-              <span className="text-2xs text-muted-ink">(bỏ chọn nếu là dịch vụ, tiền công)</span>
-            </label>
-            <label className="flex items-center gap-2 text-[13px] cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
-                checked={form.active !== 0}
-                onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked ? 1 : 0 }))} />
-              Đang kinh doanh
-            </label>
+            {!product && (
+              <>
+                <Field label="Tồn kho hiện có" hint="Số lượng đang có sẵn tại tiệm (theo đơn vị cơ bản)" htmlFor="pf-open">
+                  <QtyInput size="md" value={form.opening_qty} onChange={(v) => setForm((f) => ({ ...f, opening_qty: v }))} />
+                </Field>
+                <Field label="Nhập vào kho" htmlFor="pf-openwh">
+                  <Select id="pf-openwh" value={form.opening_warehouse_id}
+                    onChange={(e) => setForm((f) => ({ ...f, opening_warehouse_id: Number(e.target.value) }))}>
+                    {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </Select>
+                </Field>
+              </>
+            )}
+
+            <Field label="Ghi chú nội bộ" className="sm:col-span-2" htmlFor="pf-note">
+              <Textarea id="pf-note" rows={2} value={form.note || ''} onChange={set('note')} />
+            </Field>
+            <div className="space-y-2 pt-6 sm:col-span-2">
+              <label className="flex items-center gap-2 text-[13px] cursor-pointer">
+                <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                  checked={form.track_stock !== 0}
+                  onChange={(e) => setForm((f) => ({ ...f, track_stock: e.target.checked ? 1 : 0 }))} />
+                Quản lý tồn kho
+                <span className="text-2xs text-muted-ink">(bỏ chọn nếu là dịch vụ, tiền công)</span>
+              </label>
+              <label className="flex items-center gap-2 text-[13px] cursor-pointer">
+                <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                  checked={form.active !== 0}
+                  onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked ? 1 : 0 }))} />
+                Đang kinh doanh
+              </label>
+            </div>
           </div>
-        </div>
+        </details>
 
         {/* Định mức nguyên vật liệu — chỉ hiện khi sửa mặt hàng đã có */}
         {product && <BomEditor product={product} />}
 
-        {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
+        {err && <p role="alert" className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>
 

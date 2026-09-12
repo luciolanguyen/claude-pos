@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost, overwriteCost,
   addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams, resolveUnitId,
-  searchMode } from '../db.js';
+  searchWhere } from '../db.js';
 
 const r = Router();
 
@@ -15,9 +15,9 @@ r.get('/purchases', (req, res) => {
   const where = [];
   const params = [];
   if (q.trim()) {
-    where.push('(p.code LIKE ? OR s.name LIKE ? OR p.supplier_invoice LIKE ?)');
-    const like = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    params.push(like, like, like);
+    const c = searchWhere(['p.code', 's.name', 'p.supplier_invoice'], q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (supplier_id) { where.push('p.supplier_id = ?'); params.push(supplier_id); }
   if (from) { where.push('date(p.ts) >= date(?)'); params.push(from); }

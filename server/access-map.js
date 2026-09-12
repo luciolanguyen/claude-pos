@@ -83,6 +83,9 @@ export const ACCESS_RULES = [
   ['*',    /^\/products/,                 'product.manage'],
   /* Hàng ghim đầu lưới POS: chủ tiệm quyết bán mùa nào món nào */
   ['PUT',  /^\/pos-featured$/,            'product.manage'],
+  /* Bộ hàng ghim theo mùa: xem thì màn hình bán hàng cần, sửa thì phải người quản */
+  ['GET',  /^\/pos-featured-sets/,         null],
+  ['*',    /^\/pos-featured-sets/,         'product.manage'],
   ['*',    /^\/categories/,               'product.manage'],
   ['GET',  /^\/stock$/,                   'product.view'],
   ['*',    /^\/stock/,                    'stock.manage'],

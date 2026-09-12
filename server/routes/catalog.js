@@ -420,7 +420,7 @@ r.get('/products/pos', (req, res) => {
   const products = all(`
     SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.cost_price, p.vat_rate,
            p.track_stock, p.min_stock, p.category_id, p.brand, p.location, p.is_manufactured,
-           p.warranty_months, p.warranty_note, p.description, p.pack_spec,
+           p.warranty_months, p.warranty_note, p.description, p.pack_spec, p.purchase_note,
            p.sell_unit_id, p.buy_unit_id,
            c.name AS category_name,
            /* Giá nhập gần nhất quy về đơn vị cơ bản — cho quản lý thấy biên lãi
@@ -436,6 +436,8 @@ r.get('/products/pos', (req, res) => {
 
   /* Đơn vị ĐÃ NGỪNG HOẠT ĐỘNG không hiện ở màn hình bán hàng: không cho bán
      mới nữa, nhưng hoá đơn cũ vẫn đọc được đơn vị đó (tài liệu 13, mục 1.3) */
+  /* Kèm cờ đơn vị bán chính / mua chính và quy cách riêng của từng đơn vị:
+     lưới bán hàng dựng mỗi đơn vị bán chính thành một ô riêng (tài liệu 16) */
   const units = all('SELECT * FROM product_units WHERE active = 1 ORDER BY factor');
   const prices = all('SELECT * FROM product_prices');
   const byProduct = new Map();
@@ -484,7 +486,10 @@ r.get('/products/pos', (req, res) => {
 
 /** Thứ tự ưu tiên theo mã hàng và theo nhóm hàng (kèm nhóm con cháu). */
 function featuredRanks() {
-  const rows = all('SELECT kind, ref_id, sort_order FROM pos_featured ORDER BY sort_order, id');
+  /* CHỈ đọc danh sách đang dùng. Hàng nằm trong các BỘ đã cất (set_id khác
+     null) là hàng để dành cho mùa sau, chưa ghim (tài liệu 16, mục 4). */
+  const rows = all(`SELECT kind, ref_id, sort_order FROM pos_featured
+                    WHERE set_id IS NULL ORDER BY sort_order, id`);
   const product = new Map();
   const category = new Map();
   rows.forEach((x, i) => {
@@ -502,6 +507,8 @@ function featuredRanks() {
 }
 
 r.get('/pos-featured', (req, res) => {
+  /* set_id NULL = danh sách đang dùng; truyền set_id để xem nội dung một bộ */
+  const setId = req.query.set_id ? Number(req.query.set_id) : null;
   res.json(all(`
     SELECT f.*,
            CASE WHEN f.kind = 'product' THEN p.name ELSE c.name END AS label,
@@ -509,26 +516,138 @@ r.get('/pos-featured', (req, res) => {
     FROM pos_featured f
     LEFT JOIN products p ON f.kind = 'product' AND p.id = f.ref_id
     LEFT JOIN categories c ON f.kind = 'category' AND c.id = f.ref_id
-    ORDER BY f.sort_order, f.id`));
+    WHERE f.set_id IS ?
+    ORDER BY f.sort_order, f.id`, [setId]));
 });
+
+/** Ghi một danh sách ghim (bộ nào đó, hoặc danh sách đang dùng). */
+function writeFeatured(list, setId = null) {
+  run('DELETE FROM pos_featured WHERE set_id IS ?', [setId]);
+  /* Xoá sạch rồi ghi lại, nên không cần ON CONFLICT — chỉ phải tự loại trùng
+     trong chính danh sách gửi lên. Làm vậy để chạy được cả trên cơ sở dữ liệu
+     đời trước, nơi bảng còn khoá UNIQUE kiểu cũ. */
+  const seen = new Set();
+  let i = 0;
+  for (const it of list) {
+    const kind = it.kind === 'category' ? 'category' : 'product';
+    const refId = Number(it.ref_id) || 0;
+    if (!refId) continue;
+    const key = `${kind}:${refId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    run('INSERT INTO pos_featured(kind, ref_id, sort_order, note, set_id) VALUES(?, ?, ?, ?, ?)',
+      [kind, refId, i++, it.note || null, setId]);
+  }
+}
 
 /** Lưu lại CẢ danh sách theo đúng thứ tự màn hình đang hiện. */
 r.put('/pos-featured', (req, res) => {
   const list = Array.isArray(req.body?.items) ? req.body.items : [];
+  const setId = req.body?.set_id ? Number(req.body.set_id) : null;
   try {
     tx(() => {
-      run('DELETE FROM pos_featured');
-      let i = 0;
-      for (const it of list) {
-        const kind = it.kind === 'category' ? 'category' : 'product';
-        const refId = Number(it.ref_id) || 0;
-        if (!refId) continue;
-        run(`INSERT INTO pos_featured(kind, ref_id, sort_order, note) VALUES(?, ?, ?, ?)
-             ON CONFLICT(kind, ref_id) DO UPDATE SET sort_order = excluded.sort_order`,
-          [kind, refId, i++, it.note || null]);
+      if (setId && !get('SELECT id FROM pos_featured_sets WHERE id = ?', [setId])) {
+        throw badRequest('Không tìm thấy bộ hàng ghim', 'SET_NOT_FOUND');
+      }
+      writeFeatured(list, setId);
+      /* Sửa nội dung bộ đang bật thì danh sách dùng thật đổi theo luôn */
+      if (setId && get('SELECT active FROM pos_featured_sets WHERE id = ?', [setId])?.active) {
+        writeFeatured(list, null);
       }
     });
-    res.json({ ok: true, count: get('SELECT COUNT(*) AS n FROM pos_featured').n });
+    res.json({
+      ok: true,
+      count: get('SELECT COUNT(*) AS n FROM pos_featured WHERE set_id IS ?', [setId]).n,
+    });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/* ==================================================================== *
+ * BỘ HÀNG GHIM THEO MÙA (tài liệu 16, mục 4)
+ *
+ * Mùa hè ghim quạt, mùa Tết ghim đèn nháy. Lưu sẵn mỗi mùa một bộ rồi bật
+ * lại khi tới mùa — khỏi phải đi chọn lại từng món.
+ *
+ * Bật một bộ là CHÉP nội dung bộ đó sang danh sách đang dùng; bộ vẫn nằm
+ * nguyên để mùa sau bật lại. Tắt hết thì lưới bán hàng về thứ tự thường,
+ * KHÔNG ẩn món nào (tài liệu 16, mục 4).
+ * ==================================================================== */
+
+r.get('/pos-featured-sets', (req, res) => {
+  res.json(all(`
+    SELECT s.*,
+           (SELECT COUNT(*) FROM pos_featured f WHERE f.set_id = s.id) AS item_count
+    FROM pos_featured_sets s ORDER BY s.sort_order, s.id`));
+});
+
+r.post('/pos-featured-sets', (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: 'Đặt tên cho bộ hàng ghim, ví dụ "Hàng ghim mùa hè"' });
+  try {
+    const out = tx(() => {
+      const n = get('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM pos_featured_sets').n;
+      const info = run('INSERT INTO pos_featured_sets(name, sort_order, note) VALUES(?, ?, ?)',
+        [name, n, String(req.body?.note ?? '').trim() || null]);
+      const id = Number(info.lastInsertRowid);
+      /* Lưu bộ từ danh sách đang dùng: "cất lại mùa này để sang năm bật" */
+      const items = Array.isArray(req.body?.items) ? req.body.items
+        : (req.body?.from_current
+          ? all('SELECT kind, ref_id FROM pos_featured WHERE set_id IS NULL ORDER BY sort_order, id')
+          : []);
+      writeFeatured(items, id);
+      return get('SELECT * FROM pos_featured_sets WHERE id = ?', [id]);
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+r.put('/pos-featured-sets/:id', (req, res) => {
+  const set = get('SELECT * FROM pos_featured_sets WHERE id = ?', [req.params.id]);
+  if (!set) return res.status(404).json({ error: 'Không tìm thấy bộ hàng ghim' });
+  const name = req.body?.name === undefined ? set.name : String(req.body.name).trim();
+  if (!name) return res.status(400).json({ error: 'Bộ hàng ghim phải có tên' });
+  run('UPDATE pos_featured_sets SET name = ?, note = ? WHERE id = ?',
+    [name, req.body?.note === undefined ? set.note : (String(req.body.note).trim() || null), set.id]);
+  res.json(get('SELECT * FROM pos_featured_sets WHERE id = ?', [set.id]));
+});
+
+r.delete('/pos-featured-sets/:id', (req, res) => {
+  const set = get('SELECT * FROM pos_featured_sets WHERE id = ?', [req.params.id]);
+  if (!set) return res.status(404).json({ error: 'Không tìm thấy bộ hàng ghim' });
+  tx(() => {
+    run('DELETE FROM pos_featured WHERE set_id = ?', [set.id]);
+    run('DELETE FROM pos_featured_sets WHERE id = ?', [set.id]);
+  });
+  res.json({ ok: true });
+});
+
+/**
+ * Bật một bộ (chép sang danh sách đang dùng), hoặc tắt hết ghim.
+ * Tắt thì XẢ GHIM chứ không ẩn hàng: lưới về thứ tự thường (tài liệu 16).
+ */
+r.post('/pos-featured-sets/:id/activate', (req, res) => {
+  const off = req.params.id === 'off' || req.body?.active === false;
+  try {
+    const out = tx(() => {
+      if (off) {
+        run('UPDATE pos_featured_sets SET active = 0');
+        writeFeatured([], null);
+        return { ok: true, active: null, count: 0 };
+      }
+      const set = get('SELECT * FROM pos_featured_sets WHERE id = ?', [req.params.id]);
+      if (!set) throw badRequest('Không tìm thấy bộ hàng ghim', 'SET_NOT_FOUND');
+      const items = all('SELECT kind, ref_id, note FROM pos_featured WHERE set_id = ? ORDER BY sort_order, id',
+        [set.id]);
+      run('UPDATE pos_featured_sets SET active = 0');
+      run('UPDATE pos_featured_sets SET active = 1 WHERE id = ?', [set.id]);
+      writeFeatured(items, null);
+      return { ok: true, active: set, count: items.length };
+    });
+    res.json(out);
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
@@ -637,7 +756,7 @@ function checkFactor(value, unitName) {
   return v;
 }
 
-function saveUnitsAndPrices(productId, units = [], baseUnit) {
+function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
   const keepIds = [];
   let hasBase = false;
   for (const u of units) {
@@ -653,20 +772,30 @@ function saveUnitsAndPrices(productId, units = [], baseUnit) {
       : get('SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?', [productId, name]);
     const refUnit = Number(u.ref_unit_id) || null;
     const refQty = Number(u.ref_qty) > 0 ? Number(u.ref_qty) : null;
+    /* Quy cách đóng gói ghi theo TỪNG đơn vị (tài liệu 18, vùng 3).
+       Màn hình cũ chỉ gửi một quy cách cho cả mặt hàng: gán cho đơn vị cơ bản. */
+    const pack = String(u.pack_spec ?? (isBase ? fallbackPack : '') ?? '').trim() || null;
+    /* Nhiều đơn vị cùng làm đơn vị bán chính / mua chính (tài liệu 16, mục 2.1).
+       Biểu mẫu cũ không gửi hai cờ này thì để saveDefaultUnits lo như trước. */
+    const sellMain = u.is_sell_main === 1 || u.is_sell_main === true ? 1 : 0;
+    const buyMain = u.is_buy_main === 1 || u.is_buy_main === true ? 1 : 0;
     let unitId;
     if (existing) {
       run(`UPDATE product_units SET unit_name = ?, factor = ?, is_base = ?, barcode = ?,
-             active = ?, ref_unit_id = ?, ref_qty = ? WHERE id = ?`,
+             active = ?, ref_unit_id = ?, ref_qty = ?, pack_spec = ?,
+             is_sell_main = ?, is_buy_main = ? WHERE id = ?`,
         [name, factor, isBase ? 1 : 0, u.barcode || null,
-          u.active === 0 ? 0 : 1, refUnit, refQty, existing.id]);
+          u.active === 0 ? 0 : 1, refUnit, refQty, pack,
+          sellMain, buyMain, existing.id]);
       unitId = existing.id;
     } else {
       unitId = Number(run(
         `INSERT INTO product_units(product_id, unit_name, factor, is_base, barcode,
-                                   active, ref_unit_id, ref_qty)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+                                   active, ref_unit_id, ref_qty, pack_spec,
+                                   is_sell_main, is_buy_main)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [productId, name, factor, isBase ? 1 : 0, u.barcode || null,
-          u.active === 0 ? 0 : 1, refUnit, refQty]
+          u.active === 0 ? 0 : 1, refUnit, refQty, pack, sellMain, buyMain]
       ).lastInsertRowid);
     }
     keepIds.push(unitId);
@@ -697,6 +826,24 @@ function saveUnitsAndPrices(productId, units = [], baseUnit) {
     if (unitUsage(d.id) > 0) run('UPDATE product_units SET active = 0 WHERE id = ?', [d.id]);
     else run('DELETE FROM product_units WHERE id = ?', [d.id]);
   }
+
+  /* Quy cách của đơn vị cơ bản giữ luôn ở cột cũ products.pack_spec, để các
+     màn hình chỉ đọc một quy cách (lưới hàng hoá, phiếu nhập) vẫn chạy. */
+  const basePack = get(`SELECT pack_spec FROM product_units
+                        WHERE product_id = ? AND factor = 1 LIMIT 1`, [productId])?.pack_spec ?? null;
+  run('UPDATE products SET pack_spec = ? WHERE id = ?', [basePack, productId]);
+
+  /* Hai cột cũ trỏ vào đơn vị ĐẦU TIÊN được tích, để chỗ nào chỉ cần một
+     đơn vị (phiếu nhập, giỏ POS) vẫn đọc như cũ. Không tích ô nào thì giữ
+     nguyên giá trị đang có — saveDefaultUnits xử lý tiếp. */
+  const firstSell = get(`SELECT id FROM product_units
+                         WHERE product_id = ? AND is_sell_main = 1 AND active = 1
+                         ORDER BY factor LIMIT 1`, [productId])?.id;
+  const firstBuy = get(`SELECT id FROM product_units
+                        WHERE product_id = ? AND is_buy_main = 1 AND active = 1
+                        ORDER BY factor DESC LIMIT 1`, [productId])?.id;
+  if (firstSell) run('UPDATE products SET sell_unit_id = ? WHERE id = ?', [firstSell, productId]);
+  if (firstBuy) run('UPDATE products SET buy_unit_id = ? WHERE id = ?', [firstBuy, productId]);
 }
 
 /**
@@ -705,6 +852,9 @@ function saveUnitsAndPrices(productId, units = [], baseUnit) {
  * khác, hoặc đơn vị đã ngừng) thì rơi về đơn vị cơ bản.
  */
 function saveDefaultUnits(productId, body, units) {
+  /* Biểu mẫu đợt 16 tích ô ngay trên từng dòng đơn vị; lúc đó saveUnitsAndPrices
+     đã chốt hai cột rồi, không đè lên nữa (tài liệu 16, mục 2.1). */
+  if (Array.isArray(units) && units.some((u) => u?.is_sell_main || u?.is_buy_main)) return;
   const pick = (v, key) => {
     /* Biểu mẫu gửi mã đơn vị cũ, hoặc gửi vị trí dòng trong bảng vừa lưu */
     const byIndex = Number.isInteger(Number(body[`${key}_index`]))
@@ -855,8 +1005,8 @@ r.post('/products', (req, res) => {
         INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price, vat_rate,
                              track_stock, min_stock, max_stock, brand, location, note, active,
                              cost_method, cost_fixed, warranty_months, warranty_note,
-                             description, pack_spec)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             description, pack_spec, purchase_note)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
@@ -868,9 +1018,11 @@ r.post('/products', (req, res) => {
           Math.max(0, Math.round(Number(b.warranty_months) || 0)),
           String(b.warranty_note ?? '').trim() || null,
           String(b.description ?? '').trim() || null,
-          String(b.pack_spec ?? '').trim() || null]);
+          String(b.pack_spec ?? '').trim() || null,
+          /* Ưu đãi mặc định của mối, ví dụ "Mua 50 tặng 5" (tài liệu 18, vùng 1) */
+          String(b.purchase_note ?? '').trim() || null]);
       const pid = Number(info.lastInsertRowid);
-      saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái');
+      saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái', b.pack_spec);
       saveDefaultUnits(pid, b, b.units);
       for (const src of (Array.isArray(b.images) ? b.images : []).slice(0, MAX_IMAGES)) {
         const file = saveImageFile(src, pid);
@@ -911,7 +1063,8 @@ r.put('/products/:id', (req, res) => {
              warranty_months = COALESCE(?, warranty_months),
              warranty_note = CASE WHEN ? = 1 THEN ? ELSE warranty_note END,
              description = CASE WHEN ? = 1 THEN ? ELSE description END,
-             pack_spec = CASE WHEN ? = 1 THEN ? ELSE pack_spec END
+             pack_spec = CASE WHEN ? = 1 THEN ? ELSE pack_spec END,
+             purchase_note = CASE WHEN ? = 1 THEN ? ELSE purchase_note END
            WHERE id = ?`,
         [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
@@ -923,8 +1076,9 @@ r.put('/products/:id', (req, res) => {
           b.warranty_note === undefined ? 0 : 1, String(b.warranty_note ?? '').trim() || null,
           b.description === undefined ? 0 : 1, String(b.description ?? '').trim() || null,
           b.pack_spec === undefined ? 0 : 1, String(b.pack_spec ?? '').trim() || null,
+          b.purchase_note === undefined ? 0 : 1, String(b.purchase_note ?? '').trim() || null,
           id]);
-      saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái');
+      saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái', b.pack_spec);
       if (b.sell_unit_id !== undefined || b.buy_unit_id !== undefined
         || b.sell_unit_index !== undefined || b.buy_unit_index !== undefined) {
         saveDefaultUnits(Number(id), b, b.units);

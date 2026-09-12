@@ -25,7 +25,7 @@ import CustomerForm from '../components/CustomerForm';
 import CustomerProfile from '../components/CustomerProfile';
 import { TileImageButton, ProductInfoModal } from '../components/ProductImages';
 import { OrderBell, SaveAsOrderModal, PickOrderModal } from '../components/PosOrders';
-import { DebtButton, AllDebtsButton, DebtCollectModal, CustomerDebtBanner } from '../components/PosDebt';
+import { DebtButton, DebtCollectModal, CustomerDebtBanner } from '../components/PosDebt';
 import PaymentModal from '../components/PosPayment';
 import ProxyBuyer from '../components/PosBuyer';
 import { CartLine, OrderNote, MoneyCell, PercentCell, lineAmount } from '../components/PosCart';
@@ -68,12 +68,22 @@ const newTab = (no, priceListId) => ({
  */
 function ProductTile({
   p, priceListId, showCost, onPick, inCart = 0, bought = null,
-  showUnits = false, onInfo, onHover,
+  showUnits = false, showConverted = false, unit = null, onInfo, onHover,
 }) {
   const [unitsOpen, setUnitsOpen] = useState(false);
-  const sellUnit = p.units.find((u) => u.id === p.sell_unit_id)
+  /* Mỗi đơn vị bán chính được vẽ thành MỘT ô riêng ngoài lưới (tài liệu 16,
+     mục 2.1) — ô nào thì bán theo đơn vị đó. */
+  const sellUnit = unit
+    || p.units.find((u) => u.is_sell_main) || p.units.find((u) => u.id === p.sell_unit_id)
     || p.units.find((u) => u.factor === 1) || p.units[0];
   const price = sellUnit?.prices?.[priceListId] ?? 0;
+  /* Đơn vị cơ bản, để quy đổi giá cho dễ so (tài liệu 16, mục 5) */
+  const baseUnit = p.units.find((u) => u.factor === 1) || p.units[0];
+  const basePrice = Number(baseUnit?.prices?.[priceListId]) || 0;
+  const perBase = (u) => {
+    const f = Number(u?.factor) || 1;
+    return f > 1 ? Math.round((Number(u?.prices?.[priceListId]) || 0) / f) : 0;
+  };
   const out = p.track_stock && p.stock <= 0;
   const low = p.track_stock && p.min_stock > 0 && p.stock > 0 && p.stock <= p.min_stock;
   const added = inCart > 0;
@@ -83,6 +93,9 @@ function ProductTile({
   /* Bấm vào vùng chung của ô: lấy ĐƠN VỊ BÁN CHÍNH. Bấm vào một đơn vị cụ
      thể trong menu: lấy đúng đơn vị đó (tài liệu 13, mục 3.4). */
   const pickMain = () => { if (!out) onPick(p, sellUnit?.id); };
+  /* Ô của đơn vị lớn thì nói rõ đang bán theo đơn vị nào, khỏi nhìn nhầm giá */
+  const unitLabel = sellUnit && Number(sellUnit.factor) > 1
+    ? `${sellUnit.unit_name} (=${fq(sellUnit.factor)} ${p.base_unit})` : null;
 
   return (
     <div
@@ -127,7 +140,13 @@ function ProductTile({
           )}
           {p.name}
         </div>
-        {p.alias && (
+        {unitLabel && (
+          <div className="text-2xs font-semibold text-blue-800 leading-tight">
+            Bán theo {unitLabel}
+            {sellUnit.pack_spec && <span className="font-normal"> · {sellUnit.pack_spec}</span>}
+          </div>
+        )}
+        {p.alias && !unitLabel && (
           <div className="text-2xs text-muted-ink italic truncate leading-tight">{p.alias}</div>
         )}
         {/* Bảo hành mặc định của mặt hàng (tài liệu 09, mục 4) */}
@@ -188,7 +207,15 @@ function ProductTile({
                         <span className="text-muted-ink font-normal"> = {fq(u.factor)} {p.base_unit}</span>
                       )}
                     </span>
-                    <span className="tabular font-bold text-accent">{n(priceOfUnit(u))}</span>
+                    <span className="tabular font-bold text-accent whitespace-nowrap">
+                      {n(priceOfUnit(u))}
+                      {/* Quy đổi về đơn vị cơ bản để so nhanh (tài liệu 16, mục 5) */}
+                      {showConverted && perBase(u) > 0 && (
+                        <span className="ml-1 font-normal text-muted-ink">
+                          | {n(perBase(u))}/{p.base_unit}
+                        </span>
+                      )}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -236,11 +263,13 @@ export default function POS() {
   const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn đặt để giao
   const [exchangeOpen, setExchangeOpen] = useState(false);  // đổi trả hàng
   const [debtOpen, setDebtOpen] = useState(false);          // thu nợ khách đang chọn
-  const [allDebtOpen, setAllDebtOpen] = useState(false);    // thu nợ: chọn trong danh sách khách đang nợ
   const [infoOf, setInfoOf] = useState(null);               // hộp xem ảnh + mô tả hàng hoá
   const [hoverPid, setHoverPid] = useState(null);           // ô hàng đang rê chuột tới
   /* Kiểu tìm kiếm: nhớ chung với mọi ô tìm khác (tài liệu 13, mục 2.1) */
   const [searchMode, setSearchMode] = useSearchMode();
+  /* Công tắc hàng ghim (tài liệu 16, mục 4). Tắt thì KHÔNG ẩn món nào, chỉ
+     xả ghim: lưới về thứ tự thường. Nhớ theo từng máy đứng quầy. */
+  const [pinOn, setPinOn] = useLocal('thpos.featured_on', true);
   const [quickOpen, setQuickOpen] = useState(false);
   const [priceHistOf, setPriceHistOf] = useState(null);
   const [noteOf, setNoteOf] = useState(null);
@@ -257,6 +286,8 @@ export default function POS() {
 
   /* Bật nút chọn nhanh đơn vị tính ngoài lưới hay không (tài liệu 13, mục 2.2) */
   const showUnitPicker = settings?.pos?.show_unit_picker === true;
+  /* Hiện thêm giá quy đổi về đơn vị cơ bản trong menu ĐVT (tài liệu 16, mục 5) */
+  const showConvertedPrice = settings?.pos?.show_converted_price === true;
 
   const maySeeCost = canSeeCost(user, can);
 
@@ -577,14 +608,38 @@ export default function POS() {
          2. món khách đang chọn TỪNG MUA — câu hỏi kế tiếp bao giờ cũng là
             "lần trước tôi lấy cái nào"
        Chỉ đổi THỨ TỰ, không lọc bớt: món khác vẫn còn nguyên ở dưới. */
-    const rank = (p) => (p.featured_rank ?? 9999);
+    const rank = (p) => (pinOn ? (p.featured_rank ?? 9999) : 9999);
     const seen = (p) => (priceHist?.[p.id] ? 0 : 1);
-    const hasFeatured = list.some((p) => p.featured_rank !== null && p.featured_rank !== undefined);
+    const hasFeatured = pinOn
+      && list.some((p) => p.featured_rank !== null && p.featured_rank !== undefined);
     if (hasFeatured || (priceHist && Object.keys(priceHist).length)) {
       list = [...list].sort((a, b) => rank(a) - rank(b) || seen(a) - seen(b));
     }
     return list;
-  }, [products, catSet, search, searchMode, priceHist]);
+  }, [products, catSet, search, searchMode, priceHist, pinOn]);
+
+  /**
+   * Lưới vẽ theo Ô, không theo mặt hàng: một mặt hàng khai nhiều ĐƠN VỊ BÁN
+   * CHÍNH thì có bấy nhiêu ô, mỗi ô bán theo một đơn vị (tài liệu 16, mục 2.1).
+   * Mặt hàng chỉ có một đơn vị bán chính thì vẫn đúng một ô như trước.
+   */
+  /* Có bao nhiêu món đang nằm trong danh sách ghim — để vẽ công tắc */
+  const pinnedCount = useMemo(
+    () => (products || []).filter((x) => x.featured_rank !== null && x.featured_rank !== undefined).length,
+    [products]);
+
+  const tiles = useMemo(() => {
+    const out = [];
+    for (const p of filtered) {
+      const mains = (p.units || []).filter((u) => u.is_sell_main);
+      if (mains.length > 1) {
+        for (const u of mains) out.push({ key: `${p.id}:${u.id}`, p, unit: u });
+      } else {
+        out.push({ key: `${p.id}`, p, unit: null });
+      }
+    }
+    return out;
+  }, [filtered]);
 
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
@@ -942,10 +997,9 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
-        {/* Hai nút thu nợ (tài liệu 13, mục 3.3): nút A theo khách đang chọn,
-            nút B mở danh sách MỌI khách đang nợ kèm số lượng */}
+        {/* Chỉ MỘT nút thu nợ, nằm cạnh khung khách đang chọn. Nút thứ hai sát
+            ô tìm hàng đã bỏ vì hai nút giống nhau gây bấm nhầm (tài liệu 16, mục 5). */}
         <DebtButton customer={customer} onOpen={() => setDebtOpen(true)} />
-        <AllDebtsButton customers={customers || []} onOpen={() => setAllDebtOpen(true)} />
 
         {maySeeCost && (
           <button
@@ -1076,6 +1130,26 @@ export default function POS() {
             onClear={() => { setPickedCats([]); setBrowseCat(null); }}
             shown={filtered.length}
             total={products?.length || 0}
+            extra={pinnedCount > 0 ? (
+              /* Công tắc hàng ghim (tài liệu 16, mục 4): tắt là XẢ GHIM, hàng
+                 về đúng vị trí thường trong lưới — không ẩn món nào. */
+              <button
+                type="button"
+                onClick={() => setPinOn((v) => !v)}
+                aria-pressed={pinOn}
+                title={pinOn
+                  ? `Đang đẩy ${pinnedCount} món ghim lên đầu lưới. Bấm để xả ghim, lưới về thứ tự thường.`
+                  : 'Đang xếp theo thứ tự thường. Bấm để đẩy hàng ghim lên đầu lưới.'}
+                className={`h-8 px-2 rounded border text-2xs font-semibold inline-flex items-center gap-1
+                            cursor-pointer transition-colors duration-100 shrink-0
+                            ${pinOn
+                              ? 'bg-amber-100 border-amber-400 text-amber-900'
+                              : 'bg-card border-line text-muted-ink hover:text-ink'}`}
+              >
+                <Star size={12} aria-hidden="true" className={pinOn ? 'fill-amber-400' : ''} />
+                Hàng ghim {pinOn ? `(${n(pinnedCount)})` : 'đang tắt'}
+              </button>
+            ) : null}
           />
 
           <div ref={gridRef} className="flex-1 overflow-y-auto p-3">
@@ -1105,16 +1179,17 @@ export default function POS() {
                     </div>
                   )}
                   <LazyGrid
-                    items={filtered}
+                    items={tiles}
                     rootRef={gridRef}
-                    resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${browseCat || ''}|${tab.customerId || ''}`}
+                    resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${browseCat || ''}|${tab.customerId || ''}|${pinOn}`}
                     className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
-                    renderItem={(p) => (
-                      <ProductTile key={p.id} p={p} priceListId={tab.priceListId}
+                    renderItem={(t) => (
+                      <ProductTile key={t.key} p={t.p} unit={t.unit} priceListId={tab.priceListId}
                         showCost={maySeeCost && showCost} onPick={addToCart}
-                        inCart={inCartQty.get(p.id) || 0}
-                        bought={priceHist?.[p.id]?.[0] || null}
+                        inCart={inCartQty.get(t.p.id) || 0}
+                        bought={priceHist?.[t.p.id]?.[0] || null}
                         showUnits={showUnitPicker}
+                        showConverted={showConvertedPrice}
                         onInfo={setInfoOf}
                         onHover={setHoverPid} />
                     )}
@@ -1414,13 +1489,6 @@ export default function POS() {
         open={debtOpen && !!tab.customerId}
         customerId={tab.customerId}
         onClose={() => setDebtOpen(false)}
-        onDone={(res) => { reloadCustomers(); showVoucher(res?.transaction?.id); }}
-      />
-
-      {/* Nút Thu nợ thứ hai: chọn khách ngay trong danh sách đang nợ */}
-      <DebtCollectModal
-        open={allDebtOpen}
-        onClose={() => setAllDebtOpen(false)}
         onDone={(res) => { reloadCustomers(); showVoucher(res?.transaction?.id); }}
       />
 

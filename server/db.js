@@ -349,6 +349,70 @@ db.exec(`UPDATE products SET sell_unit_id = (
          WHERE sell_unit_id IS NULL`);
 db.exec(`UPDATE products SET buy_unit_id = sell_unit_id WHERE buy_unit_id IS NULL`);
 
+/* ------------------- Đợt 16: ba tài liệu đặc tả tiếp theo ------------------- */
+
+/* Quy cách đóng gói ghi theo TỪNG đơn vị (tài liệu 18, vùng 3): "Lố 12 cái"
+   là quy cách của cái Lố, không phải của mặt hàng. Cột products.pack_spec cũ
+   vẫn giữ, mang quy cách của đơn vị cơ bản để các màn hình cũ đọc được.
+
+   Nhiều đơn vị cùng làm đơn vị bán chính / mua chính (tài liệu 16, mục 2.1):
+   hai cột products.sell_unit_id, buy_unit_id vẫn giữ, trỏ vào đơn vị đầu
+   tiên được tích — chỗ nào chỉ cần một đơn vị thì đọc hai cột đó như cũ. */
+addColumns('product_units', {
+  pack_spec: 'TEXT',
+  is_sell_main: 'INTEGER NOT NULL DEFAULT 0',
+  is_buy_main: 'INTEGER NOT NULL DEFAULT 0',
+});
+
+/* Ghi chú khi mua hàng: ưu đãi mặc định của mối, ví dụ "Mua 50 tặng 5" */
+addColumns('products', { purchase_note: 'TEXT' });
+
+/* Bộ hàng ghim theo mùa (tài liệu 16, mục 4): mỗi bộ một danh sách, bật bộ
+   nào thì lưới bán hàng đẩy hàng của bộ đó lên đầu. */
+addColumns('pos_featured', { set_id: 'INTEGER' });
+
+/* Báo giá gõ thẳng trên phiếu báo hết hàng (tài liệu 17, mục 2.2) */
+addColumns('requisition_item_suppliers', { quote_price: 'INTEGER' });
+
+/* Bảng hàng ghim đời đầu khoá UNIQUE(kind, ref_id): một mặt hàng chỉ nằm
+   được ở đúng một chỗ. Từ đợt 16 mỗi bộ theo mùa là một danh sách riêng,
+   nên cùng một món phải nằm được ở nhiều bộ — dựng lại bảng với khoá ba
+   cột. Soát trước rồi mới dựng, nên chạy lại mỗi lần khởi động vô hại. */
+const pfUniqueOk = db.prepare("PRAGMA index_list('pos_featured')").all()
+  .some((ix) => ix.unique
+    && db.prepare(`PRAGMA index_info('${ix.name}')`).all().some((c) => c.name === 'set_id'));
+if (!pfUniqueOk) {
+  console.log('  [nâng cấp] dựng lại bảng pos_featured cho bộ hàng ghim theo mùa');
+  db.exec(`
+    CREATE TABLE pos_featured_new (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind       TEXT NOT NULL,
+      ref_id     INTEGER NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      note       TEXT,
+      set_id     INTEGER,
+      UNIQUE(kind, ref_id, set_id)
+    );
+    INSERT INTO pos_featured_new(id, kind, ref_id, sort_order, note, set_id)
+      SELECT id, kind, ref_id, sort_order, note, set_id FROM pos_featured;
+    DROP TABLE pos_featured;
+    ALTER TABLE pos_featured_new RENAME TO pos_featured;
+  `);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_pf_set ON pos_featured(set_id)');
+
+/* Đơn vị bán chính / mua chính của hàng cũ: lấy theo hai cột đang có */
+db.exec(`UPDATE product_units SET is_sell_main = 1
+         WHERE is_sell_main = 0 AND id IN (SELECT sell_unit_id FROM products WHERE sell_unit_id IS NOT NULL)`);
+db.exec(`UPDATE product_units SET is_buy_main = 1
+         WHERE is_buy_main = 0 AND id IN (SELECT buy_unit_id FROM products WHERE buy_unit_id IS NOT NULL)`);
+/* Quy cách của mặt hàng chuyển xuống đơn vị cơ bản, chỉ khi đơn vị chưa có */
+db.exec(`UPDATE product_units SET pack_spec = (
+           SELECT p.pack_spec FROM products p WHERE p.id = product_units.product_id)
+         WHERE pack_spec IS NULL AND factor = 1
+           AND EXISTS (SELECT 1 FROM products p WHERE p.id = product_units.product_id
+                        AND COALESCE(p.pack_spec, '') <> '')`);
+
 export const DB_FILE = DB_PATH;
 
 /* ------------------------------------------------------------------ */
@@ -472,18 +536,36 @@ export function searchMode(v) {
 
 /**
  * Điều kiện tìm kiếm cho một hoặc nhiều cột.
+ *
  * Tìm chính xác thì so khớp cả chuỗi (không phân biệt hoa thường, vì LIKE
- * của SQLite vốn không phân biệt với chữ không dấu); tìm có chứa thì bọc %.
+ * của SQLite vốn không phân biệt với chữ không dấu).
+ *
+ * Tìm có chứa KHÔNG BẮT ĐÚNG THỨ TỰ TỪ (tài liệu 16, mục 3): tách từ khoá
+ * thành từng từ, mỗi từ phải có mặt ở một cột nào đó. Khách tên "Quốc Anh"
+ * mà gõ "Anh Quốc" vẫn ra — người đứng quầy nhớ tên theo kiểu gọi, không
+ * theo thứ tự ghi trong hồ sơ.
  */
 export function searchWhere(columns, value, mode = 'contains') {
   const cols = Array.isArray(columns) ? columns : [columns];
   const v = String(value ?? '').trim();
   if (!v || !cols.length) return { sql: '', params: [] };
-  const needle = searchMode(mode) === 'exact' ? v : `%${v}%`;
-  return {
-    sql: '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')',
-    params: cols.map(() => needle),
-  };
+
+  if (searchMode(mode) === 'exact') {
+    return {
+      sql: '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')',
+      params: cols.map(() => v),
+    };
+  }
+
+  /* Mỗi từ một điều kiện OR giữa các cột, rồi AND các từ lại với nhau.
+     Giới hạn 6 từ: gõ cả câu dài thì câu truy vấn phình ra vô ích. */
+  const words = v.split(/\s+/).filter(Boolean).slice(0, 6);
+  const params = [];
+  const parts = words.map((w) => {
+    for (const _ of cols) params.push(`%${w}%`);
+    return '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')';
+  });
+  return { sql: '(' + parts.join(' AND ') + ')', params };
 }
 
 /**

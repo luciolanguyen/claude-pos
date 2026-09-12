@@ -207,19 +207,31 @@ export function noAccent(str) {
 /** Tìm kiếm mềm: khớp cả khi gõ không dấu, không phân biệt hoa thường. */
 export function match(haystack, needle) {
   if (!needle) return true;
-  return noAccent(haystack).includes(noAccent(needle));
+  const h = noAccent(haystack);
+  const n = noAccent(needle).trim();
+  if (!n) return true;
+  /* Không bắt đúng thứ tự từ (tài liệu 16, mục 3): gõ "Anh Quốc" vẫn ra
+     khách tên "Quốc Anh". Mọi ô tìm gọi qua hàm này đều được hưởng. */
+  return n.split(/\s+/).every((w) => h.includes(w));
 }
 
 /**
  * Khớp theo kiểu tìm người dùng chọn (tài liệu 13, mục 2.1).
  *   'exact'    — khớp trọn cả ô, dùng khi quét mã vạch hay dò đúng một mã
  *   'contains' — khớp một khúc, kiểu quen dùng
+ *
+ * Kiểu "có chứa" KHÔNG BẮT ĐÚNG THỨ TỰ TỪ (tài liệu 16, mục 3): tách từ
+ * khoá thành từng từ, từ nào cũng phải có mặt. Khách tên "Quốc Anh" mà gõ
+ * "Anh Quốc" vẫn ra — người đứng quầy nhớ tên theo kiểu gọi, không theo
+ * thứ tự ghi trong hồ sơ.
  */
 export function matchMode(haystack, needle, mode = 'contains') {
   if (!needle) return true;
   const h = noAccent(haystack);
-  const n = noAccent(needle);
-  return mode === 'exact' ? h === n : h.includes(n);
+  const n = noAccent(needle).trim();
+  if (!n) return true;
+  if (mode === 'exact') return h === n;
+  return n.split(/\s+/).every((w) => h.includes(w));
 }
 
 /**

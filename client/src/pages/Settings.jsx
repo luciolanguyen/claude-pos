@@ -13,7 +13,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { CategorySelect } from '../components/CategoryTree';
-import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal from '../components/CartPickerModal';
 import { ErrorBox } from '../components/ui';
 
 const TABS = [
@@ -408,6 +408,41 @@ function PosSettings() {
             </span>
           </span>
         </label>
+        {/* Giá quy đổi trong menu ĐVT (tài liệu 16, mục 5) */}
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.show_converted_price === true}
+            disabled={form.show_unit_picker !== true}
+            onChange={(e) => setForm((f) => ({ ...f, show_converted_price: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Hiện thêm giá quy đổi về đơn vị nhỏ nhất trong menu đơn vị tính
+            <span className="block text-2xs text-muted-ink">
+              Ví dụ: &quot;Thùng — 1.200.000 đ | 10.000/Cái&quot;. Khách hỏi &quot;lấy nguyên thùng có rẻ hơn
+              không&quot; thì nhìn là trả lời được ngay. Cần bật ô trên trước.
+            </span>
+          </span>
+        </label>
+        {/* Đa đơn vị bán chính / mua chính (tài liệu 16, mục 2.1) */}
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.multi_main_units === true}
+            onChange={(e) => setForm((f) => ({ ...f, multi_main_units: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Cho phép thiết lập đa ĐVT mua / bán chính
+            <span className="block text-2xs text-muted-ink">
+              Bật thì một mặt hàng tích được nhiều đơn vị bán chính — mỗi đơn vị thành một ô riêng
+              ngoài lưới bán hàng (bán lẻ theo Cái và bán nguyên Thùng nằm cạnh nhau). Tắt thì chỉ
+              chọn được 1 đơn vị bán chính và 1 đơn vị mua chính. <b>Tắt hay bật đều không đụng tới
+              dữ liệu đã lưu và hoá đơn cũ</b> — chỉ đổi cách ô tích hoạt động.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="card p-4">
@@ -536,6 +571,10 @@ function FeaturedSettings() {
   const [adding, setAdding] = useState(false);
   const [catPick, setCatPick] = useState('');
   const [saving, setSaving] = useState(false);
+  /* Bộ hàng ghim theo mùa (tài liệu 16, mục 4) */
+  const { data: sets, reload: reloadSets } = useFetch(() => api.get('/pos-featured-sets'), []);
+  const [newSetName, setNewSetName] = useState('');
+  const activeSet = (sets || []).find((x) => x.active);
 
   useEffect(() => {
     if (data) setList(data.map((x) => ({ kind: x.kind, ref_id: x.ref_id, label: x.label, sku: x.sku })));
@@ -554,8 +593,15 @@ function FeaturedSettings() {
   const addProduct = (p) => {
     if (has('product', p.id)) { toast(`"${p.name}" đã có trong danh sách ưu tiên`, 'warn'); return; }
     setList((prev) => [...prev, { kind: 'product', ref_id: p.id, label: p.name, sku: p.sku }]);
-    setAdding(false);
   };
+
+  /* Giỏ của hộp chọn đọc thẳng danh sách đang ghim, nên sửa bên nào cũng
+     thấy ngay bên kia. Chỉ lấy phần MẶT HÀNG; nhóm hàng chọn ở ô riêng. */
+  const pinnedLines = list
+    .filter((x) => x.kind === 'product')
+    .map((x) => ({
+      key: `${x.kind}-${x.ref_id}`, product_id: x.ref_id, name: x.label, sku: x.sku,
+    }));
   const addCategory = (id) => {
     const c = meta.categories.find((x) => String(x.id) === String(id));
     if (!c) return;
@@ -647,13 +693,120 @@ function FeaturedSettings() {
         )}
       </div>
 
-      <ProductPicker
+      {/* ---------- Bộ hàng ghim theo mùa (tài liệu 16, mục 4) ---------- */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Bộ hàng ghim theo mùa</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Cất sẵn mỗi mùa một bộ rồi bật lại khi tới mùa, khỏi phải đi chọn lại từng món.
+          Bật một bộ là chép nội dung bộ đó sang danh sách đang dùng ở trên.
+          Tắt hết thì lưới bán hàng về thứ tự thường — <b>không ẩn món nào</b>.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <Input
+            value={newSetName}
+            onChange={(e) => setNewSetName(e.target.value)}
+            placeholder="Tên bộ mới, ví dụ: Hàng ghim mùa hè"
+            className="w-full sm:w-64"
+            aria-label="Tên bộ hàng ghim mới"
+          />
+          <Button
+            size="sm"
+            icon={Plus}
+            disabled={!newSetName.trim()}
+            onClick={async () => {
+              try {
+                await api.post('/pos-featured-sets', {
+                  name: newSetName.trim(), from_current: true,
+                });
+                setNewSetName('');
+                reloadSets();
+                toast(`Đã cất danh sách đang dùng thành bộ "${newSetName.trim()}"`, 'ok', 6000);
+              } catch (e) { toast(e.message, 'bad', 6000); }
+            }}
+          >
+            Cất danh sách hiện tại thành bộ
+          </Button>
+          {activeSet && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  await api.post('/pos-featured-sets/off/activate', { active: false });
+                  reloadSets();
+                  reload();
+                  toast('Đã xả ghim — lưới bán hàng về thứ tự thường', 'ok', 6000);
+                } catch (e) { toast(e.message, 'bad', 6000); }
+              }}
+            >
+              Tắt hết ghim
+            </Button>
+          )}
+        </div>
+
+        {(sets || []).length === 0 ? (
+          <p className="text-[13px] text-muted-ink">
+            Chưa cất bộ nào. Chọn xong danh sách ở trên rồi bấm <b>Cất danh sách hiện tại thành bộ</b>.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {sets.map((st) => (
+              <li key={st.id}
+                className={`flex flex-wrap items-center gap-2 rounded border px-2.5 py-1.5
+                            ${st.active ? 'border-amber-400 bg-amber-50' : 'border-line'}`}>
+                <Star size={13} aria-hidden="true"
+                  className={st.active ? 'text-amber-500 fill-amber-400' : 'text-muted-ink'} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold">{st.name}</div>
+                  <div className="text-2xs text-muted-ink">
+                    {n(st.item_count)} mục{st.active ? ' · đang dùng' : ''}
+                  </div>
+                </div>
+                {st.active
+                  ? <Badge tone="warn">Đang bật</Badge>
+                  : (
+                    <Button size="sm" variant="soft" onClick={async () => {
+                      try {
+                        const res = await api.post(`/pos-featured-sets/${st.id}/activate`, {});
+                        reloadSets();
+                        reload();
+                        toast(`Đã bật bộ "${st.name}" — ${n(res.count)} mục lên đầu lưới`, 'ok', 6000);
+                      } catch (e) { toast(e.message, 'bad', 6000); }
+                    }}>
+                      Bật bộ này
+                    </Button>
+                  )}
+                <IconButton icon={Trash2} size={14} label={`Xoá bộ ${st.name}`}
+                  className="!text-danger hover:!bg-red-50"
+                  onClick={async () => {
+                    try {
+                      await api.del(`/pos-featured-sets/${st.id}`);
+                      reloadSets();
+                      toast(`Đã xoá bộ "${st.name}"`, 'ok');
+                    } catch (e) { toast(e.message, 'bad', 6000); }
+                  }} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Hộp chọn đồng bộ hai chiều, KHÔNG có ô số lượng: đây là danh sách
+          ưu tiên hiển thị, không phải phiếu xuất nhập (tài liệu 17, mục 1.2) */}
+      <CartPickerModal
         open={adding}
         onClose={() => setAdding(false)}
-        products={(products || []).filter((p) => !has('product', p.id))}
-        onPick={addProduct}
-        withQty={false}
+        kind="featured"
         title="Chọn mặt hàng ghim lên đầu lưới"
+        products={products || []}
+        lines={pinnedLines}
+        onAdd={addProduct}
+        onPatch={() => {}}
+        onRemove={(key) => setList((prev) => prev.filter((x) => `${x.kind}-${x.ref_id}` !== key))}
+        noQty
+        showPrice={false}
+        footerNote="Đang ghim"
       />
     </div>
   );

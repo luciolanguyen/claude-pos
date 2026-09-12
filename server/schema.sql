@@ -829,5 +829,23 @@ CREATE TABLE IF NOT EXISTS pos_featured (
   ref_id     INTEGER NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   note       TEXT,
-  UNIQUE(kind, ref_id)
+  set_id     INTEGER,                        -- NULL = danh sach ghim dang dung
+  UNIQUE(kind, ref_id, set_id)
 );
+
+-- ============================================================
+-- MO RONG v16: bo hang ghim theo mua
+-- ============================================================
+
+-- Moi bo la mot danh sach hang ghim dung lai duoc: "Hang Ghim Mua He",
+-- "Hang Ghim Mua Tet". Bat bo nao thi luoi POS day hang cua bo do len dau.
+-- Dong pos_featured co set_id = NULL la danh sach ghim dang dung truc tiep.
+CREATE TABLE IF NOT EXISTS pos_featured_sets (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  active     INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  note       TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_pfs_active ON pos_featured_sets(active);

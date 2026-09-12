@@ -27,10 +27,10 @@ import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/
 import { money, n, qty as fq, date, datetime, match } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, Empty, Spinner, Badge,
-  Textarea, QtyInput, SearchInput, ErrorBox, Confirm, Pager,
+  Textarea, QtyInput, SearchInput, ErrorBox, Confirm, Pager, MoneyInput, Combo,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
-import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal, { CartPickerButton } from '../components/CartPickerModal';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 
 const STATUS = {
@@ -278,7 +278,6 @@ function RequisitionForm({ draft, onClose, onSaved }) {
     [warehouseId], { skip: !warehouseId });
 
   const add = (p, qty = 1) => {
-    setPickOpen(false);
     setLines((prev) => {
       if (prev.some((l) => l.product_id === p.id)) return prev;
       return [...prev, {
@@ -384,7 +383,8 @@ function RequisitionForm({ draft, onClose, onSaved }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" icon={Plus} onClick={() => setPickOpen(true)}>Chọn hàng</Button>
+            <CartPickerButton kind="requisition" count={lines.length}
+              onClick={() => setPickOpen(true)} />
             {!loadingSuggest && suggest?.rows?.length > 0 && (
               <Button size="sm" variant="soft" icon={Wand2} onClick={addSuggested}>
                 Thêm {n(suggest.rows.length)} món đang dưới định mức
@@ -452,12 +452,29 @@ function RequisitionForm({ draft, onClose, onSaved }) {
         </div>
       </Modal>
 
-      <ProductPicker
+      {/* Hộp chọn đồng bộ hai chiều: gõ tồn kho đếm được và số dự tính mua
+          ngay trong hộp, phiếu bên dưới đổi theo tức thì (tài liệu 17, mục 1.1) */}
+      <CartPickerModal
         open={pickOpen}
         onClose={() => setPickOpen(false)}
-        products={products || []}
-        onPick={add}
+        kind="requisition"
         title="Chọn hàng cần báo hết"
+        products={products || []}
+        lines={lines.map((l) => ({ ...l, key: l.key, name: l.name_snapshot }))}
+        onAdd={add}
+        onPatch={patch}
+        onRemove={drop}
+        showPrice={false}
+        footerNote="Đang báo hết"
+        fields={[
+          { key: 'actual_qty', label: 'Tồn đếm được', placeholder: 'chưa đếm' },
+          { key: 'buy_qty', label: 'Dự tính mua', min: 0 },
+        ]}
+        rightCol={(l) => (
+          <div className="text-2xs text-muted-ink mt-0.5">
+            Máy đang ghi tồn: <b className="tabular">{fq(l.system_qty ?? 0)}</b> {l.unit_name}
+          </div>
+        )}
       />
     </>
   );
@@ -736,6 +753,8 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                                 suppliers={suppliers || []}
                                 readOnly={rq.status !== 'open' || it.locked}
                                 onChange={(ids) => patchItem(it, { supplier_ids: ids })}
+                                onQuote={(supplierId, quotePrice) =>
+                                  patchItem(it, { quote: { supplier_id: supplierId, quote_price: quotePrice } })}
                               />
                             </td>
                           </tr>
@@ -779,11 +798,12 @@ function RequisitionDetail({ id, onClose, onChanged }) {
           items={items.filter((i) => picked.has(i.id))}
           suppliers={suppliers || []}
           onClose={() => setBulkOpen(false)}
-          onDone={async (supplierId, replace) => {
+          onDone={async (supplierId, replace, quotePrice) => {
             setWorking(true);
             try {
               const res = await api.assignRequisitionSupplier(id, {
                 supplier_id: supplierId, item_ids: [...picked], replace,
+                quote_price: quotePrice || 0,
               });
               toast(
                 `Đã gán ${res.supplier.name} cho ${n(res.assigned)} món`
@@ -809,7 +829,7 @@ function RequisitionDetail({ id, onClose, onChanged }) {
  * Mối đã khai sẵn cho mặt hàng hiện thành nút bấm nhanh; muốn mối khác
  * thì chọn trong danh sách đầy đủ.
  */
-function SupplierTags({ item, suppliers, readOnly, onChange }) {
+function SupplierTags({ item, suppliers, readOnly, onChange, onQuote }) {
   const chosen = new Set(item.chosen || []);
   const known = item.suppliers || [];
   const knownIds = new Set(known.map((s) => s.supplier_id));
@@ -852,18 +872,38 @@ function SupplierTags({ item, suppliers, readOnly, onChange }) {
           </button>
         ))}
       </div>
-      {!readOnly && (
-        <Select
-          size="sm"
-          value=""
-          onChange={(e) => e.target.value && toggle(Number(e.target.value))}
-          aria-label={`Thêm nhà cung cấp cho ${item.name_snapshot}`}
-        >
-          <option value="">+ Mối khác...</option>
-          {suppliers.filter((s) => !chosen.has(s.id)).map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
+      {/* Báo giá gõ thẳng cho từng mối đã chọn (tài liệu 17, mục 2.2).
+          Gõ thì phiếu mua tạm lấy đúng con số này; để trống thì rơi về giá
+          nhập mặc định của mặt hàng. */}
+      {!readOnly && chosen.size > 0 && onQuote && (
+        <div className="space-y-1">
+          {list.filter((x) => chosen.has(x.supplier_id)).map((x) => (
+            <div key={`q${x.supplier_id}`} className="flex items-center gap-1">
+              <span className="text-2xs text-muted-ink truncate flex-1" title={x.name}>
+                Giá {x.name} báo
+              </span>
+              <MoneyInput
+                size="sm"
+                className="!w-28"
+                value={item.quotes?.[x.supplier_id] || 0}
+                onChange={(v) => onQuote(x.supplier_id, v)}
+                aria-label={`Giá ${x.name} báo cho ${item.name_snapshot}`}
+              />
+            </div>
           ))}
-        </Select>
+        </div>
+      )}
+      {!readOnly && (
+        /* Gõ vài ký tự là lọc ra mối, khỏi cuộn danh sách dài (tài liệu 17, mục 2.1) */
+        <Combo
+          size="sm"
+          items={suppliers.filter((s) => !chosen.has(s.id))}
+          value={null}
+          onChange={(id) => id && toggle(Number(id))}
+          placeholder="+ Gõ tìm mối khác..."
+          filter={(s, q) => match(s.name, q) || (s.phone || '').includes(q)}
+          render={(s) => ({ label: s.name, sub: s.phone || null })}
+        />
       )}
     </div>
   );
@@ -885,6 +925,8 @@ function BulkSupplierModal({ items, suppliers, onClose, onDone }) {
   const [replace, setReplace] = useState(false);
   const [opts, setOpts] = useState(null);
   const [busy, setBusy] = useState(false);
+  /* Báo giá chung gõ luôn lúc gán hàng loạt (tài liệu 17, mục 2.2) */
+  const [quote, setQuote] = useState(0);
 
   /* Gom gợi ý của mọi món đang chọn: mối nào giao được nhiều món nhất thì
      xếp trước — đặt một mối cho cả phiếu là đỡ nhất. */
@@ -945,7 +987,7 @@ function BulkSupplierModal({ items, suppliers, onClose, onDone }) {
           variant="primary"
           loading={busy}
           disabled={!picked || busy}
-          onClick={async () => { setBusy(true); await onDone(picked, replace); setBusy(false); }}
+          onClick={async () => { setBusy(true); await onDone(picked, replace, quote); setBusy(false); }}
         >
           Gán {pickedName ? `"${pickedName}"` : 'nhà cung cấp'}
         </Button>
@@ -998,6 +1040,18 @@ function BulkSupplierModal({ items, suppliers, onClose, onDone }) {
               ))}
             </ul>
           )}
+        </div>
+
+        <div>
+          <span className="label">Giá mối này báo cho những món đang chọn</span>
+          <div className="flex items-center gap-2">
+            <MoneyInput value={quote} onChange={setQuote} className="!w-40"
+              aria-label="Giá mối báo cho các món đang chọn" />
+            <span className="text-2xs text-muted-ink flex-1">
+              Để trống cũng được. Có gõ thì phiếu mua tạm lấy đúng con số này; không gõ thì
+              lấy giá nhập mặc định của mặt hàng.
+            </span>
+          </div>
         </div>
 
         <div>

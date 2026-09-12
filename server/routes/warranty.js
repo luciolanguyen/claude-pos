@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf, searchMode,
+  all, get, run, tx, nextCode, moveStock, costOf, searchWhere,
   addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings, pageParams } from '../db.js';
 import { isApproverRole, peekApproval, consumeApproval } from '../policy.js';
 import { ensureDefectWarehouse } from './sales.js';
@@ -238,12 +238,13 @@ r.get('/warranty', (req, res) => {
   const where = [];
   const params = [];
   if (q.trim()) {
-    where.push(`(t.code LIKE ? OR t.product_name LIKE ? OR t.serial LIKE ?
-                 OR t.customer_name LIKE ? OR t.customer_phone LIKE ? OR c.name LIKE ?)`);
     /* Số máy (serial) là chỗ hay cần tìm chính xác nhất: gõ "12" kiểu có
        chứa thì ra mọi máy có số 12 ở giữa (tài liệu 13, mục 2.1) */
-    const like = searchMode(req.query.match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    params.push(like, like, like, like, like, like);
+    const c = searchWhere(
+      ['t.code', 't.product_name', 't.serial', 't.customer_name', 't.customer_phone', 'c.name'],
+      q, req.query.match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (status) { where.push('t.status = ?'); params.push(status); }
   if (resolution) { where.push('t.resolution = ?'); params.push(resolution); }

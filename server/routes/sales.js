@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchMode,
+  all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchWhere,
   addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
@@ -22,12 +22,13 @@ r.get('/sales', (req, res) => {
   if (q.trim()) {
     /* Tìm song song ở khách chủ VÀ người mua hộ (tài liệu 03): khách gọi
        hỏi "hôm trước con tôi ra mua" thì phải ra được hoá đơn đó. */
-    where.push(`(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.phone2 LIKE ?
-                 OR c.phone3 LIKE ? OR s.buyer_name LIKE ? OR s.buyer_phone LIKE ?)`);
-    /* Tìm chính xác thì khớp trọn cả ô — dán đúng số hoá đơn hay số điện
-       thoại thì khỏi ra thêm chục dòng gần giống (tài liệu 13, mục 2.1) */
-    const like = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    params.push(like, like, like, like, like, like, like);
+    /* Tìm chính xác thì khớp trọn cả ô; tìm có chứa thì không bắt đúng thứ
+       tự từ (tài liệu 13 mục 2.1, tài liệu 16 mục 3) */
+    const c = searchWhere(
+      ['s.code', 'c.name', 'c.phone', 'c.phone2', 'c.phone3', 's.buyer_name', 's.buyer_phone'],
+      q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (customer_id) { where.push('s.customer_id = ?'); params.push(customer_id); }
   if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }

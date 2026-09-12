@@ -46,7 +46,7 @@ export function categoryFilterSet(categories, selected, browseId) {
 }
 
 export function CategoryFilter({
-  categories, browseId, onBrowse, selected, onToggle, onClear, shown, total,
+  categories, browseId, onBrowse, selected, onToggle, onClear, shown, total, extra = null,
 }) {
   const cats = categories || [];
   const byId = useMemo(() => new Map(cats.map((c) => [c.id, c])), [cats]);
@@ -142,6 +142,8 @@ export function CategoryFilter({
         </div>
 
         <div className="flex-1" />
+        {/* Chỗ cho công tắc phụ của màn hình bán hàng, ví dụ nút hàng ghim */}
+        {extra}
         <span className="text-2xs text-muted-ink whitespace-nowrap shrink-0 tabular">
           {filtering ? `${n(shown)}/${n(total)} món` : `${n(total)} món`}
         </span>

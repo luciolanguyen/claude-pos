@@ -15,6 +15,7 @@ import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
 import { CategorySelect } from '../components/CategoryTree';
 import { StockHistory } from './Products';
 import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal, { CartPickerButton } from '../components/CartPickerModal';
 
 /* ==================================================================== */
 /* Sửa tồn kho và kiểm kê                                                */
@@ -456,7 +457,8 @@ function StockTakeForm({ open, onClose, onSaved, draft = null }) {
                 {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </Select>
             </Field>
-            <Button icon={Plus} onClick={() => setPickerOpen(true)}>Chọn từng mặt hàng</Button>
+            <CartPickerButton kind="stock_take" size="md" count={lines.length}
+              onClick={() => setPickerOpen(true)} />
             <Button icon={ClipboardCheck} onClick={addAll}>Kiểm kê toàn bộ kho</Button>
             <div className="flex-1" />
             {lines.length > 0 && (
@@ -529,12 +531,35 @@ function StockTakeForm({ open, onClose, onSaved, draft = null }) {
         </div>
       </Modal>
 
-      <ProductPicker
+      {/* Đồng bộ hai chiều với lưới kiểm kê bên ngoài: gõ số đếm được ở đây
+          thì lưới đổi theo ngay, và ngược lại (tài liệu 17, mục 1.3) */}
+      <CartPickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        products={(products || []).filter((p) => p.track_stock)}
-        onPick={addProduct}
+        kind="stock_take"
         title="Chọn hàng cần kiểm kê"
+        products={(products || []).filter((p) => p.track_stock)}
+        lines={lines.map((l) => ({ ...l, key: String(l.product_id) }))}
+        onAdd={addProduct}
+        onPatch={(key, patch) => setLines((prev) => prev.map((l) => (
+          String(l.product_id) === key ? { ...l, ...patch } : l)))}
+        onRemove={(key) => setLines((prev) => prev.filter((l) => String(l.product_id) !== key))}
+        showPrice={false}
+        footerNote="Đang kiểm"
+        fields={[{ key: 'actual_qty', label: 'Tồn đếm được', min: 0 }]}
+        rightCol={(l) => {
+          const diff = Number(l.actual_qty ?? 0) - Number(l.system_qty ?? 0);
+          return (
+            <div className="text-2xs mt-0.5">
+              <span className="text-muted-ink">Máy ghi {fq(l.system_qty ?? 0)} {l.base_unit}</span>
+              {diff !== 0 && (
+                <span className={diff < 0 ? ' text-danger font-semibold' : ' text-emerald-700 font-semibold'}>
+                  {' · '}{diff > 0 ? '+' : ''}{fq(diff)} so với máy
+                </span>
+              )}
+            </div>
+          );
+        }}
       />
     </>
   );

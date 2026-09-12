@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   Receipt, Printer, Undo2, XCircle, Eye, Filter, Download, ShoppingCart, HandCoins,
+  ShieldCheck,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
@@ -14,6 +15,7 @@ import { PageHeader, Page } from '../components/Layout';
 import InvoicePrint from '../components/InvoicePrint';
 import SaleReturnForm from '../components/SaleReturnForm';
 import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
+import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
 
 export default function Sales() {
   const { store, settings, toast, meta, user } = useApp();
@@ -38,6 +40,7 @@ export default function Sales() {
   const [detail, setDetail] = useState(null);
   const [wHistory, setWHistory] = useState(null);   // dòng thời gian bảo hành đang xem
   const [printing, setPrinting] = useState(null);
+  const [warrantyCard, setWarrantyCard] = useState(null);   // in lại phiếu bảo hành
   const [returning, setReturning] = useState(null);
   const [cancelling, setCancelling] = useState(null);
   const [paying, setPaying] = useState(null);
@@ -210,6 +213,22 @@ export default function Sales() {
                               label={`In hoá đơn ${s.code}`}
                               onClick={async () => setPrinting(await api.sale(s.id))}
                               size={14}
+                            />
+                            {/* In lại phiếu bảo hành: chọn gộp hay tách từng
+                                món ngay trong hộp in (tài liệu 16, mục 5) */}
+                            <IconButton
+                              icon={ShieldCheck}
+                              label={`In lại phiếu bảo hành của ${s.code}`}
+                              onClick={async () => {
+                                const full = await api.sale(s.id);
+                                if (!warrantyItemsOf(full).length) {
+                                  toast(`Hoá đơn ${s.code} không có món nào bảo hành.`, 'warn');
+                                  return;
+                                }
+                                setWarrantyCard(full);
+                              }}
+                              size={14}
+                              className="!text-emerald-700"
                             />
                             {s.status === 'done' && s.remaining > 0 && (
                               <IconButton
@@ -424,6 +443,14 @@ export default function Sales() {
           store={store}
           invoice={settings?.invoice || {}}
           onClose={() => setPrinting(null)}
+        />
+      )}
+
+      {warrantyCard && (
+        <WarrantyCardPrint
+          sale={warrantyCard}
+          store={store}
+          onClose={() => setWarrantyCard(null)}
         />
       )}
 

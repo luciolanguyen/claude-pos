@@ -131,6 +131,8 @@ const TABLES = [
   'warranty_custom_parts', 'warranty_fees',
   /* Đợt 15 */
   'product_images', 'pos_featured',
+  /* Đợt 16 */
+  'pos_featured_sets',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -247,7 +249,7 @@ r.post('/reset-all', (req, res) => {
     'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
-    'pos_featured', 'product_images',
+    'pos_featured', 'pos_featured_sets', 'product_images',
     'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
     'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',

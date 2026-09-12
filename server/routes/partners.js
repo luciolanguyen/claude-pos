@@ -12,7 +12,7 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount,
-  searchWhere, searchMode,
+  searchWhere,
 } from '../db.js';
 import { planAllocation, writeAllocation, debtBreakdown } from '../debt.js';
 import { maxDebtDaysFor, posPolicy, isApproverRole, peekApproval, consumeApproval } from '../policy.js';
@@ -107,11 +107,14 @@ r.get('/suppliers', (req, res) => {
   const params = [];
   if (q.trim()) {
     /* Tìm chính xác thì khớp cả chuỗi — quét mã NCC hay dán đúng số điện
-       thoại thì không muốn ra thêm mấy mối tên gần giống (tài liệu 13) */
-    const needle = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    where.push(`(s.name LIKE ? OR s.code LIKE ? OR s.phone LIKE ? OR s.contact_name LIKE ?
-                 OR EXISTS (SELECT 1 FROM supplier_phones sp WHERE sp.supplier_id = s.id AND sp.phone LIKE ?))`);
-    params.push(needle, needle, needle, needle, needle);
+       thoại thì không muốn ra thêm mấy mối tên gần giống (tài liệu 13).
+       Tìm có chứa thì không bắt đúng thứ tự từ (tài liệu 16, mục 3). */
+    const c = searchWhere(
+      ['s.name', 's.code', 's.phone', 's.contact_name',
+        '(SELECT GROUP_CONCAT(sp.phone) FROM supplier_phones sp WHERE sp.supplier_id = s.id)'],
+      q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (active !== undefined && active !== '') { where.push('s.active = ?'); params.push(Number(active)); }
   let rows = all(`SELECT s.* FROM suppliers s ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY s.name`, params);
