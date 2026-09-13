@@ -33,14 +33,14 @@ import CustomerProfile from '../components/CustomerProfile';
 import { TileImageButton, ProductInfoModal } from '../components/ProductImages';
 import { OrderBell, SaveAsOrderModal, PickOrderModal } from '../components/PosOrders';
 import {
-  DebtButton, DebtCollectModal, CustomerDebtBanner,
+  DebtCollectModal, CustomerDebtBanner,
   OverdueDebtsButton, OverdueDebtsModal,
 } from '../components/PosDebt';
 import PaymentModal from '../components/PosPayment';
 import ProxyBuyer from '../components/PosBuyer';
 import { CartLine, OrderNote, MoneyCell, PercentCell, lineAmount } from '../components/PosCart';
 import {
-  CategoryFilter, CategoryDrawer, categoryFilterSet, LazyGrid,
+  GridToolbar, CategoryDrawer, categoryFilterSet, LazyGrid,
 } from '../components/PosCatalog';
 import {
   usePosPolicy, PinApprovalModal, cartDiscountPercent, canSelfApprove,
@@ -64,12 +64,20 @@ const consignCommission = (c, amount) => {
 };
 
 /* Bốn cấp co giãn lưới | giỏ (tài liệu 24, phần 6). Số là % của LƯỚI. */
+/* Các cấp co giãn lưới | giỏ (tài liệu 24, phần 6), XẾP THEO LƯỚI TO DẦN:
+   bấm liên tục vào vạch là lưới cứ rộng dần ra rồi quay vòng, nên đoán được
+   ngay bước kế tiếp. Kéo chuột thì nhảy về cấp gần nhất, không phụ thuộc
+   thứ tự này. */
 const SPLIT_LEVELS = [
-  { grid: 60, label: 'Cân bằng 60/40', hint: 'Tỷ lệ tiêu chuẩn khi bán hàng thông thường' },
-  { grid: 40, label: 'Rộng giỏ 40/60', hint: 'Giỏ rộng ra để xem rõ nhãn mua hộ và sửa giá sỉ' },
   { grid: 0, label: 'Toàn giỏ 0/100', hint: 'Ẩn hẳn lưới hàng, rà soát hoá đơn trước khi đóng đơn' },
+  { grid: 40, label: 'Rộng giỏ 40/60', hint: 'Giỏ rộng ra để xem rõ nhãn mua hộ và sửa giá sỉ' },
+  { grid: 60, label: 'Cân bằng 60/40', hint: 'Tỷ lệ tiêu chuẩn khi bán hàng thông thường' },
+  { grid: 75, label: 'Rộng lưới 75/25', hint: 'Lưới rộng hơn mà giỏ vẫn đọc được từng dòng' },
   { grid: 85, label: 'Rộng lưới 85/15', hint: 'Lưới bung tối đa, giỏ thu thành thanh dọc' },
 ];
+
+/* Cấp mặc định lúc mở máy: vẫn là 60/40 như trước */
+const SPLIT_DEFAULT = SPLIT_LEVELS.findIndex((x) => x.grid === 60);
 
 const newTab = (no, priceListId) => ({
   id: 'tab' + Date.now() + Math.random().toString(36).slice(2, 6),
@@ -113,6 +121,20 @@ function ProductTile({
   showTiers = false, line = null, blindKeys = null, alias = null,
 }) {
   const [unitsOpen, setUnitsOpen] = useState(false);
+  /* Menu ĐVT đang bung mà bấm ra chỗ khác thì tự thu về — bắt người đứng
+     quầy bấm đúng lại cái nút vừa mở mới đóng được là phiền. */
+  const unitsRef = useRef(null);
+  useEffect(() => {
+    if (!unitsOpen) return undefined;
+    const away = (e) => { if (!unitsRef.current?.contains(e.target)) setUnitsOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setUnitsOpen(false); };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [unitsOpen]);
   /* Mỗi đơn vị bán chính được vẽ thành MỘT ô riêng ngoài lưới (tài liệu 16,
      mục 2.1) — ô nào thì bán theo đơn vị đó. */
   const sellUnit = sellUnitOf(p, unit);
@@ -272,7 +294,7 @@ function ProductTile({
 
       {/* Chọn nhanh đơn vị tính (tài liệu 13, mục 3.4) */}
       {showUnits && p.units.length > 1 && !out && (
-        <div className="relative">
+        <div className="relative" ref={unitsRef}>
           <button
             type="button"
             onClick={() => setUnitsOpen((o) => !o)}
@@ -360,7 +382,6 @@ export default function POS() {
   const [tabs, setTabs] = useLocal('thpos.tabs', []);
   const [activeId, setActiveId] = useLocal('thpos.activeTab', null);
   const [search, setSearch] = useState('');
-  const [browseCat, setBrowseCat] = useState(null);         // nhóm đang đứng trên đường dẫn
   const [pickedCats, setPickedCats] = useState([]);         // các nhóm đang tích chọn để lọc
   const [payOpen, setPayOpen] = useState(false);
   const [custOpen, setCustOpen] = useState(false);
@@ -390,7 +411,10 @@ export default function POS() {
   const [catDrawer, setCatDrawer] = useLocal('thpos.cat_drawer', false);
   /* Bốn cấp co giãn giữa lưới hàng và giỏ (tài liệu 24, phần 6). Số là % bề
      ngang dành cho LƯỚI; phần còn lại là của giỏ hàng. */
-  const [splitLevel, setSplitLevel] = useLocal('thpos.split_level', 0);
+  /* Khoá nhớ ĐỔI TÊN từ đợt trước: số cấp lưu trong máy là THỨ TỰ, mà thứ
+     tự vừa xếp lại — đọc số cũ thì máy nào đang để 85/15 tự nhảy sang cấp
+     khác, nên cho nhớ lại từ đầu bằng khoá mới. */
+  const [splitLevel, setSplitLevel] = useLocal('thpos.split_lv2', SPLIT_DEFAULT);
   const [dragging, setDragging] = useState(false);
   const [consignOpen, setConsignOpen] = useState(false);   // hộp thêm món mua hộ
   const [notesOpen, setNotesOpen] = useState(false);       // xem ghi chú đặc thù của khách
@@ -399,6 +423,7 @@ export default function POS() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [priceHistOf, setPriceHistOf] = useState(null);
   const [noteOf, setNoteOf] = useState(null);
+  const [warrantyOf, setWarrantyOf] = useState(null);      // hộp sửa bảo hành của một dòng
   const [printQueue, setPrintQueue] = useState([]);         // hoá đơn / phiếu giao chờ in lần lượt
   const [provisional, setProvisional] = useState(null);
   const [closing, setClosing] = useState(null);             // tab còn hàng, hỏi lại trước khi đóng
@@ -506,12 +531,13 @@ export default function POS() {
 
   /* Ghi chú hàng đặc thù của khách đang chọn (tài liệu 24, phần 3) */
   const [custNotes, setCustNotes] = useState([]);
-  useEffect(() => {
+  const loadNotes = useCallback(() => {
     if (!notesOn || !tab?.customerId) { setCustNotes([]); return; }
     api.customerProductNotes(tab.customerId)
       .then((rows) => setCustNotes(Array.isArray(rows) ? rows : []))
       .catch(() => setCustNotes([]));
   }, [notesOn, tab?.customerId]);
+  useEffect(() => { loadNotes(); }, [loadNotes]);
 
   /* Khách có bảng giá riêng -> tự đổi bảng giá */
   useEffect(() => {
@@ -824,9 +850,11 @@ export default function POS() {
 
   /* ---------------------------- Lọc danh sách hàng ---------------------- */
 
+  /* Chỉ còn MỘT chỗ lọc nhóm hàng: thanh trượt cạnh trái. Dải duyệt nhóm
+     nằm ngang đã bỏ, nên không còn "nhóm đang đứng trên đường dẫn" nữa. */
   const catSet = useMemo(
-    () => categoryFilterSet(meta.categories, pickedCats, browseCat),
-    [meta.categories, pickedCats, browseCat]);
+    () => categoryFilterSet(meta.categories, pickedCats),
+    [meta.categories, pickedCats]);
 
   /* Ghi chú đặc thù tra theo mã hàng, để ô hàng biết khách gọi nó là gì */
   const noteByProduct = useMemo(() => {
@@ -1183,6 +1211,9 @@ export default function POS() {
     setPayOpen(false);
     reload();
     reloadCustomers();          // để dòng cảnh báo nợ cập nhật ngay
+    /* Đếm lại nợ quá hạn: bán nợ xong mà khách vừa chạm mốc trễ hạn thì nút
+       phải hiện ra ngay, không đợi tải lại trang. */
+    reloadOverdue();
     toast(res.cod_amount > 0
       ? `Đã lưu hoá đơn ${res.code} — thu hộ ${money(res.cod_amount)} chờ đối soát`
       : `Đã lưu hoá đơn ${res.code}`, 'ok', 5000);
@@ -1344,11 +1375,11 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
-        {/* Chỗ sát ô tìm hàng: nút NỢ QUÁ HẠN của cả tiệm. Nút Thu nợ vẫn chỉ
-            có MỘT, nằm cạnh khung khách đang chọn — hai nút thu nợ giống nhau
-            gây bấm nhầm (tài liệu 16, mục 5). */}
+        {/* Chỗ sát ô tìm hàng: nút NỢ QUÁ HẠN của cả tiệm.
+            Nút Thu nợ trên thanh này đã bỏ hẳn: chưa chọn khách thì nó mờ,
+            mà chọn khách có nợ rồi thì dòng nhắc nợ trong giỏ đã có sẵn nút
+            thu — để thêm một nút nữa chỉ tổ bấm nhầm. */}
         <OverdueDebtsButton rows={overdue} onOpen={() => setOverdueOpen(true)} />
-        <DebtButton customer={customer} onOpen={() => setDebtOpen(true)} />
 
         {maySeeCost && (
           <button
@@ -1475,7 +1506,7 @@ export default function POS() {
           categories={meta.categories}
           selected={pickedCats}
           onToggleCat={(id) => setPickedCats((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]))}
-          onClear={() => { setPickedCats([]); setBrowseCat(null); }}
+          onClear={() => setPickedCats([])}
           shown={filtered.length}
           total={products?.length || 0}
           className={showGrid ? '' : 'hidden lg:flex'}
@@ -1489,15 +1520,10 @@ export default function POS() {
           className={`min-w-0 flex flex-col grow shrink basis-0
                       ${gridHidden ? 'hidden' : ''} ${showGrid ? '' : 'hidden lg:flex'}`}
         >
-          <CategoryFilter
-            categories={meta.categories}
-            browseId={browseCat}
-            onBrowse={setBrowseCat}
-            selected={pickedCats}
-            onToggle={(id) => setPickedCats((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
-            onClear={() => { setPickedCats([]); setBrowseCat(null); }}
+          <GridToolbar
             shown={filtered.length}
             total={products?.length || 0}
+            filtering={pickedCats.length > 0}
             extra={<>
               {/* Công tắc ma trận nấc giá sỉ (tài liệu 22, mục 1). Nút [Tự áp
                   giá nấc] chỉ hiện khi đang bật ma trận — quầy bán lẻ thuần
@@ -1570,7 +1596,7 @@ export default function POS() {
                     : 'Nhóm hàng đang chọn chưa có sản phẩm.'}
                   action={search
                     ? <Button onClick={() => setSearch('')}>Xoá từ khoá</Button>
-                    : catSet ? <Button onClick={() => { setPickedCats([]); setBrowseCat(null); }}>Bỏ lọc nhóm</Button> : null}
+                    : catSet ? <Button onClick={() => setPickedCats([])}>Bỏ lọc nhóm</Button> : null}
                 />
               ) : (
                 <>
@@ -1588,7 +1614,7 @@ export default function POS() {
                   <LazyGrid
                     items={tiles}
                     rootRef={gridRef}
-                    resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${browseCat || ''}|${tab.customerId || ''}|${pinOn}`}
+                    resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${tab.customerId || ''}|${pinOn}`}
                     /* Số cột tự nhảy theo BỀ RỘNG CÒN LẠI của lưới, không theo
                        bề rộng màn hình: đẩy bảng lọc ra thì lưới hẹp lại và bớt
                        cột ngay, không bị tràn ngang (tài liệu 22, mục 2.1). */
@@ -1804,6 +1830,8 @@ export default function POS() {
                     showCost={maySeeCost && showCost}
                     onQty={(q) => setQty(l, q)}
                     tier={tierOn ? tierOf(l) : null}
+                    alias={notesOn ? (noteByProduct.get(l.product_id) || null) : null}
+                    onWarranty={() => setWarrantyOf(l)}
                     onUnit={(unitId) => changeUnit(l, unitId)}
                     onPrice={(v) => commitLine(l.key, { price: v, priceEdited: true })}
                     onAmount={(v) => setLineAmount(l, v)}
@@ -2162,8 +2190,17 @@ export default function POS() {
 
       <LineNoteModal
         line={noteOf}
+        customer={notesOn ? customer : null}
+        alias={noteOf ? (noteByProduct.get(noteOf.product_id) || null) : null}
         onClose={() => setNoteOf(null)}
         onSave={(patch) => { updateLine(noteOf.key, patch); setNoteOf(null); }}
+        onNotesChanged={loadNotes}
+      />
+
+      <LineWarrantyModal
+        line={warrantyOf}
+        onClose={() => setWarrantyOf(null)}
+        onSave={(patch) => { updateLine(warrantyOf.key, patch); setWarrantyOf(null); }}
       />
 
       <CustomerQuickModal
@@ -2569,15 +2606,143 @@ function CustomerNotesModal({ open, customer, notes, onClose, onPick }) {
   );
 }
 
-function LineNoteModal({ line, onClose, onSave }) {
+/* ==================================================================== *
+ * HỘP GHI CHÚ CỦA MỘT DÒNG GIỎ HÀNG
+ *
+ * Hai thứ khác nhau, để chung một chỗ vì thu ngân mở ra là để "ghi lại
+ * điều gì đó về món này":
+ *   1. GHI CHÚ DÒNG HÀNG — in trên hoá đơn, chỉ sống trong hoá đơn này.
+ *      Ví dụ: cắt 12,5m; màu đỏ; giao đợt 2.
+ *   2. GHI CHÚ ĐẶC THÙ CỦA KHÁCH (tài liệu 24, phần 3) — tên khách quen
+ *      gọi món này và câu nhắc, lưu thẳng vào HỒ SƠ KHÁCH nên lần sau bán
+ *      cho đúng người đó là hiện lại.
+ *
+ * Bảo hành tách hẳn sang hộp riêng: nhét chung thì muốn sửa một câu ghi
+ * chú cũng phải lướt qua bốn ô bảo hành.
+ * ==================================================================== */
+function LineNoteModal({ line, customer, alias, onClose, onSave, onNotesChanged }) {
+  const { toast } = useApp();
   const [text, setText] = useState('');
+  const [aliasName, setAliasName] = useState('');
+  const [aliasNote, setAliasNote] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!line) return;
+    setText(line.note || '');
+    setAliasName(alias?.alias || '');
+    setAliasNote(alias?.note || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [line]);
+
+  const aliasChanged = !!customer
+    && (aliasName.trim() !== (alias?.alias || '') || aliasNote.trim() !== (alias?.note || ''));
+
+  /**
+   * Lưu. Ghi chú đặc thù ghi TRƯỚC rồi mới đóng hộp: ghi hỏng thì báo ngay
+   * chứ không đóng cái rụp để rồi tưởng đã lưu.
+   */
+  const save = async () => {
+    if (aliasChanged) {
+      setBusy(true);
+      try {
+        const name = aliasName.trim();
+        if (!name && alias?.id) {
+          await api.deleteProductNote(alias.id);
+        } else if (name && alias?.id) {
+          await api.updateProductNote(alias.id, { alias: name, note: aliasNote.trim() || null });
+        } else if (name) {
+          await api.addCustomerProductNote(customer.id, {
+            alias: name, product_id: line.product_id, note: aliasNote.trim() || null,
+          });
+        }
+        onNotesChanged?.();
+      } catch (e) {
+        setBusy(false);
+        toast(`Chưa lưu được ghi chú đặc thù: ${e.message}`, 'bad', 8000);
+        return;
+      }
+      setBusy(false);
+    }
+    onSave({ note: text.trim() });
+  };
+
+  return (
+    <Modal
+      open={!!line}
+      onClose={onClose}
+      title="Ghi chú"
+      subtitle={line?.name}
+      size="sm"
+      footer={<>
+        <Button onClick={onClose}>Huỷ</Button>
+        <Button variant="primary" onClick={save} disabled={busy}>Lưu</Button>
+      </>}
+    >
+      <div className="space-y-3">
+        <Field
+          label="Ghi chú cho dòng hàng này"
+          hint="In trên hoá đơn ngay dưới tên hàng. Ví dụ: cắt 12,5m; màu đỏ; giao đợt 2."
+          htmlFor="ln-note"
+        >
+          <Textarea id="ln-note" rows={2} value={text} autoFocus
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Cắt đúng 12,5 mét, bó riêng" />
+        </Field>
+
+        {/* -------- Ghi chú đặc thù của khách (tài liệu 24, phần 3) -------- */}
+        <div className={`card p-3 space-y-2.5 ${customer ? 'bg-amber-50/60 border-warn/30' : 'bg-muted/40'}`}>
+          <h4 className="text-[13px] font-bold flex items-center gap-1.5">
+            <Lightbulb size={13} aria-hidden="true" />
+            Ghi chú đặc thù của khách
+          </h4>
+          {!customer ? (
+            <p className="text-2xs text-muted-ink">
+              Chọn khách hàng đã lưu trước thì mới ghi được — đây là ghi chú riêng của
+              từng khách, không phải của hoá đơn.
+            </p>
+          ) : (
+            <>
+              <p className="text-2xs text-muted-ink">
+                Lưu thẳng vào hồ sơ <b>{customer.name}</b>. Lần sau bán cho khách này, gõ đúng tên
+                họ quen gọi là món thật nhảy lên đầu lưới kèm câu nhắc.
+              </p>
+              <Field label="Khách quen gọi món này là" htmlFor="ln-alias">
+                <Input id="ln-alias" value={aliasName}
+                  onChange={(e) => setAliasName(e.target.value)}
+                  placeholder="dây gân, cái cùi chỏ..." />
+              </Field>
+              <Field label="Câu nhắc cho thu ngân" htmlFor="ln-anote">
+                <Input id="ln-anote" value={aliasNote}
+                  onChange={(e) => setAliasNote(e.target.value)}
+                  placeholder="Khách này chỉ lấy loại lõi đồng" />
+              </Field>
+              {alias?.id && !aliasName.trim() && (
+                <p className="text-2xs text-danger">
+                  Để trống tên khách gọi là <b>xoá</b> ghi chú đặc thù này khỏi hồ sơ khách.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ==================================================================== *
+ * HỘP BẢO HÀNH CỦA MỘT DÒNG GIỎ HÀNG
+ *
+ * Chỉ làm đúng một việc: số tháng, điều kiện, số serial. Sửa ở đây chỉ áp
+ * cho hoá đơn đang lập — bảo hành mặc định của mặt hàng vẫn nguyên.
+ * ==================================================================== */
+function LineWarrantyModal({ line, onClose, onSave }) {
   const [months, setMonths] = useState(0);
   const [wNote, setWNote] = useState('');
   const [serial, setSerial] = useState('');
 
   useEffect(() => {
     if (!line) return;
-    setText(line.note || '');
     setMonths(Number(line.warrantyMonths) || 0);
     setWNote(line.warrantyNote || '');
     setSerial(line.serial || '');
@@ -2589,7 +2754,6 @@ function LineNoteModal({ line, onClose, onSave }) {
     ? new Date(new Date().setMonth(new Date().getMonth() + Number(months)))
     : null;
   const save = (patch = {}) => onSave({
-    note: text.trim(),
     warrantyMonths: Number(months) || 0,
     warrantyNote: wNote.trim(),
     serial: serial.trim(),
@@ -2600,13 +2764,13 @@ function LineNoteModal({ line, onClose, onSave }) {
     <Modal
       open={!!line}
       onClose={onClose}
-      title="Ghi chú & bảo hành"
+      title="Bảo hành"
       subtitle={line?.name}
       size="sm"
       footer={<>
         {Number(months) > 0 && (
           <Button variant="danger" className="mr-auto" onClick={() => save({ warrantyMonths: 0 })}>
-            Hủy bảo hành
+            Huỷ bảo hành
           </Button>
         )}
         <Button onClick={onClose}>Huỷ</Button>
@@ -2614,16 +2778,6 @@ function LineNoteModal({ line, onClose, onSave }) {
       </>}
     >
       <div className="space-y-3">
-        <Field
-          label="Ghi chú"
-          hint="In trên hoá đơn ngay dưới tên hàng. Ví dụ: cắt 12,5m; màu đỏ; giao đợt 2."
-          htmlFor="ln-note"
-        >
-          <Textarea id="ln-note" rows={2} value={text} autoFocus
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Cắt đúng 12,5 mét, bó riêng" />
-        </Field>
-
         <p className="text-2xs text-muted-ink leading-relaxed">
           {def > 0
             ? `Mặt hàng này mặc định bảo hành ${def} tháng. Sửa hay huỷ ở đây chỉ áp dụng cho hoá đơn này.`
@@ -2631,9 +2785,9 @@ function LineNoteModal({ line, onClose, onSave }) {
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Bảo hành (tháng)" hint="Để 0 nếu hàng không bảo hành" htmlFor="ln-warranty">
+          <Field label="Bảo hành (tháng)" hint="Để 0 nếu hàng không bảo hành" htmlFor="lw-warranty">
             <div className="flex items-center gap-1.5">
-              <QtyInput id="ln-warranty" size="md" value={months} onChange={setMonths} min={0} className="flex-1" />
+              <QtyInput id="lw-warranty" size="md" value={months} onChange={setMonths} min={0} className="flex-1" />
               <div className="flex gap-1">
                 {[6, 12, 24].map((m) => (
                   <button
@@ -2656,14 +2810,14 @@ function LineNoteModal({ line, onClose, onSave }) {
             )}
           </Field>
 
-          <Field label="Số serial / số máy" hint="Ghi để sau này tra ra ai mua" htmlFor="ln-serial">
-            <Input id="ln-serial" value={serial} onChange={(e) => setSerial(e.target.value)}
+          <Field label="Số serial / số máy" hint="Ghi để sau này tra ra ai mua" htmlFor="lw-serial">
+            <Input id="lw-serial" value={serial} onChange={(e) => setSerial(e.target.value)}
               placeholder="PNS-2026-0099" />
           </Field>
         </div>
 
-        <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành" htmlFor="ln-wnote">
-          <Input id="ln-wnote" value={wNote} onChange={(e) => setWNote(e.target.value)}
+        <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành" htmlFor="lw-wnote">
+          <Input id="lw-wnote" value={wNote} onChange={(e) => setWNote(e.target.value)}
             disabled={!(Number(months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
         </Field>
       </div>

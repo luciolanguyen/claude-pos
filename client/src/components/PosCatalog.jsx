@@ -1,8 +1,12 @@
 /* ====================================================================
-   LỌC NHÓM HÀNG NHIỀU CẤP VÀ LƯỚI HÀNG TẢI DẦN (tài liệu 06)
+   LỌC NHÓM HÀNG NHIỀU CẤP VÀ LƯỚI HÀNG TẢI DẦN (tài liệu 06, 22)
 
-   Đường dẫn (breadcrumb) cho biết đang đứng ở cấp nào và bấm về cấp trên
-   một phát. Tích chọn được nhiều nhóm cùng lúc:
+   Chỉ còn MỘT chỗ lọc nhóm hàng: thanh trượt cạnh trái màn hình bán hàng.
+   Dải duyệt nhóm nằm ngang trên đầu lưới đã bỏ — hai chỗ cùng lọc một thứ
+   thì người đứng quầy phải nhớ hai cách làm, mà chọn ở chỗ này rồi nhìn
+   sang chỗ kia lại tưởng máy quên mất.
+
+   Tích chọn được nhiều nhóm cùng lúc:
 
      - Các nhóm KHÔNG lồng nhau: lấy hàng thuộc nhóm này HOẶC nhóm kia.
      - Chọn cả nhóm cha lẫn nhóm con của nó: hàng phải thuộc nhánh cha VÀ
@@ -13,7 +17,7 @@
    cũ vẽ hai nghìn ô là khựng. Vẽ trước một khúc, cuộn gần tới đâu vẽ thêm.
    ==================================================================== */
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronRight, ChevronLeft, Check, X, FolderTree, RotateCcw } from 'lucide-react';
+import { ChevronRight, ChevronLeft, X, FolderTree, RotateCcw } from 'lucide-react';
 import { n, match } from '../lib/format';
 import { SearchInput } from './ui';
 import { categoryBranch } from './CategoryTree';
@@ -239,136 +243,25 @@ export function CategoryDrawer({
   );
 }
 
-export function CategoryFilter({
-  categories, browseId, onBrowse, selected, onToggle, onClear, shown, total, extra = null,
-}) {
-  const cats = categories || [];
-  const byId = useMemo(() => new Map(cats.map((c) => [c.id, c])), [cats]);
-  const kidsOf = useMemo(() => {
-    const m = new Map();
-    for (const c of cats) {
-      const k = c.parent_id || 0;
-      if (!m.has(k)) m.set(k, []);
-      m.get(k).push(c);
-    }
-    for (const list of m.values()) {
-      list.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name, 'vi'));
-    }
-    return m;
-  }, [cats]);
-
-  const path = useMemo(() => {
-    const out = [];
-    let c = byId.get(Number(browseId));
-    let guard = 0;
-    while (c && guard++ < 50) {
-      out.unshift(c);
-      c = c.parent_id ? byId.get(c.parent_id) : null;
-    }
-    return out;
-  }, [byId, browseId]);
-
-  const level = kidsOf.get(Number(browseId) || 0) || [];
-  const filtering = selected.length > 0 || !!browseId;
-  const crumb = (active) => `px-1.5 h-8 rounded font-semibold whitespace-nowrap cursor-pointer
-    transition-colors duration-100 ${active ? 'text-ink' : 'text-accent hover:underline'}`;
-
+/**
+ * Thanh công tắc trên đầu lưới hàng.
+ *
+ * Dải duyệt nhóm hàng nằm ngang (đường dẫn "Tất cả nhóm" và các ô tích
+ * nhóm) ĐÃ BỎ: thanh trượt [Nhóm hàng] cạnh trái làm đúng việc đó mà
+ * không che lưới, lại còn tìm và bung được cây nhiều tầng. Để hai chỗ
+ * cùng lọc một thứ thì người đứng quầy phải nhớ hai cách làm, và chọn ở
+ * chỗ này rồi nhìn sang chỗ kia lại tưởng máy quên.
+ *
+ * Thanh này giờ chỉ mang mấy công tắc của lưới và số đếm mặt hàng.
+ */
+export function GridToolbar({ shown, total, filtering = false, extra = null }) {
   return (
-    <div className="px-3 py-2 border-b border-line bg-card shrink-0 space-y-1.5">
-      {/* Danh sách nhóm dài thì CUỘN NGANG trong khung riêng; công tắc và số
-          đếm nằm ngoài khung đó nên không bao giờ bị đẩy khuất (tài liệu 22) */}
-      <div className="flex items-center gap-1.5">
-      <div className="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0">
-        <nav aria-label="Vị trí nhóm hàng" className="flex items-center gap-0.5 shrink-0 text-[13px]">
-          <button type="button" onClick={() => onBrowse(null)} className={crumb(!browseId)}
-            aria-current={!browseId ? 'page' : undefined}>
-            Tất cả nhóm
-          </button>
-          {path.map((c) => {
-            const here = c.id === Number(browseId);
-            return (
-              <span key={c.id} className="flex items-center gap-0.5">
-                <ChevronRight size={13} className="text-muted-ink" aria-hidden="true" />
-                <button type="button" onClick={() => onBrowse(c.id)} className={crumb(here)}
-                  aria-current={here ? 'page' : undefined}>
-                  {c.name}
-                </button>
-              </span>
-            );
-          })}
-        </nav>
-
-        <span className="w-px h-5 bg-line shrink-0" aria-hidden="true" />
-
-        <div className="flex items-center gap-1.5" role="group"
-          aria-label="Tích chọn nhóm để lọc — chọn được nhiều nhóm">
-          {level.map((c) => {
-            const on = selected.includes(c.id);
-            const kids = kidsOf.has(c.id);
-            return (
-              <div key={c.id} className="flex items-stretch shrink-0">
-                <button
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => onToggle(c.id)}
-                  className={`btn btn-sm ${on ? 'btn-secondary' : 'btn-outline'} ${kids ? '!rounded-r-none' : ''}`}
-                >
-                  <span className="w-3.5 h-3.5 rounded-sm border border-current flex items-center justify-center shrink-0"
-                    aria-hidden="true">
-                    {on && <Check size={11} strokeWidth={3} />}
-                  </span>
-                  {c.name}
-                </button>
-                {kids && (
-                  <button
-                    type="button"
-                    onClick={() => onBrowse(c.id)}
-                    aria-label={`Mở các nhóm con của ${c.name}`}
-                    title={`Xem nhóm con của ${c.name}`}
-                    className={`btn btn-sm !px-1.5 !rounded-l-none !border-l-0 ${on ? 'btn-secondary' : 'btn-outline'}`}
-                  >
-                    <ChevronRight size={14} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          {!level.length && (
-            <span className="text-2xs text-muted-ink whitespace-nowrap">Nhóm này không còn nhóm con.</span>
-          )}
-        </div>
-
-        <div className="flex-1" />
-      </div>
-
-        {/* Chỗ cho công tắc phụ của màn hình bán hàng: nấc giá sỉ, hàng ghim */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {extra}
-          <span className="text-2xs text-muted-ink whitespace-nowrap shrink-0 tabular">
-            {filtering ? `${n(shown)}/${n(total)} món` : `${n(total)} món`}
-          </span>
-        </div>
-      </div>
-
-      {selected.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap text-2xs">
-          <span className="text-muted-ink">
-            Đang lọc{selected.length > 1 ? ' — hàng thuộc một trong các nhóm' : ''}:
-          </span>
-          {selected.map((id) => byId.get(id)).filter(Boolean).map((c) => (
-            <span key={c.id} className="inline-flex items-center gap-0.5 rounded-full bg-slate-800 text-white pl-2 pr-0.5 py-0.5">
-              {c.name}
-              <button type="button" onClick={() => onToggle(c.id)} aria-label={`Bỏ lọc ${c.name}`}
-                className="rounded-full hover:bg-white/20 p-0.5 cursor-pointer">
-                <X size={11} aria-hidden="true" />
-              </button>
-            </span>
-          ))}
-          <button type="button" onClick={onClear} className="text-accent font-semibold hover:underline cursor-pointer px-1 min-h-[24px]">
-            Bỏ lọc
-          </button>
-        </div>
-      )}
+    <div className="px-3 py-2 border-b border-line bg-card shrink-0 flex items-center gap-1.5">
+      {extra}
+      <div className="flex-1 min-w-0" />
+      <span className="text-2xs text-muted-ink whitespace-nowrap shrink-0 tabular">
+        {filtering ? `${n(shown)}/${n(total)} món` : `${n(total)} món`}
+      </span>
     </div>
   );
 }

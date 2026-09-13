@@ -1,8 +1,9 @@
 /* ====================================================================
    THU NỢ KHÁCH HÀNG NGAY TẠI QUẦY (tài liệu 05)
 
-   Chỉ thu nợ được khi đã chọn một khách cụ thể. Khách lẻ không có công
-   nợ, nên nút Thu nợ mờ đi.
+   Chỉ thu nợ được khi đã chọn một khách cụ thể — khách lẻ không có công
+   nợ. Vào được sổ thu nợ từ hai chỗ: nút NỢ QUÁ HẠN trên thanh đầu, và
+   dòng nhắc nợ hiện trong giỏ khi khách đang chọn còn nợ.
 
    Hộp thu nợ là một SỔ PHỤ CÔNG NỢ thu nhỏ, mới nhất trên cùng:
      - hoá đơn còn nợ (đỏ), tích chọn được để trả đúng hoá đơn đó;
@@ -25,67 +26,32 @@ import {
   Badge, SearchInput, TotalRow, ErrorBox,
 } from './ui';
 
-/* ==================== NÚT THU NỢ TRÊN THANH ĐẦU ==================== */
-
-/**
- * Nút theo khách đang chọn. Khách lẻ thì mờ — không có công nợ để thu.
- * Khách đang nợ thì nút đổi màu và hiện luôn số nợ.
- */
-export function DebtButton({ customer, onOpen }) {
-  const has = !!customer;
-  const debt = customer?.debt || 0;
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      disabled={!has}
-      title={has
-        ? (debt > 0 ? `${customer.name} đang nợ ${money(debt)}` : `${customer.name} không còn nợ — vẫn xem được sổ công nợ`)
-        : 'Chọn khách hàng đã lưu trước — khách lẻ không có công nợ để thu'}
-      aria-label={has ? `Thu nợ ${customer.name}` : 'Thu nợ — cần chọn khách hàng trước'}
-      className={`h-9 px-2.5 rounded border text-[13px] font-semibold hidden md:flex items-center gap-1.5
-                  transition-colors duration-150
-                  ${!has
-                    ? 'bg-white/5 border-white/10 text-slate-500 cursor-not-allowed'
-                    : debt > 0
-                      ? 'bg-amber-500/20 border-amber-400/40 text-amber-200 hover:bg-amber-500/30 cursor-pointer'
-                      : 'bg-white/10 border-white/15 text-slate-300 hover:text-white cursor-pointer'}`}
-    >
-      <HandCoins size={14} aria-hidden="true" />
-      Thu nợ
-      {debt > 0 && <span className="tabular">{n(debt)}</span>}
-    </button>
-  );
-}
-
 /* =================== NÚT NỢ QUÁ HẠN TRÊN THANH POS ================= */
 
 /**
- * Chỗ sát ô tìm hàng trước đây là nút Thu nợ thứ hai — giống hệt nút cạnh
- * khung khách nên hay bấm nhầm. Nay đổi thành nút NỢ QUÁ HẠN: mở thẳng
- * danh sách ai đang nợ trễ hạn, để đòi ngay lúc khách còn đứng ở quầy.
+ * Nút duy nhất về công nợ trên thanh đầu màn hình bán hàng: mở thẳng danh
+ * sách ai đang nợ trễ hạn, để đòi ngay lúc khách còn đứng ở quầy.
  *
- * Không có ai trễ hạn thì nút vẫn nằm đó nhưng để màu xám, bấm vào vẫn mở
- * ra được — nút biến mất giữa chừng làm người đứng quầy tưởng máy hỏng.
+ * Nút "Thu nợ" trên thanh này đã bỏ hẳn — chưa chọn khách thì nó mờ, mà
+ * chọn khách có nợ rồi thì dòng nhắc nợ trong giỏ đã có sẵn nút thu.
  */
 export function OverdueDebtsButton({ rows, onOpen }) {
   const list = Array.isArray(rows) ? rows : [];
   const late = list.length;
+  /* Không có ai trễ hạn thì KHÔNG hiện nút: thanh đầu quầy chật, một nút
+     lúc nào cũng ghi số 0 chỉ tổ chiếm chỗ. Màn hình bán hàng đếm lại sau
+     mỗi lần bán và mỗi lần thu nợ, nên vừa có người trễ là nút hiện ra. */
+  if (!late) return null;
   const amount = list.reduce((a, c) => a + Number(c.overdue_amount || 0), 0);
   return (
     <button
       type="button"
       onClick={onOpen}
-      title={late
-        ? `${late} khách nợ quá hạn, tổng ${money(amount)} — bấm để xem và đòi`
-        : 'Không có khách nào nợ quá hạn — bấm để xem lại danh sách'}
-      aria-label={late
-        ? `Nợ quá hạn — ${late} khách` : 'Nợ quá hạn — không có khách nào'}
-      className={`h-9 px-2.5 rounded border text-[13px] font-semibold hidden lg:flex items-center gap-1.5
-                  transition-colors duration-150 cursor-pointer
-                  ${late
-                    ? 'bg-red-500/25 border-red-400/50 text-red-100 hover:bg-red-500/35'
-                    : 'bg-white/5 border-white/10 text-slate-400 hover:text-slate-200'}`}
+      title={`${late} khách nợ quá hạn, tổng ${money(amount)} — bấm để xem và đòi`}
+      aria-label={`Nợ quá hạn — ${late} khách`}
+      className="h-9 px-2.5 rounded border text-[13px] font-semibold hidden lg:flex items-center gap-1.5
+                 transition-colors duration-150 cursor-pointer
+                 bg-red-500/25 border-red-400/50 text-red-100 hover:bg-red-500/35"
     >
       <AlertTriangle size={14} aria-hidden="true" />
       Nợ quá hạn
