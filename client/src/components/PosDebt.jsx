@@ -13,9 +13,9 @@
    Phiếu thu đã xác nhận thì thu ngân không sửa, không xoá được — máy chủ
    chặn, chỉ chủ cửa hàng xoá được khi thu nhầm.
    ==================================================================== */
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import {
-  HandCoins, AlertTriangle, CheckCircle2, Wallet, CreditCard, Printer, Lock, Users,
+  HandCoins, AlertTriangle, CheckCircle2, Wallet, CreditCard, Printer, Lock,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -58,32 +58,153 @@ export function DebtButton({ customer, onOpen }) {
   );
 }
 
+/* =================== NÚT NỢ QUÁ HẠN TRÊN THANH POS ================= */
+
 /**
- * Nút thứ hai, luôn hiện (tài liệu 13, mục 3.3): mang nhãn số khách đang nợ
- * và mở thẳng danh sách tất cả khách còn nợ, thu được ngay tại đó mà không
- * phải quay ra chọn khách cho tab đang bán.
+ * Chỗ sát ô tìm hàng trước đây là nút Thu nợ thứ hai — giống hệt nút cạnh
+ * khung khách nên hay bấm nhầm. Nay đổi thành nút NỢ QUÁ HẠN: mở thẳng
+ * danh sách ai đang nợ trễ hạn, để đòi ngay lúc khách còn đứng ở quầy.
+ *
+ * Không có ai trễ hạn thì nút vẫn nằm đó nhưng để màu xám, bấm vào vẫn mở
+ * ra được — nút biến mất giữa chừng làm người đứng quầy tưởng máy hỏng.
  */
-export function AllDebtsButton({ customers = [], onOpen }) {
-  const owing = customers.filter((c) => Number(c.debt) > 0);
-  const total = owing.reduce((a, c) => a + Number(c.debt || 0), 0);
+export function OverdueDebtsButton({ rows, onOpen }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const late = list.length;
+  const amount = list.reduce((a, c) => a + Number(c.overdue_amount || 0), 0);
   return (
     <button
       type="button"
       onClick={onOpen}
-      title={owing.length
-        ? `${owing.length} khách đang nợ, tổng ${money(total)} — bấm để xem và thu`
-        : 'Không có khách nào đang nợ'}
-      aria-label={`Thu nợ — ${owing.length} khách đang nợ`}
+      title={late
+        ? `${late} khách nợ quá hạn, tổng ${money(amount)} — bấm để xem và đòi`
+        : 'Không có khách nào nợ quá hạn — bấm để xem lại danh sách'}
+      aria-label={late
+        ? `Nợ quá hạn — ${late} khách` : 'Nợ quá hạn — không có khách nào'}
       className={`h-9 px-2.5 rounded border text-[13px] font-semibold hidden lg:flex items-center gap-1.5
                   transition-colors duration-150 cursor-pointer
-                  ${owing.length
-                    ? 'bg-white/10 border-white/15 text-slate-200 hover:text-white hover:bg-white/20'
-                    : 'bg-white/5 border-white/10 text-slate-400'}`}
+                  ${late
+                    ? 'bg-red-500/25 border-red-400/50 text-red-100 hover:bg-red-500/35'
+                    : 'bg-white/5 border-white/10 text-slate-400 hover:text-slate-200'}`}
     >
-      <Users size={14} aria-hidden="true" />
-      Thu nợ
-      <span className="tabular">({n(owing.length)})</span>
+      <AlertTriangle size={14} aria-hidden="true" />
+      Nợ quá hạn
+      <span className="tabular">({n(late)})</span>
     </button>
+  );
+}
+
+/**
+ * Bảng nợ quá hạn: trễ nhiều ngày nhất lên đầu. Bấm một dòng là mở luôn
+ * sổ phụ công nợ của khách đó để thu tiền, khỏi phải quay ra chọn khách.
+ */
+export function OverdueDebtsModal({ open, rows, busy, error, onReload, onClose, onCollect }) {
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 250);
+  const [openId, setOpenId] = useState(null);      // dòng đang bung hoá đơn chi tiết
+
+  useEffect(() => { if (open) { setQ(''); setOpenId(null); } }, [open]);
+
+  const list = Array.isArray(rows) ? rows : [];
+  const shown = useMemo(() => (dq.trim()
+    ? list.filter((c) => match(c.name, dq) || (c.phone || '').includes(dq.trim()))
+    : list), [list, dq]);
+  const total = shown.reduce((a, c) => a + Number(c.overdue_amount || 0), 0);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Khách nợ quá hạn"
+      subtitle="Trễ nhiều ngày nhất xếp lên đầu — bấm vào một dòng để mở sổ nợ và thu tiền"
+      size="lg"
+      footer={<>
+        {shown.length > 0 && (
+          <span className="text-2xs text-muted-ink mr-auto">
+            {n(shown.length)} khách · quá hạn {money(total)}
+          </span>
+        )}
+        <Button onClick={onClose}>Đóng</Button>
+      </>}
+    >
+      <div className="space-y-2">
+        <SearchInput value={q} onChange={setQ} placeholder="Gõ tên khách hoặc số điện thoại..." autoFocus />
+        {busy && !rows ? <Spinner />
+          : error ? <ErrorBox error={error} onRetry={onReload} />
+            : shown.length === 0 ? (
+              <Empty
+                icon={CheckCircle2}
+                title={dq ? 'Không tìm thấy khách nào' : 'Không có ai nợ quá hạn'}
+                message={dq
+                  ? `Không có khách nợ quá hạn nào khớp "${q}".`
+                  : 'Mọi khoản nợ đều còn trong hạn. Số ngày cho phép nợ đặt ở Thiết lập, '
+                    + 'hoặc đặt riêng cho từng khách trong hồ sơ khách hàng.'}
+              />
+            ) : (
+              <div className="table-wrap max-h-[52vh]">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Khách hàng</th>
+                      <th className="text-right">Quá hạn</th>
+                      <th className="text-right">Tổng nợ</th>
+                      <th className="text-right">Trễ nhất</th>
+                      <th style={{ width: 84 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map((c) => (
+                      <Fragment key={c.id}>
+                        <tr className="hoverable clickable"
+                          onClick={() => setOpenId((x) => (x === c.id ? null : c.id))}>
+                          <td>
+                            <div className="font-medium truncate max-w-[14rem]">{c.name}</div>
+                            <div className="text-2xs text-muted-ink tabular">
+                              {c.phone ? `${c.phone} · ` : ''}
+                              {n(c.overdue_count)} hoá đơn trễ · hạn nợ {n(c.max_debt_days)} ngày
+                            </div>
+                          </td>
+                          <td className="num font-bold text-danger">{money(c.overdue_amount)}</td>
+                          <td className="num">{money(c.debt)}</td>
+                          <td className="num">
+                            {/* Không chỉ dựa vào màu: có chữ "ngày" kèm số */}
+                            <Badge tone="bad">{n(c.oldest_days)} ngày</Badge>
+                          </td>
+                          <td className="text-center">
+                            <Button size="sm" variant="soft" icon={HandCoins}
+                              onClick={(e) => { e.stopPropagation(); onCollect(c.id); }}>
+                              Thu
+                            </Button>
+                          </td>
+                        </tr>
+                        {openId === c.id && (
+                          <tr>
+                            <td colSpan={5} className="!p-0">
+                              <ul className="bg-muted/50 divide-y divide-line">
+                                {c.invoices.map((i) => (
+                                  <li key={i.id} className="flex items-center gap-2 px-3 py-1 text-2xs">
+                                    <span className="font-mono font-semibold">{i.code}</span>
+                                    <span className="text-muted-ink">{date(i.ts)}</span>
+                                    <span className="text-danger font-semibold tabular">
+                                      còn {money(i.remaining)}
+                                    </span>
+                                    <span className="text-muted-ink tabular ml-auto">
+                                      {n(i.age_days)} ngày
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+      </div>
+    </Modal>
   );
 }
 

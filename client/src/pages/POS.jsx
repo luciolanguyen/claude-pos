@@ -4,10 +4,14 @@ import {
   Search, Plus, X, UserPlus, Printer, Percent, Package, ShoppingCart, ArrowLeft,
   FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
   ClipboardList, RefreshCcw, MapPin, ShieldCheck, Trash2, Star,
+  FolderTree, Layers, Zap, Check,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal, useSearchMode } from '../lib/store';
-import { money, n, qty as fq, match, matchMode, matchCustomer, customerPhones, datetime, date, smartTime } from '../lib/format';
+import {
+  money, n, qty as fq, match, matchMode, matchCustomer, customerPhones,
+  datetime, date, smartTime, tierRows, tierIndexFor, tierPriceFor,
+} from '../lib/format';
 import {
   Button, IconButton, Input, Modal, Field, Empty, Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
 } from '../components/ui';
@@ -25,11 +29,16 @@ import CustomerForm from '../components/CustomerForm';
 import CustomerProfile from '../components/CustomerProfile';
 import { TileImageButton, ProductInfoModal } from '../components/ProductImages';
 import { OrderBell, SaveAsOrderModal, PickOrderModal } from '../components/PosOrders';
-import { DebtButton, DebtCollectModal, CustomerDebtBanner } from '../components/PosDebt';
+import {
+  DebtButton, DebtCollectModal, CustomerDebtBanner,
+  OverdueDebtsButton, OverdueDebtsModal,
+} from '../components/PosDebt';
 import PaymentModal from '../components/PosPayment';
 import ProxyBuyer from '../components/PosBuyer';
 import { CartLine, OrderNote, MoneyCell, PercentCell, lineAmount } from '../components/PosCart';
-import { CategoryFilter, categoryFilterSet, LazyGrid } from '../components/PosCatalog';
+import {
+  CategoryFilter, CategoryDrawer, categoryFilterSet, LazyGrid,
+} from '../components/PosCatalog';
 import {
   usePosPolicy, PinApprovalModal, cartDiscountPercent, canSelfApprove,
 } from '../components/PosApproval';
@@ -66,16 +75,23 @@ const newTab = (no, priceListId) => ({
  * tài liệu 13 mục 3.1), có nút chọn nhanh đơn vị tính (mục 3.4), và hàng
  * ghim đầu lưới theo mùa mang dấu ★ (tài liệu 14 mục 2.3).
  */
+/**
+ * Đơn vị mà một ô hàng đang bán. Ô nào khai rõ đơn vị thì lấy đúng đơn vị
+ * đó (mỗi đơn vị bán chính là một ô riêng — tài liệu 16, mục 2.1).
+ */
+const sellUnitOf = (p, unit = null) => unit
+  || p.units?.find((u) => u.is_sell_main) || p.units?.find((u) => u.id === p.sell_unit_id)
+  || p.units?.find((u) => u.factor === 1) || p.units?.[0];
+
 function ProductTile({
   p, priceListId, showCost, onPick, inCart = 0, bought = null,
   showUnits = false, showConverted = false, unit = null, onInfo, onHover,
+  showTiers = false, line = null,
 }) {
   const [unitsOpen, setUnitsOpen] = useState(false);
   /* Mỗi đơn vị bán chính được vẽ thành MỘT ô riêng ngoài lưới (tài liệu 16,
      mục 2.1) — ô nào thì bán theo đơn vị đó. */
-  const sellUnit = unit
-    || p.units.find((u) => u.is_sell_main) || p.units.find((u) => u.id === p.sell_unit_id)
-    || p.units.find((u) => u.factor === 1) || p.units[0];
+  const sellUnit = sellUnitOf(p, unit);
   const price = sellUnit?.prices?.[priceListId] ?? 0;
   /* Đơn vị cơ bản, để quy đổi giá cho dễ so (tài liệu 16, mục 5) */
   const baseUnit = p.units.find((u) => u.factor === 1) || p.units[0];
@@ -84,6 +100,14 @@ function ProductTile({
     const f = Number(u?.factor) || 1;
     return f > 1 ? Math.round((Number(u?.prices?.[priceListId]) || 0) / f) : 0;
   };
+  /* Ma trận nấc giá sỉ của chính đơn vị ô này đang bán (tài liệu 22, mục 3).
+     Mặt hàng không khai nấc nào thì mảng rỗng, ô hàng gọn y như cũ. */
+  const tiers = showTiers ? tierRows(sellUnit, price) : [];
+  /* Nấc dòng này đang ăn trong giỏ — để tô cùng màu với dòng bên giỏ hàng */
+  const activeIdx = line && !line.priceEdited ? tierIndexFor(tiers, line.qty) : -1;
+  /* Nấc khách quen lấy lần gần nhất, gợi ý sẵn (tài liệu 22, mục 4.2) */
+  const lastIdx = bought && bought.unit_name === sellUnit?.unit_name
+    ? tierIndexFor(tiers, bought.qty) : -1;
   const out = p.track_stock && p.stock <= 0;
   const low = p.track_stock && p.min_stock > 0 && p.stock > 0 && p.stock <= p.min_stock;
   const added = inCart > 0;
@@ -175,6 +199,42 @@ function ProductTile({
         </span>
       )}
 
+      {/* Ma trận nấc giá sỉ: bấm thẳng vào nấc là hàng bay vào giỏ với đúng
+          số lượng và đơn giá của nấc đó (tài liệu 22, mục 3.2). Các nấc phải
+          XUỐNG DÒNG được, không cắt cụt — cắt là mất luôn nấc cuối. */}
+      {tiers.length > 0 && !out && (
+        <div className="flex flex-wrap gap-1" role="group"
+          aria-label={`Nấc giá sỉ của ${p.name} theo ${sellUnit?.unit_name}`}>
+          {tiers.map((t, i) => {
+            const on = i === activeIdx;
+            const last = i === lastIdx && !on;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => onPick(p, sellUnit?.id, t)}
+                aria-pressed={on}
+                title={on
+                  ? `Đang bán theo nấc này: mua ${t.label} ${sellUnit?.unit_name} giá ${n(t.price)}`
+                  : `Bấm để lấy ${t.min_qty} ${sellUnit?.unit_name} với giá ${n(t.price)}`
+                    + (last ? ' — lần trước khách này lấy nấc này' : '')}
+                className={`text-2xs font-semibold rounded px-1.5 py-0.5 border tabular
+                            cursor-pointer transition-colors duration-100
+                            ${on
+                              ? 'bg-indigo-600 border-indigo-700 text-white'
+                              : last
+                                ? 'bg-violet-50 border-violet-400 text-violet-900 font-bold'
+                                : 'bg-muted/70 border-line text-ink hover:border-accent hover:bg-accent-soft/60'}`}
+              >
+                {on && <Check size={9} strokeWidth={3} className="inline -mt-0.5 mr-0.5" aria-hidden="true" />}
+                {last && <History size={9} className="inline -mt-0.5 mr-0.5" aria-hidden="true" />}
+                {t.label}: {n(t.price)}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Chọn nhanh đơn vị tính (tài liệu 13, mục 3.4) */}
       {showUnits && p.units.length > 1 && !out && (
         <div className="relative">
@@ -263,6 +323,8 @@ export default function POS() {
   const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn đặt để giao
   const [exchangeOpen, setExchangeOpen] = useState(false);  // đổi trả hàng
   const [debtOpen, setDebtOpen] = useState(false);          // thu nợ khách đang chọn
+  const [debtFor, setDebtFor] = useState(null);             // thu nợ của một khách khác tab
+  const [overdueOpen, setOverdueOpen] = useState(false);    // bảng nợ quá hạn cả tiệm
   const [infoOf, setInfoOf] = useState(null);               // hộp xem ảnh + mô tả hàng hoá
   const [hoverPid, setHoverPid] = useState(null);           // ô hàng đang rê chuột tới
   /* Kiểu tìm kiếm: nhớ chung với mọi ô tìm khác (tài liệu 13, mục 2.1) */
@@ -270,6 +332,14 @@ export default function POS() {
   /* Công tắc hàng ghim (tài liệu 16, mục 4). Tắt thì KHÔNG ẩn món nào, chỉ
      xả ghim: lưới về thứ tự thường. Nhớ theo từng máy đứng quầy. */
   const [pinOn, setPinOn] = useLocal('thpos.featured_on', true);
+  /* Ba công tắc của tài liệu 22, mục 1 — nhớ theo từng máy đứng quầy:
+       1. bảng lọc nhóm hàng đẩy ra / thu vào ở cạnh trái
+       2. hiện ma trận nấc giá sỉ dưới mỗi ô hàng
+       3. tự áp giá nấc khi số lượng trong giỏ đổi — CHỈ hiện khi công tắc 2
+          đang bật, để quầy bán lẻ không phải nhìn nút thừa. */
+  const [catDrawer, setCatDrawer] = useLocal('thpos.cat_drawer', false);
+  const [tierOn, setTierOn] = useLocal('thpos.tier_on', false);
+  const [tierAuto, setTierAuto] = useLocal('thpos.tier_auto', true);
   const [quickOpen, setQuickOpen] = useState(false);
   const [priceHistOf, setPriceHistOf] = useState(null);
   const [noteOf, setNoteOf] = useState(null);
@@ -352,6 +422,10 @@ export default function POS() {
   );
   const { data: customers, reload: reloadCustomers } = useFetch(() => api.customers({ active: 1 }), []);
   const { data: carriers } = useFetch(() => api.get('/carriers'), []);
+  /* Nợ quá hạn cả tiệm — nút cạnh ô tìm hàng (thay nút Thu nợ trùng cũ) */
+  const {
+    data: overdue, busy: overdueBusy, error: overdueErr, reload: reloadOverdue,
+  } = useFetch(() => api.get('/pos/overdue-debts'), []);
 
   /* Giá đã bán cho khách này trước đây — nạp 1 lần khi đổi khách */
   const [priceHist, setPriceHist] = useState({});
@@ -397,9 +471,41 @@ export default function POS() {
     return m;
   }, [tab?.cart]);
 
+  /* Dòng giỏ của đúng một Ô hàng (mặt hàng + đơn vị), để ô ngoài lưới biết
+     đang ăn nấc giá nào mà tô cùng màu với giỏ (tài liệu 22, mục 4.1) */
+  const lineByKey = useMemo(
+    () => new Map((tab?.cart || []).map((l) => [l.key, l])), [tab?.cart]);
+
+  /**
+   * Nấc giá mà một dòng giỏ hàng đang ăn — để dòng bên giỏ và tag ngoài lưới
+   * đổi màu song song với nhau (tài liệu 22, mục 4.1). Mặt hàng không khai
+   * nấc nào thì trả null, dòng giỏ gọn y như cũ.
+   */
+  const tierOf = (l) => {
+    const u = l.units?.find((x) => x.id === l.unit_id);
+    const listed = Number(u?.prices?.[tab?.priceListId] ?? 0) || 0;
+    const rows = tierRows(u, listed);
+    if (rows.length < 2) return null;
+    const i = tierIndexFor(rows, l.qty);
+    if (i < 0) return null;
+    /* Thu ngân mặc cả rồi sửa tay đơn giá thì dòng đó KHÔNG còn ăn giá nấc
+       nữa — vẫn nói cho biết nấc đó lẽ ra bao nhiêu, nhưng không tô màu như
+       đang ăn nấc, kẻo nhìn thấy hai con số khác nhau lại tưởng máy sai. */
+    const edited = !!l.priceEdited && Math.round(Number(l.price) || 0) !== rows[i].price;
+    return { ...rows[i], index: i, count: rows.length, edited };
+  };
+
   /* ------------------------------ Giỏ hàng ------------------------------ */
 
-  const addToCart = useCallback((product, unitId) => {
+  /**
+   * Thêm hàng vào giỏ.
+   *
+   * `pick` là nấc giá sỉ vừa bấm ngoài lưới (tài liệu 22, mục 3.2): bấm
+   * thẳng vào tag [10-19: 9.000] thì SỐ LƯỢNG và ĐƠN GIÁ điền luôn theo
+   * nấc đó, một cú bấm là xong. Không bấm nấc nào thì y như cũ: cộng thêm
+   * một đơn vị, giá lấy theo bảng giá (hoặc theo nấc đang ăn nếu có khai).
+   */
+  const addToCart = useCallback((product, unitId, pick = null) => {
     const unit = unitId
       ? product.units.find((u) => u.id === unitId)
       : (product.units.find((u) => u.factor === 1) || product.units[0]);
@@ -407,8 +513,18 @@ export default function POS() {
 
     patchTab((t) => {
       const key = `${product.id}:${unit.id}`;
+      const listed = Number(unit.prices?.[t.priceListId] ?? unit.prices?.[defaultPriceList] ?? 0) || 0;
       if (t.cart.some((l) => l.key === key)) {
-        return { cart: t.cart.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l)) };
+        return {
+          cart: t.cart.map((l) => {
+            if (l.key !== key) return l;
+            const q = pick ? Number(pick.min_qty) || 1 : l.qty + 1;
+            /* Sửa tay đơn giá rồi thì giữ nguyên, trừ khi bấm thẳng vào nấc */
+            const price = pick ? Math.round(pick.price)
+              : (l.priceEdited ? l.price : tierPriceFor(unit, q, listed) || l.price);
+            return { ...l, qty: q, price, priceEdited: pick ? false : l.priceEdited };
+          }),
+        };
       }
       return {
         cart: [...t.cart, {
@@ -421,8 +537,8 @@ export default function POS() {
           factor: unit.factor,
           base_unit: product.base_unit,
           units: product.units,
-          qty: 1,
-          price: unit.prices?.[t.priceListId] ?? unit.prices?.[defaultPriceList] ?? 0,
+          qty: pick ? Number(pick.min_qty) || 1 : 1,
+          price: pick ? Math.round(pick.price) : (tierPriceFor(unit, 1, listed) || listed),
           discountType: 'amount',
           discountValue: 0,
           note: '',
@@ -449,7 +565,9 @@ export default function POS() {
         if (l.priceEdited) return l;
         const u = l.units?.find((x) => x.id === l.unit_id);
         const p = u?.prices?.[plId];
-        return p != null ? { ...l, price: p } : l;
+        /* Giá mới vẫn phải soi lại bảng nấc: đang mua 20 cái thì đổi bảng giá
+           xong vẫn phải ăn giá nấc ≥20 của bảng giá mới (tài liệu 22). */
+        return p != null ? { ...l, price: tierPriceFor(u, l.qty, p) || p } : l;
       }),
     }));
   };
@@ -459,6 +577,23 @@ export default function POS() {
 
   const removeLine = (key) =>
     patchTab((t) => ({ cart: t.cart.filter((l) => l.key !== key) }));
+
+  /**
+   * Sửa số lượng ở giỏ. Công tắc [Tự áp giá nấc] bật thì đơn giá tự tụt/nhảy
+   * về nấc tương ứng theo thời gian thực (tài liệu 22, mục 3.2); tắt thì số
+   * lượng tăng nhưng đơn giá giữ nguyên. Dòng đã sửa giá tay coi như đóng
+   * băng — thu ngân mặc cả xong không muốn máy tự sửa lại.
+   */
+  const setQty = (l, q) => {
+    const patch = { qty: q };
+    if (tierAuto && !l.priceEdited && Number(q) > 0) {
+      const u = l.units?.find((x) => x.id === l.unit_id);
+      const listed = Number(u?.prices?.[tab.priceListId] ?? 0) || 0;
+      const next = tierPriceFor(u, q, listed);
+      if (next > 0 && next !== l.price) patch.price = next;
+    }
+    updateLine(l.key, patch);
+  };
 
   const changeUnit = (line, unitId) => {
     const u = line.units.find((x) => x.id === Number(unitId));
@@ -476,7 +611,10 @@ export default function POS() {
         cart: t.cart.map((l) => (l.key === line.key
           ? {
               ...l, key: newKey, unit_id: u.id, unit_name: u.unit_name, factor: u.factor,
-              price: l.priceEdited ? l.price : (u.prices?.[t.priceListId] ?? l.price),
+              /* Nấc của Thùng khác nấc của Cái — đổi đơn vị là phải tính lại */
+              price: l.priceEdited ? l.price
+                : tierPriceFor(u, l.qty, u.prices?.[t.priceListId] ?? l.price)
+                  || (u.prices?.[t.priceListId] ?? l.price),
             }
           : l)),
       };
@@ -604,19 +742,26 @@ export default function POS() {
     }
 
     /* Thứ tự lưới, xếp theo mức ưu tiên giảm dần:
-         1. hàng / nhóm hàng chủ tiệm GHIM đầu lưới theo mùa (tài liệu 14)
-         2. món khách đang chọn TỪNG MUA — câu hỏi kế tiếp bao giờ cũng là
+         1. món ĐANG NẰM TRONG GIỎ — bốc thẳng lên đầu, thắng cả hàng ghim
+            (tài liệu 22, mục 4.2): thợ nhìn ngay lên đầu màn hình đối chiếu
+            thông số rồi đi cắt hàng, khỏi cuộn tìm lại. Bỏ khỏi giỏ thì món
+            tự trả về chỗ cũ.
+         2. hàng / nhóm hàng chủ tiệm GHIM đầu lưới theo mùa (tài liệu 14)
+         3. món khách đang chọn TỪNG MUA — câu hỏi kế tiếp bao giờ cũng là
             "lần trước tôi lấy cái nào"
        Chỉ đổi THỨ TỰ, không lọc bớt: món khác vẫn còn nguyên ở dưới. */
-    const rank = (p) => (pinOn ? (p.featured_rank ?? 9999) : 9999);
+    const rank = (p) => {
+      if (inCartQty.get(p.id)) return -1;
+      return pinOn ? (p.featured_rank ?? 9999) : 9999;
+    };
     const seen = (p) => (priceHist?.[p.id] ? 0 : 1);
     const hasFeatured = pinOn
       && list.some((p) => p.featured_rank !== null && p.featured_rank !== undefined);
-    if (hasFeatured || (priceHist && Object.keys(priceHist).length)) {
+    if (hasFeatured || inCartQty.size > 0 || (priceHist && Object.keys(priceHist).length)) {
       list = [...list].sort((a, b) => rank(a) - rank(b) || seen(a) - seen(b));
     }
     return list;
-  }, [products, catSet, search, searchMode, priceHist, pinOn]);
+  }, [products, catSet, search, searchMode, priceHist, pinOn, inCartQty]);
 
   /**
    * Lưới vẽ theo Ô, không theo mặt hàng: một mặt hàng khai nhiều ĐƠN VỊ BÁN
@@ -959,6 +1104,25 @@ export default function POS() {
         </Link>
         <ShoppingCart size={18} className="text-emerald-400 shrink-0" aria-hidden="true" />
 
+        {/* Đẩy ra / thu vào bảng lọc nhóm hàng cạnh trái (tài liệu 22, mục 1) */}
+        <button
+          type="button"
+          onClick={() => setCatDrawer((v) => !v)}
+          aria-pressed={catDrawer}
+          title={catDrawer
+            ? 'Thu bảng lọc nhóm hàng lại, lưới hàng rộng ra tối đa'
+            : 'Đẩy bảng lọc nhóm hàng ra, lưới hàng hẹp lại một phần'}
+          className={`h-9 px-2.5 rounded border text-[13px] font-semibold hidden md:flex items-center gap-1.5
+                      transition-colors duration-150 cursor-pointer shrink-0
+                      ${catDrawer
+                        ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-100'
+                        : 'bg-white/10 border-white/15 text-slate-300 hover:text-white'}`}
+        >
+          <FolderTree size={14} aria-hidden="true" />
+          Nhóm hàng
+          {pickedCats.length > 0 && <span className="tabular">({n(pickedCats.length)})</span>}
+        </button>
+
         <div className="flex-1 max-w-xl mx-2">
           <div className="relative">
             <Search size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
@@ -997,8 +1161,10 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
-        {/* Chỉ MỘT nút thu nợ, nằm cạnh khung khách đang chọn. Nút thứ hai sát
-            ô tìm hàng đã bỏ vì hai nút giống nhau gây bấm nhầm (tài liệu 16, mục 5). */}
+        {/* Chỗ sát ô tìm hàng: nút NỢ QUÁ HẠN của cả tiệm. Nút Thu nợ vẫn chỉ
+            có MỘT, nằm cạnh khung khách đang chọn — hai nút thu nợ giống nhau
+            gây bấm nhầm (tài liệu 16, mục 5). */}
+        <OverdueDebtsButton rows={overdue} onOpen={() => setOverdueOpen(true)} />
         <DebtButton customer={customer} onOpen={() => setDebtOpen(true)} />
 
         {maySeeCost && (
@@ -1119,6 +1285,19 @@ export default function POS() {
       </div>
 
       <div className="flex-1 flex min-h-0">
+        {/* ------------- Bảng lọc nhóm hàng trượt cạnh trái (tài liệu 22) --- */}
+        <CategoryDrawer
+          open={catDrawer}
+          onToggle={() => setCatDrawer((v) => !v)}
+          categories={meta.categories}
+          selected={pickedCats}
+          onToggleCat={(id) => setPickedCats((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]))}
+          onClear={() => { setPickedCats([]); setBrowseCat(null); }}
+          shown={filtered.length}
+          total={products?.length || 0}
+          className={showGrid ? '' : 'hidden lg:flex'}
+        />
+
         {/* ------------------------- Lưới chọn hàng ------------------------ */}
         <section className={`flex-1 min-w-0 flex flex-col ${showGrid ? '' : 'hidden lg:flex'}`}>
           <CategoryFilter
@@ -1130,7 +1309,45 @@ export default function POS() {
             onClear={() => { setPickedCats([]); setBrowseCat(null); }}
             shown={filtered.length}
             total={products?.length || 0}
-            extra={pinnedCount > 0 ? (
+            extra={<>
+              {/* Công tắc ma trận nấc giá sỉ (tài liệu 22, mục 1). Nút [Tự áp
+                  giá nấc] chỉ hiện khi đang bật ma trận — quầy bán lẻ thuần
+                  thì không phải nhìn nút thừa. */}
+              <button
+                type="button"
+                onClick={() => setTierOn((v) => !v)}
+                aria-pressed={tierOn}
+                title={tierOn
+                  ? 'Đang hiện nấc giá sỉ dưới mỗi ô hàng. Bấm để thu gọn, ô hàng về một giá bán lẻ.'
+                  : 'Ô hàng đang hiện một giá bán lẻ. Bấm để bung ma trận nấc giá sỉ theo số lượng.'}
+                className={`h-8 px-2 rounded border text-2xs font-semibold inline-flex items-center gap-1
+                            cursor-pointer transition-colors duration-100 shrink-0
+                            ${tierOn
+                              ? 'bg-indigo-100 border-indigo-400 text-indigo-900'
+                              : 'bg-card border-line text-muted-ink hover:text-ink'}`}
+              >
+                <Layers size={12} aria-hidden="true" />
+                Nấc giá sỉ {tierOn ? 'đang hiện' : 'đang ẩn'}
+              </button>
+              {tierOn && (
+                <button
+                  type="button"
+                  onClick={() => setTierAuto((v) => !v)}
+                  aria-pressed={tierAuto}
+                  title={tierAuto
+                    ? 'Sửa số lượng trong giỏ thì đơn giá tự nhảy về nấc tương ứng. Bấm để khoá lại.'
+                    : 'Đơn giá đang giữ nguyên khi đổi số lượng. Bấm để cho giá tự nhảy theo nấc.'}
+                  className={`h-8 px-2 rounded border text-2xs font-semibold inline-flex items-center gap-1
+                              cursor-pointer transition-colors duration-100 shrink-0
+                              ${tierAuto
+                                ? 'bg-indigo-600 border-indigo-700 text-white'
+                                : 'bg-card border-line text-muted-ink hover:text-ink'}`}
+                >
+                  <Zap size={12} aria-hidden="true" className={tierAuto ? 'fill-white' : ''} />
+                  Tự áp giá nấc {tierAuto ? 'bật' : 'tắt'}
+                </button>
+              )}
+              {pinnedCount > 0 ? (
               /* Công tắc hàng ghim (tài liệu 16, mục 4): tắt là XẢ GHIM, hàng
                  về đúng vị trí thường trong lưới — không ẩn món nào. */
               <button
@@ -1149,7 +1366,8 @@ export default function POS() {
                 <Star size={12} aria-hidden="true" className={pinOn ? 'fill-amber-400' : ''} />
                 Hàng ghim {pinOn ? `(${n(pinnedCount)})` : 'đang tắt'}
               </button>
-            ) : null}
+              ) : null}
+            </>}
           />
 
           <div ref={gridRef} className="flex-1 overflow-y-auto p-3">
@@ -1182,7 +1400,10 @@ export default function POS() {
                     items={tiles}
                     rootRef={gridRef}
                     resetKey={`${tab.id}|${search}|${pickedCats.join(',')}|${browseCat || ''}|${tab.customerId || ''}|${pinOn}`}
-                    className="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+                    /* Số cột tự nhảy theo BỀ RỘNG CÒN LẠI của lưới, không theo
+                       bề rộng màn hình: đẩy bảng lọc ra thì lưới hẹp lại và bớt
+                       cột ngay, không bị tràn ngang (tài liệu 22, mục 2.1). */
+                    className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))]"
                     renderItem={(t) => (
                       <ProductTile key={t.key} p={t.p} unit={t.unit} priceListId={tab.priceListId}
                         showCost={maySeeCost && showCost} onPick={addToCart}
@@ -1190,6 +1411,8 @@ export default function POS() {
                         bought={priceHist?.[t.p.id]?.[0] || null}
                         showUnits={showUnitPicker}
                         showConverted={showConvertedPrice}
+                        showTiers={tierOn}
+                        line={lineByKey.get(`${t.p.id}:${sellUnitOf(t.p, t.unit)?.id}`) || null}
                         onInfo={setInfoOf}
                         onHover={setHoverPid} />
                     )}
@@ -1261,7 +1484,8 @@ export default function POS() {
                     lineRef={hoverPid === l.product_id ? hoverLineRef : null}
                     hist={priceHist[l.product_id]}
                     showCost={maySeeCost && showCost}
-                    onQty={(q) => updateLine(l.key, { qty: q })}
+                    onQty={(q) => setQty(l, q)}
+                    tier={tierOn ? tierOf(l) : null}
                     onUnit={(unitId) => changeUnit(l, unitId)}
                     onPrice={(v) => commitLine(l.key, { price: v, priceEdited: true })}
                     onAmount={(v) => setLineAmount(l, v)}
@@ -1489,7 +1713,27 @@ export default function POS() {
         open={debtOpen && !!tab.customerId}
         customerId={tab.customerId}
         onClose={() => setDebtOpen(false)}
-        onDone={(res) => { reloadCustomers(); showVoucher(res?.transaction?.id); }}
+        onDone={(res) => { reloadCustomers(); reloadOverdue(); showVoucher(res?.transaction?.id); }}
+      />
+
+      {/* Bảng nợ quá hạn cả tiệm, mở từ nút cạnh ô tìm hàng */}
+      <OverdueDebtsModal
+        open={overdueOpen}
+        rows={overdue}
+        busy={overdueBusy}
+        error={overdueErr}
+        onReload={reloadOverdue}
+        onClose={() => setOverdueOpen(false)}
+        onCollect={(id) => { setOverdueOpen(false); setDebtFor(id); }}
+      />
+
+      {/* Thu nợ của một khách chọn từ bảng nợ quá hạn — không đụng tới khách
+          của tab đang bán dở */}
+      <DebtCollectModal
+        open={!!debtFor}
+        customerId={debtFor}
+        onClose={() => setDebtFor(null)}
+        onDone={(res) => { reloadCustomers(); reloadOverdue(); showVoucher(res?.transaction?.id); }}
       />
 
       {/* Ảnh và mô tả hàng hoá để tư vấn nhanh (tài liệu 13, mục 3.1) */}

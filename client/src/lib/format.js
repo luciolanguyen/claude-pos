@@ -255,3 +255,63 @@ export const SEARCH_MODES = [
   ['contains', 'Tìm có chứa', 'Ra mọi kết quả chứa từ khoá — kiểu quen dùng'],
   ['exact', 'Tìm chính xác', 'Chỉ ra kết quả khớp trọn từ khoá, ví dụ đúng một mã hàng'],
 ];
+
+/* ==================================================================== *
+ * MA TRẬN NẤC GIÁ SỈ THEO SỐ LƯỢNG (tài liệu 22, mục 3)
+ *
+ * Nấc khai theo TỪNG đơn vị tính. Nấc đầu tiên thường bắt đầu từ 1 và
+ * bằng luôn giá bán lẻ; chủ tiệm không khai nấc đó thì dựng thêm một nấc
+ * "1-..." lấy giá bảng giá đang chọn, để ma trận ngoài lưới đọc liền mạch
+ * như tờ báo giá: [1-9: 10.000] [10-19: 9.000] [≥20: 8.500].
+ * ==================================================================== */
+
+/** Nhãn khoảng số lượng của một nấc: "1-9", "10-19", "≥20". */
+const tierLabel = (min, nextMin) => {
+  if (nextMin == null) return `≥${qty(min)}`;
+  const hi = nextMin - 1;
+  return hi > min ? `${qty(min)}-${qty(hi)}` : `${qty(min)}`;
+};
+
+/**
+ * Các nấc để vẽ ra màn hình, kèm nhãn khoảng và giá.
+ * @param unit       một dòng đơn vị tính (có unit.tiers)
+ * @param listPrice  giá theo bảng giá đang chọn của chính đơn vị đó
+ * @returns [] nếu mặt hàng không khai nấc nào — lúc đó bán như cũ
+ */
+export function tierRows(unit, listPrice = 0) {
+  const raw = (unit?.tiers || [])
+    .map((t) => ({ min_qty: Number(t.min_qty) || 0, price: Math.round(Number(t.price) || 0) }))
+    .filter((t) => t.min_qty > 0 && t.price > 0)
+    .sort((a, b) => a.min_qty - b.min_qty);
+  if (!raw.length) return [];
+
+  const rows = raw[0].min_qty > 1 && listPrice > 0
+    ? [{ min_qty: 1, price: Math.round(listPrice), from_list: true }, ...raw]
+    : raw;
+  return rows.map((t, i) => ({
+    ...t,
+    key: `${t.min_qty}`,
+    label: tierLabel(t.min_qty, rows[i + 1]?.min_qty ?? null),
+  }));
+}
+
+/** Nấc đang ăn khi mua `q` đơn vị; chưa tới nấc nào thì -1. */
+export function tierIndexFor(rows, q) {
+  const v = Number(q) || 0;
+  let hit = -1;
+  for (let i = 0; i < (rows?.length || 0); i += 1) {
+    if (v + 1e-9 >= rows[i].min_qty) hit = i;
+    else break;
+  }
+  return hit;
+}
+
+/**
+ * Đơn giá đúng cho số lượng `q`. Không khai nấc, hoặc chưa tới nấc đầu
+ * tiên, thì trả lại đúng giá bảng giá — luồng bán lẻ cũ không đổi gì.
+ */
+export function tierPriceFor(unit, q, listPrice = 0) {
+  const rows = tierRows(unit, listPrice);
+  const i = tierIndexFor(rows, q);
+  return i >= 0 ? rows[i].price : Math.round(Number(listPrice) || 0);
+}

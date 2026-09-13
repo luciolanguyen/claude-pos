@@ -37,6 +37,9 @@ export const ACCESS_RULES = [
      duyệt. Khoá theo quyền bán hàng để biết ai đang thử, chặn gõ mò. */
   ['POST', /^\/auth\/approve$/,            'sale.pos'],
   ['GET',  /^\/pos\/policy$/,              null],
+  /* Danh sách nợ quá hạn ngoài thanh POS: người đứng quầy phải thấy ai đang
+     nợ trễ để đòi ngay lúc gặp mặt, nên mở theo quyền bán hàng. */
+  ['GET',  /^\/pos\/overdue-debts$/,        'sale.pos'],
   ['GET',  /^\/vouchers/,                  'sale.pos'],
   ['GET',  /^\/deliveries/,                'sale.view'],
   ['GET',  /^\/sales/,                    'sale.view'],

@@ -16,7 +16,7 @@
    mò, không phải để chống người rành máy tính.
    ==================================================================== */
 import crypto from 'node:crypto';
-import { get, getSettings } from './db.js';
+import { get, getSettings, tierPriceOf } from './db.js';
 
 /* --------------------------- Chính sách chung ----------------------- */
 
@@ -146,10 +146,16 @@ export function consumeApproval(token) {
 /* ------------------------- Giảm giá so với bảng giá ------------------ */
 
 /** Giá niêm yết của một đơn vị hàng theo bảng giá. Không tìm được thì null. */
-export function listPriceOf(productId, unitName, priceListId) {
+export function listPriceOf(productId, unitName, priceListId, qty = 0) {
   const unit = get('SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?',
     [productId, unitName]);
   if (!unit) return null;
+  /* Mua đủ số lượng của một nấc sỉ thì GIÁ NIÊM YẾT của dòng đó chính là
+     giá nấc (tài liệu 22, mục 3.2). Không tính là thu ngân tự giảm giá —
+     y như bán theo bảng giá thợ điện: chính sách của tiệm, không phải
+     người đứng quầy tự quyết. */
+  const tier = tierPriceOf(unit.id, qty);
+  if (tier !== null) return tier;
   const plId = Number(priceListId)
     || get('SELECT id FROM price_lists WHERE is_default = 1')?.id;
   if (!plId) return null;
@@ -182,7 +188,7 @@ export function discountExposure(items, priceListId, order = {}) {
       : Math.round(Number(it.discount) || 0);
     const amount = gross - Math.min(disc, gross);
 
-    const list = listPriceOf(it.product_id, it.unit_name, priceListId);
+    const list = listPriceOf(it.product_id, it.unit_name, priceListId, qty);
     const listGross = Math.round(qty * (list ?? price));
     const pct = listGross > 0 ? Math.max(0, (listGross - amount) / listGross * 100) : 0;
 

@@ -7,7 +7,7 @@
    ==================================================================== */
 import { useState, useEffect } from 'react';
 import {
-  Plus, Trash2, Wrench, ChevronDown, RotateCcw, AlertTriangle, FileText, Layers,
+  Plus, Trash2, Wrench, ChevronDown, RotateCcw, AlertTriangle, FileText, Layers, X,
   Image as ImageIcon,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -36,6 +36,107 @@ const EMPTY = {
  * gặp món chưa có trong danh mục — khai ngay tại chỗ rồi thêm thẳng vào
  * phiếu, không phải bỏ dở phiếu nhập để đi tạo hàng.
  */
+/* ==================================================================== *
+ * BẢNG KHAI NẤC GIÁ SỈ THEO SỐ LƯỢNG (tài liệu 22, mục 3.1)
+ *
+ * Mua càng nhiều càng rẻ: mỗi nấc ghi "mua từ bao nhiêu" và "giá bao nhiêu".
+ * Khai theo TỪNG đơn vị tính, vì nấc của Cái khác nấc của Thùng.
+ *
+ * Không khai nấc nào thì mặt hàng bán theo bảng giá y như cũ — màn hình bán
+ * hàng cũng không bung thêm gì dưới ô hàng.
+ * ==================================================================== */
+function TierEditor({ unit, baseUnit, listPrice, onAdd, onSet, onRemove, onClose }) {
+  const rows = unit.tiers || [];
+  const name = unit.unit_name || 'đơn vị';
+  /* Nấc xếp lộn xộn thì bảng ngoài lưới đọc sai khoảng — nhắc ngay tại chỗ */
+  const sorted = rows.every((t, i) => i === 0
+    || (Number(t.min_qty) || 0) > (Number(rows[i - 1].min_qty) || 0));
+  const dup = new Set(rows.map((t) => Number(t.min_qty) || 0)).size !== rows.length;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-2xs font-bold flex items-center gap-1">
+          <Layers size={12} aria-hidden="true" />
+          Nấc giá sỉ khi bán theo <span className="text-indigo-800">{name}</span>
+        </h4>
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="outline" icon={Plus} onClick={onAdd}>Thêm nấc</Button>
+          <IconButton icon={X} size={14} label="Đóng bảng nấc giá sỉ" onClick={onClose} />
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-2xs text-muted-ink">
+          Chưa khai nấc nào — mặt hàng này bán theo bảng giá như thường.
+          Khai nấc đầu tiên từ <b>1</b> nếu muốn ghi rõ cả giá bán lẻ; bỏ trống nấc 1 thì
+          màn hình bán hàng tự lấy giá bảng giá {listPrice > 0 ? `(${n(listPrice)})` : ''} làm nấc đầu.
+        </p>
+      ) : (
+        <table className="data !text-2xs">
+          <thead>
+            <tr>
+              <th style={{ width: 120 }} className="text-right">Mua từ ({name})</th>
+              <th style={{ width: 150 }} className="text-right">Đơn giá</th>
+              <th>Ngoài lưới bán hàng sẽ hiện</th>
+              <th style={{ width: 38 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t, k) => {
+              const next = rows[k + 1] ? Number(rows[k + 1].min_qty) || 0 : null;
+              const from = Number(t.min_qty) || 0;
+              const label = next && next - 1 > from ? `${fq(from)}-${fq(next - 1)}`
+                : next ? `${fq(from)}` : `≥${fq(from)}`;
+              return (
+                <tr key={k}>
+                  <td>
+                    <QtyInput size="sm" value={t.min_qty}
+                      onChange={(v) => onSet(k, { min_qty: v })}
+                      aria-label={`Số lượng tối thiểu của nấc ${k + 1}`} />
+                  </td>
+                  <td>
+                    <MoneyInput size="sm" value={t.price}
+                      onChange={(v) => onSet(k, { price: v })}
+                      aria-label={`Đơn giá của nấc ${k + 1}`} />
+                  </td>
+                  <td className="text-muted-ink">
+                    {from > 0 && Number(t.price) > 0
+                      ? <span className="font-mono">[{label}: {n(t.price)}]</span>
+                      : <span className="italic">điền đủ hai ô thì nấc mới có hiệu lực</span>}
+                    {Number(t.price) > 0 && Number(unit.factor) > 1 && (
+                      <span className="ml-1">
+                        ({n(Math.round(Number(t.price) / Number(unit.factor)))}/{baseUnit})
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <IconButton icon={Trash2} size={13} label={`Xoá nấc ${k + 1}`}
+                      className="!text-danger hover:!bg-red-50" onClick={() => onRemove(k)} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {(!sorted || dup) && (
+        <p className="text-2xs text-amber-800 flex items-start gap-1">
+          <AlertTriangle size={11} className="shrink-0 mt-0.5" aria-hidden="true" />
+          {dup
+            ? 'Có hai nấc cùng một mốc số lượng — nấc phía dưới sẽ đè lên nấc phía trên.'
+            : 'Các nấc nên xếp từ số lượng nhỏ tới lớn, không thì khoảng hiện ngoài lưới đọc sẽ khó hiểu.'}
+        </p>
+      )}
+      <p className="text-2xs text-muted-ink">
+        Đủ số lượng của một nấc thì đơn giá đó là <b>giá niêm yết</b> của dòng hàng, không
+        tính là thu ngân tự giảm giá. Sửa bảng nấc <b>không đụng tới hoá đơn cũ</b>.
+      </p>
+    </div>
+  );
+}
+
 export function ProductForm({ open, product, onClose, onSaved }) {
   const { meta, defaultWarehouse, settings, can, toast } = useApp();
   const shopCostMethod = settings?.cost_method === 'fixed' ? 'fixed' : 'average';
@@ -55,6 +156,7 @@ export function ProductForm({ open, product, onClose, onSaved }) {
      đang gõ. Suy ra từ con số là lỗi cũ: gõ "1" để rồi thành "10" thì ngay ký
      tự đầu dòng đó đã bị coi là đơn vị cơ bản và ô bị khoá (tài liệu 16, mục 1). */
   const [baseIdx, setBaseIdx] = useState(0);
+  const [tierRow, setTierRow] = useState(null);      // dòng đơn vị đang mở bảng nấc sỉ
   /* Cách tính thật sự áp cho món này: đặt riêng thì theo riêng, không thì theo tiệm */
   const effectiveCostMethod = form.cost_method || shopCostMethod;
   /* Công tắc cho phép tích NHIỀU đơn vị bán chính / mua chính (tài liệu 16, mục 2.1).
@@ -113,6 +215,8 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           /* Hồ sơ cũ chưa có hai cờ này thì lấy theo hai cột cũ của mặt hàng */
           is_sell_main: u.is_sell_main ? 1 : (u.id && u.id === product.sell_unit_id ? 1 : 0),
           is_buy_main: u.is_buy_main ? 1 : (u.id && u.id === product.buy_unit_id ? 1 : 0),
+          /* Nấc giá sỉ theo số lượng của riêng đơn vị này (tài liệu 22) */
+          tiers: (u.tiers || []).map((t) => ({ min_qty: t.min_qty, price: t.price })),
           prices,
         };
       });
@@ -135,7 +239,21 @@ export function ProductForm({ open, product, onClose, onSaved }) {
   const setUnitPrice = (i, plId, price) => setUnits((prev) =>
     prev.map((u, j) => j === i ? { ...u, prices: { ...u.prices, [plId]: price } } : u));
   const addUnit = () => setUnits((prev) => [...prev,
-    { unit_name: '', factor: '', prices: {}, active: 1, is_sell_main: 0, is_buy_main: 0 }]);
+    { unit_name: '', factor: '', prices: {}, tiers: [], active: 1, is_sell_main: 0, is_buy_main: 0 }]);
+
+  /* -------- Nấc giá sỉ theo số lượng của một đơn vị (tài liệu 22) -------- */
+  const setTiers = (i, next) => setUnits((prev) =>
+    prev.map((u, j) => (j === i ? { ...u, tiers: next } : u)));
+  const setTier = (i, k, patch) => setTiers(i,
+    (units[i].tiers || []).map((t, j) => (j === k ? { ...t, ...patch } : t)));
+  const addTier = (i) => {
+    const list = units[i].tiers || [];
+    /* Nấc mới bắt đầu ngay sau nấc cuối: khai "10" rồi thêm nấc là gợi 11,
+       chủ tiệm sửa lại thành 20 cũng chỉ mất một lần gõ. */
+    const lastQty = list.length ? Number(list[list.length - 1].min_qty) || 0 : 0;
+    setTiers(i, [...list, { min_qty: lastQty ? lastQty + 1 : 1, price: '' }]);
+  };
+  const removeTier = (i, k) => setTiers(i, (units[i].tiers || []).filter((_, j) => j !== k));
 
   /* Đơn vị bán chính / mua chính. Tắt công tắc đa ĐVT thì tích ô này là bỏ
      tích mọi ô khác — về đúng nếp cũ một đơn vị (tài liệu 16, mục 2.1). */
@@ -441,6 +559,8 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                   {meta.priceLists.map((pl) => (
                     <th key={pl.id} className="text-right">{pl.name}</th>
                   ))}
+                  <th style={{ width: 78 }} className="text-center"
+                    title="Nấc giá sỉ theo số lượng mua">Nấc sỉ</th>
                   <th style={{ width: 52 }} className="text-center" title="Đơn vị bán chính">BC</th>
                   <th style={{ width: 52 }} className="text-center" title="Đơn vị mua chính">MC</th>
                   <th style={{ width: 38 }} />
@@ -514,6 +634,23 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                         </td>
                       ))}
                       <td className="text-center">
+                        {/* Bảng nấc dài hơn một dòng nên không nhét thẳng vào
+                            lưới: bấm là bung ra ngay dưới dòng đơn vị đó, khỏi
+                            mở thêm hộp thoại che mất bảng (tài liệu 22). */}
+                        <button
+                          type="button"
+                          onClick={() => setTierRow((x) => (x === i ? null : i))}
+                          disabled={off}
+                          aria-expanded={tierRow === i}
+                          title={`Khai nấc giá sỉ theo số lượng cho ${u.unit_name || 'đơn vị này'}`}
+                          className={`btn btn-sm !min-h-[28px] !px-1.5 !text-2xs
+                                      ${(u.tiers || []).length ? 'btn-secondary' : 'btn-outline'}`}
+                        >
+                          <Layers size={11} aria-hidden="true" />
+                          {(u.tiers || []).length ? `${(u.tiers || []).length} nấc` : 'Khai'}
+                        </button>
+                      </td>
+                      <td className="text-center">
                         <input
                           type="checkbox"
                           className="w-4 h-4 accent-emerald-700 cursor-pointer"
@@ -548,6 +685,22 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                     </tr>
                   );
                 })}
+                {/* Bảng nấc giá sỉ của dòng đang mở, nằm ngay dưới dòng đó */}
+                {tierRow !== null && units[tierRow] && (
+                  <tr className="bg-indigo-50/60">
+                    <td colSpan={6 + meta.priceLists.length} className="!py-2">
+                      <TierEditor
+                        unit={units[tierRow]}
+                        baseUnit={form.base_unit}
+                        listPrice={units[tierRow].prices?.[basePriceListId] || 0}
+                        onAdd={() => addTier(tierRow)}
+                        onSet={(k, patch) => setTier(tierRow, k, patch)}
+                        onRemove={(k) => removeTier(tierRow, k)}
+                        onClose={() => setTierRow(null)}
+                      />
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

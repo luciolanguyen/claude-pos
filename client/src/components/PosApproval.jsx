@@ -14,6 +14,7 @@ import { useState, useEffect } from 'react';
 import { KeyRound, Lock } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button, Modal } from './ui';
+import { tierPriceFor } from '../lib/format';
 
 export const DEFAULT_POLICY = {
   maxTabs: 10,
@@ -62,7 +63,11 @@ export function cartDiscountPercent(cart, priceListId, order = {}) {
       : Math.round(Number(l.discountValue) || 0);
     const amount = gross - Math.min(disc, gross);
     const unit = l.units?.find((u) => u.id === l.unit_id);
-    const list = unit?.prices?.[priceListId];
+    /* Mua đủ số lượng của một nấc sỉ thì giá niêm yết của dòng chính là giá
+       nấc (tài liệu 22, mục 3.2) — không tính là thu ngân tự giảm giá. Máy
+       chủ soát lại y hệt trong policy.js. */
+    const listed = unit?.prices?.[priceListId];
+    const list = listed == null ? undefined : tierPriceFor(unit, qty, listed);
     const listGross = Math.round(qty * (list ?? price));
     const pct = listGross > 0 ? Math.max(0, (listGross - amount) / listGross * 100) : 0;
     listTotal += listGross;

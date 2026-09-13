@@ -13,8 +13,9 @@
    cũ vẽ hai nghìn ô là khựng. Vẽ trước một khúc, cuộn gần tới đâu vẽ thêm.
    ==================================================================== */
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronRight, Check, X } from 'lucide-react';
-import { n } from '../lib/format';
+import { ChevronRight, ChevronLeft, Check, X, FolderTree, RotateCcw } from 'lucide-react';
+import { n, match } from '../lib/format';
+import { SearchInput } from './ui';
 import { categoryBranch } from './CategoryTree';
 
 /**
@@ -43,6 +44,199 @@ export function categoryFilterSet(categories, selected, browseId) {
     for (const x of categoryBranch(categories, id) || []) out.add(x);
   }
   return out;
+}
+
+/* ==================================================================== *
+ * THANH BÊN TRƯỢT LỌC NHÓM HÀNG (tài liệu 22, mục 2)
+ *
+ * Hộp thoại bật lên che mất lưới hàng: chọn nhóm xong đóng hộp mới thấy
+ * kết quả, không ưng lại mở ra. Thanh bên thì ĐẨY lưới hẹp lại chứ không
+ * che — vừa tích nhóm vừa nhìn hàng đổi ngay bên cạnh.
+ *
+ * Thu vào thì còn một vệt dọc hẹp bên mép trái, bấm là đẩy ra lại.
+ * ==================================================================== */
+
+/** Nhánh cha - con - cháu nào có nhóm khớp từ khoá thì bung ra hết. */
+function matchingBranch(cats, term) {
+  if (!term.trim()) return null;
+  const parentOf = new Map(cats.map((c) => [c.id, c.parent_id || null]));
+  const keep = new Set();
+  const open = new Set();
+  for (const c of cats) {
+    if (!match(c.name, term)) continue;
+    keep.add(c.id);
+    /* Mọi nhóm cha bên trên phải còn lại, không thì nhóm khớp mất chỗ đứng */
+    let p = parentOf.get(c.id);
+    let guard = 0;
+    while (p && guard++ < 50) { keep.add(p); open.add(p); p = parentOf.get(p); }
+  }
+  /* Nhóm khớp mà còn con cháu thì cũng cho hiện cả nhánh dưới nó */
+  let grew = true;
+  let guard = 0;
+  while (grew && guard++ < 50) {
+    grew = false;
+    for (const c of cats) {
+      if (!keep.has(c.id) && c.parent_id && keep.has(c.parent_id)) { keep.add(c.id); grew = true; }
+    }
+  }
+  return { keep, open };
+}
+
+export function CategoryDrawer({
+  open, onToggle, categories, selected, onToggleCat, onClear, shown, total, className = '',
+}) {
+  const cats = categories || [];
+  const [q, setQ] = useState('');
+  const [collapsed, setCollapsed] = useState(() => new Set());
+
+  const byId = useMemo(() => new Map(cats.map((c) => [c.id, c])), [cats]);
+  const kidsOf = useMemo(() => {
+    const m = new Map();
+    for (const c of cats) {
+      const k = c.parent_id || 0;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(c);
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name, 'vi'));
+    }
+    return m;
+  }, [cats]);
+
+  /* Gõ từ khoá: ẩn nhánh không liên quan, tự bung nhánh còn lại. Ô tìm dùng
+     match() nên gõ không dấu và đảo thứ tự từ đều ra ("lực dây thuỷ" ->
+     "Dây thuỷ lực" — tài liệu 22, mục 2.2). */
+  const hit = useMemo(() => matchingBranch(cats, q), [cats, q]);
+
+  const rows = useMemo(() => {
+    const out = [];
+    const walk = (parentId, depth) => {
+      for (const c of kidsOf.get(parentId) || []) {
+        if (hit && !hit.keep.has(c.id)) continue;
+        const kids = (kidsOf.get(c.id) || []).filter((k) => !hit || hit.keep.has(k.id));
+        /* Đang tìm thì mở sẵn nhánh khớp; không tìm thì theo nút bấm của người dùng */
+        const isOpen = hit ? hit.open.has(c.id) || kids.length > 0 : !collapsed.has(c.id);
+        out.push({ c, depth, kids: kids.length, isOpen });
+        if (kids.length && isOpen) walk(c.id, depth + 1);
+      }
+    };
+    walk(0, 0);
+    return out;
+  }, [kidsOf, hit, collapsed]);
+
+  const picked = selected.map((id) => byId.get(id)).filter(Boolean);
+
+  if (!open) {
+    /* Thu vào: còn một vệt dọc, bấm là đẩy ra */
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={false}
+        title="Mở bảng lọc nhóm hàng"
+        className={`hidden md:flex w-8 shrink-0 border-r border-line bg-card hover:bg-muted
+                   flex-col items-center gap-2 py-3 cursor-pointer transition-colors duration-150
+                   ${className}`}
+      >
+        <FolderTree size={16} className={selected.length ? 'text-accent' : 'text-muted-ink'} aria-hidden="true" />
+        <span className="text-2xs font-semibold tracking-wide text-muted-ink"
+          style={{ writingMode: 'vertical-rl' }}>
+          Nhóm hàng{selected.length ? ` (${n(selected.length)})` : ''}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <aside
+      className={`hidden md:flex w-[26%] min-w-[210px] max-w-[340px] shrink-0 flex-col
+                 border-r border-line bg-card min-h-0 ${className}`}
+      aria-label="Bảng lọc nhóm hàng"
+    >
+      <div className="p-2 border-b border-line space-y-1.5 shrink-0">
+        <SearchInput value={q} onChange={setQ} size="sm" placeholder="Nhập từ khoá tìm nhóm..." />
+        {picked.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1">
+            {picked.map((c) => (
+              <span key={c.id}
+                className="inline-flex items-center gap-0.5 rounded-full bg-slate-800 text-white
+                           text-2xs pl-2 pr-0.5 py-0.5 max-w-full">
+                <span className="truncate">{c.name}</span>
+                <button type="button" onClick={() => onToggleCat(c.id)} aria-label={`Bỏ lọc ${c.name}`}
+                  className="rounded-full hover:bg-white/20 p-0.5 cursor-pointer shrink-0">
+                  <X size={11} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+            <button type="button" onClick={onClear}
+              className="btn btn-sm btn-outline !text-2xs !min-h-[24px] !px-1.5">
+              <RotateCcw size={11} aria-hidden="true" />
+              Xoá tất cả
+            </button>
+          </div>
+        ) : (
+          <p className="text-2xs text-muted-ink">
+            Chưa lọc nhóm nào — lưới đang hiện tất cả {n(total)} món.
+          </p>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-1">
+        {rows.length === 0 ? (
+          <p className="text-2xs text-muted-ink p-2">
+            {q ? `Không có nhóm nào khớp "${q}".` : 'Chưa khai nhóm hàng nào.'}
+          </p>
+        ) : rows.map(({ c, depth, kids, isOpen }) => {
+          const on = selected.includes(c.id);
+          return (
+            <div key={c.id} className="flex items-stretch" style={{ paddingLeft: depth * 12 }}>
+              {kids > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setCollapsed((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
+                    return next;
+                  })}
+                  aria-expanded={isOpen}
+                  aria-label={isOpen ? `Thu nhánh ${c.name}` : `Bung nhánh ${c.name}`}
+                  className="w-5 shrink-0 flex items-center justify-center text-muted-ink
+                             hover:text-ink cursor-pointer rounded"
+                >
+                  <ChevronRight size={13} aria-hidden="true"
+                    className={`transition-transform duration-150 ${isOpen ? 'rotate-90' : ''}`} />
+                </button>
+              ) : <span className="w-5 shrink-0" aria-hidden="true" />}
+              <label
+                className={`flex-1 min-w-0 flex items-center gap-1.5 px-1.5 py-1 rounded cursor-pointer
+                            text-[13px] transition-colors duration-100
+                            ${on ? 'bg-accent-soft text-emerald-900 font-semibold' : 'hover:bg-muted'}`}
+              >
+                <input
+                  type="checkbox"
+                  className="w-3.5 h-3.5 accent-emerald-700 cursor-pointer shrink-0"
+                  checked={on}
+                  onChange={() => onToggleCat(c.id)}
+                />
+                <span className="truncate">{c.name}</span>
+              </label>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="p-1.5 border-t border-line shrink-0 flex items-center gap-1.5">
+        <button type="button" onClick={onToggle}
+          className="btn btn-sm btn-outline flex-1" aria-expanded>
+          <ChevronLeft size={13} aria-hidden="true" />
+          Thu gọn bảng lọc
+        </button>
+        <span className="text-2xs text-muted-ink tabular shrink-0 pr-1">
+          {selected.length ? `${n(shown)}/${n(total)}` : n(total)} món
+        </span>
+      </div>
+    </aside>
+  );
 }
 
 export function CategoryFilter({
@@ -81,7 +275,10 @@ export function CategoryFilter({
 
   return (
     <div className="px-3 py-2 border-b border-line bg-card shrink-0 space-y-1.5">
-      <div className="flex items-center gap-1.5 overflow-x-auto">
+      {/* Danh sách nhóm dài thì CUỘN NGANG trong khung riêng; công tắc và số
+          đếm nằm ngoài khung đó nên không bao giờ bị đẩy khuất (tài liệu 22) */}
+      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0">
         <nav aria-label="Vị trí nhóm hàng" className="flex items-center gap-0.5 shrink-0 text-[13px]">
           <button type="button" onClick={() => onBrowse(null)} className={crumb(!browseId)}
             aria-current={!browseId ? 'page' : undefined}>
@@ -142,11 +339,15 @@ export function CategoryFilter({
         </div>
 
         <div className="flex-1" />
-        {/* Chỗ cho công tắc phụ của màn hình bán hàng, ví dụ nút hàng ghim */}
-        {extra}
-        <span className="text-2xs text-muted-ink whitespace-nowrap shrink-0 tabular">
-          {filtering ? `${n(shown)}/${n(total)} món` : `${n(total)} món`}
-        </span>
+      </div>
+
+        {/* Chỗ cho công tắc phụ của màn hình bán hàng: nấc giá sỉ, hàng ghim */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {extra}
+          <span className="text-2xs text-muted-ink whitespace-nowrap shrink-0 tabular">
+            {filtering ? `${n(shown)}/${n(total)} món` : `${n(total)} món`}
+          </span>
+        </div>
       </div>
 
       {selected.length > 0 && (

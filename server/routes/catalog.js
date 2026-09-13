@@ -5,7 +5,7 @@ import { Router } from 'express';
 import {
   all, get, run, tx, moveStock, costOf, costMethodOf, pageParams,
   categoryTree, categoryTreeIds, categoryFilter,
-  searchWhere, searchMode, orderBy, PRODUCT_DIR } from '../db.js';
+  searchWhere, searchMode, orderBy, unitTiers, PRODUCT_DIR } from '../db.js';
 
 const r = Router();
 
@@ -277,7 +277,7 @@ function hydrate(p) {
   /* Đơn vị đã ngừng hoạt động vẫn trả về cho bảng khai báo và hoá đơn cũ,
      kèm cờ used để màn hình biết món nào xoá vĩnh viễn được. */
   p.units = all('SELECT * FROM product_units WHERE product_id = ? ORDER BY active DESC, factor', [p.id])
-    .map((u) => ({ ...u, used: unitUsage(u.id) > 0 }));
+    .map((u) => ({ ...u, used: unitUsage(u.id) > 0, tiers: unitTiers(u.id) }));
   p.images = imagesOf(p.id);
   p.prices = all(`
     SELECT pp.*, pl.code AS price_list_code, pu.unit_name
@@ -451,6 +451,16 @@ r.get('/products/pos', (req, res) => {
     const u = unitIndex.get(pr.unit_id);
     if (u) u.prices[pr.price_list_id] = pr.price;
   }
+
+  /* Ma trận nấc giá sỉ theo số lượng (tài liệu 22, mục 3): lấy một lượt cho
+     cả tiệm rồi gắn vào từng đơn vị — hỏi từng mã là hàng nghìn câu truy vấn. */
+  for (const t of all(`SELECT unit_id, min_qty, price FROM product_price_tiers
+                       WHERE min_qty > 0 ORDER BY unit_id, min_qty`)) {
+    const u = unitIndex.get(t.unit_id);
+    if (!u) continue;
+    (u.tiers || (u.tiers = [])).push({ min_qty: t.min_qty, price: t.price });
+  }
+  for (const u of unitIndex.values()) if (!u.tiers) u.tiers = [];
 
   /* Ảnh: ảnh chính để vẽ ô hàng, cả bộ để mở hộp xem chi tiết */
   const imgs = all('SELECT product_id, id, file, is_main FROM product_images ORDER BY is_main DESC, sort_order, id');
@@ -756,6 +766,31 @@ function checkFactor(value, unitName) {
   return v;
 }
 
+/**
+ * Ghi lại toàn bộ nấc giá sỉ của MỘT đơn vị tính (tài liệu 22, mục 3.1).
+ *
+ * Xoá sạch rồi ghi lại: bảng nấc ngắn, làm vậy khỏi phải dò nấc nào vừa bị
+ * bỏ đi. Nấc trùng số lượng thì nấc sau đè nấc trước. Nấc số lượng <= 0
+ * hoặc giá <= 0 coi như dòng bỏ trống, không ghi.
+ */
+function saveTiers(productId, unitId, tiers = []) {
+  run('DELETE FROM product_price_tiers WHERE unit_id = ?', [unitId]);
+  const seen = new Set();
+  for (const t of tiers) {
+    const minQty = Number(t?.min_qty);
+    const price = Math.round(Number(t?.price) || 0);
+    if (!(minQty > 0) || price <= 0) continue;
+    if (seen.has(minQty)) {
+      run('UPDATE product_price_tiers SET price = ? WHERE unit_id = ? AND min_qty = ?',
+        [price, unitId, minQty]);
+      continue;
+    }
+    seen.add(minQty);
+    run(`INSERT INTO product_price_tiers(product_id, unit_id, min_qty, price)
+         VALUES(?, ?, ?, ?)`, [productId, unitId, minQty, price]);
+  }
+}
+
 function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
   const keepIds = [];
   let hasBase = false;
@@ -805,6 +840,10 @@ function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
            ON CONFLICT(product_id, price_list_id, unit_id) DO UPDATE SET price = excluded.price`,
         [productId, Number(plId), unitId, Math.round(Number(price) || 0)]);
     }
+    /* Ma trận nấc giá sỉ của đơn vị này (tài liệu 22, mục 3.1). Biểu mẫu cũ
+       không gửi khoá `tiers` thì giữ nguyên bảng nấc đang có — không được
+       im lặng xoá mất giá sỉ của chủ tiệm. */
+    if (Array.isArray(u.tiers)) saveTiers(productId, unitId, u.tiers);
   }
   if (!hasBase) {
     const unitId = Number(run(

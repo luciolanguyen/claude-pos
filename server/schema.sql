@@ -849,3 +849,25 @@ CREATE TABLE IF NOT EXISTS pos_featured_sets (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_pfs_active ON pos_featured_sets(active);
+
+-- ============================================================
+-- MO RONG v17: ma tran gia si theo nac so luong (tai lieu 22)
+-- ============================================================
+
+-- Mua cang nhieu cang re: moi nac ghi so luong toi thieu va don gia cua
+-- nac do, tinh theo TUNG DON VI TINH (nac cua Cai khac nac cua Thung).
+--   min_qty 1  -> 10000   : mua 1-9 cai
+--   min_qty 10 -> 9000    : mua 10-19 cai
+--   min_qty 20 -> 8500    : mua tu 20 cai tro len
+-- Khong khai nac nao thi mat hang ban theo bang gia nhu cu, khong doi gi.
+-- Gia nac la gia TUYET DOI, khong phu thuoc bang gia dang chon.
+CREATE TABLE IF NOT EXISTS product_price_tiers (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  unit_id    INTEGER NOT NULL REFERENCES product_units(id) ON DELETE CASCADE,
+  min_qty    REAL NOT NULL DEFAULT 1,
+  price      INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(product_id, unit_id, min_qty)
+);
+CREATE INDEX IF NOT EXISTS idx_ppt_product ON product_price_tiers(product_id);
+CREATE INDEX IF NOT EXISTS idx_ppt_unit ON product_price_tiers(unit_id);

@@ -133,6 +133,8 @@ const TABLES = [
   'product_images', 'pos_featured',
   /* Đợt 16 */
   'pos_featured_sets',
+  /* Đợt 17 */
+  'product_price_tiers',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -250,7 +252,7 @@ r.post('/reset-all', (req, res) => {
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
     'pos_featured', 'pos_featured_sets', 'product_images',
-    'stock_moves', 'stock', 'product_prices', 'product_units', 'products',
+    'stock_moves', 'stock', 'product_price_tiers', 'product_prices', 'product_units', 'products',
     'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
   ];

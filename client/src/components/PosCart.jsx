@@ -285,7 +285,7 @@ function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
 
 export function CartLine({
   l, hist, showCost, onQty, onUnit, onPrice, onAmount, onDiscount, onRemove, onHistory, onNote,
-  highlight = false, lineRef = null,
+  highlight = false, lineRef = null, tier = null,
 }) {
   const { gross, disc, amount } = lineAmount(l);
   const [tagAnchor, setTagAnchor] = useState(null);
@@ -298,16 +298,39 @@ export function CartLine({
        (tài liệu 14, mục 3) — đổi màu để nhìn một cái là thấy nó nằm đâu */
     <li
       ref={lineRef}
+      /* tier: dòng đang ăn một nấc giá sỉ (tài liệu 22, mục 4.1) — viền trái
+         xanh tím, cùng màu với tag nấc đang sáng ngoài lưới, để nhìn một cái
+         là biết dòng nào ăn nấc nào, khỏi lộn dòng. */
       className={`p-2.5 transition-colors duration-150
                   ${highlight
                     ? 'bg-amber-100 ring-2 ring-inset ring-amber-400'
-                    : 'hover:bg-muted/40'}`}
+                    : tier && !tier.edited
+                      ? 'bg-indigo-50/70 border-l-4 border-indigo-600 hover:bg-indigo-50'
+                      : 'hover:bg-muted/40'}`}
     >
       <div className="flex items-start gap-1">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold leading-snug">{l.name}</div>
           <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
             <span className="text-2xs text-muted-ink font-mono">{l.sku}</span>
+            {/* Không chỉ dựa vào màu: nhãn ghi rõ đang ăn nấc nào, giá bao nhiêu */}
+            {tier && (
+              <span
+                role="status"
+                aria-atomic="true"
+                className={`text-2xs font-bold rounded px-1 leading-5 tabular
+                            ${tier.edited
+                              ? 'bg-muted text-muted-ink border border-line font-semibold'
+                              : 'text-white bg-indigo-600'}`}
+                title={tier.edited
+                  ? `Đơn giá dòng này đã sửa tay. Nấc ${tier.label} ${l.unit_name} lẽ ra là ${n(tier.price)}.`
+                  : `Mua ${tier.label} ${l.unit_name} nên đang ăn giá nấc ${n(tier.price)}`}
+              >
+                {tier.edited
+                  ? `Sửa tay — nấc ${tier.label} là ${n(tier.price)}`
+                  : `Nấc ${tier.label}: ${n(tier.price)}`}
+              </span>
+            )}
             {/* Dòng phụ chỉ hiện khi thật sự có giảm — không giảm thì giỏ gọn */}
             {disc > 0 && (
               <button

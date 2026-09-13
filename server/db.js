@@ -573,6 +573,38 @@ export function searchWhere(columns, value, mode = 'contains') {
  * trong danh sách cho phép — ghép thẳng chuỗi của người dùng vào câu SQL
  * là mở cửa cho việc chèn câu lệnh lạ.
  */
+/* ------------------------------------------------------------------ */
+/* NẤC GIÁ SỈ THEO SỐ LƯỢNG (tài liệu 22)                              */
+/*                                                                     */
+/* Mua càng nhiều càng rẻ. Nấc khai theo TỪNG ĐƠN VỊ TÍNH: nấc của Cái */
+/* khác nấc của Thùng. Giá nấc là giá tuyệt đối, không phụ thuộc bảng  */
+/* giá đang chọn — nấc là thoả thuận theo số lượng, bảng giá là chính  */
+/* sách theo nhóm khách, hai chuyện khác nhau.                         */
+/* ------------------------------------------------------------------ */
+
+/** Các nấc của một đơn vị tính, nấc nhỏ trước. Mỗi nấc { min_qty, price }. */
+export function unitTiers(unitId) {
+  const id = Number(unitId) || 0;
+  if (!id) return [];
+  return all(`SELECT min_qty, price FROM product_price_tiers
+              WHERE unit_id = ? AND min_qty > 0 ORDER BY min_qty`, [id]);
+}
+
+/**
+ * Giá của nấc ăn được khi mua `qty` đơn vị. Chưa tới nấc đầu tiên thì trả
+ * null — lúc đó bán theo bảng giá như cũ, không đổi gì.
+ */
+export function tierPriceOf(unitId, qty) {
+  const q = Number(qty) || 0;
+  let hit = null;
+  for (const t of unitTiers(unitId)) {
+    /* Cộng thêm một chút để số lẻ kiểu 9.999999 vẫn coi là đủ 10 */
+    if (q + 1e-9 >= Number(t.min_qty)) hit = t;
+    else break;
+  }
+  return hit ? Math.round(Number(hit.price) || 0) : null;
+}
+
 export function orderBy(allowed, field, dir, fallback) {
   const col = allowed[String(field ?? '')];
   if (!col) return fallback;

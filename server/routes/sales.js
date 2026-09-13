@@ -389,7 +389,10 @@ export function createSale(b) {
           : null;
 
         /* Giá niêm yết lúc bán — để soát lại mức giảm thật so với bảng giá */
-        const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id);
+        /* Đủ số lượng ăn nấc sỉ thì giá niêm yết của dòng chính là giá nấc
+           (tài liệu 22) — chốt luôn vào hoá đơn để sau này sửa bảng nấc
+           cũng không làm hoá đơn cũ hiện ra mức giảm ảo. */
+        const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id, it.qty);
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
@@ -1062,7 +1065,7 @@ r.get('/price-history', (req, res) => {
 /** Giá gần nhất của TẤT CẢ mặt hàng cho một khách — gọi 1 lần khi chọn khách. */
 r.get('/price-history/:customerId/all', (req, res) => {
   const rows = all(`
-    SELECT si.product_id, si.unit_name, si.price, s.ts, s.code
+    SELECT si.product_id, si.unit_name, si.qty, si.price, s.ts, s.code
     FROM sale_items si
     JOIN sales s ON s.id = si.sale_id
     WHERE s.customer_id = ? AND s.status = 'done'
