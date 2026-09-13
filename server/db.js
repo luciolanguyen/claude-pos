@@ -530,6 +530,23 @@ export function resolveUnitId(productId, unitId, unitName) {
 /* ------------------------------------------------------------------ */
 
 /** 'exact' hoặc 'contains'. Gửi gì lạ thì coi như 'contains'. */
+/**
+ * Bỏ dấu, hạ chữ thường — dùng chung cho cả JS lẫn câu SQL.
+ *
+ * LIKE của SQLite chỉ biết hạ chữ thường của bảng chữ cái ASCII: "anh" tìm
+ * ra "Anh", nhưng "ống" KHÔNG tìm ra "Ống" vì chữ Ố hoa nằm ngoài ASCII.
+ * Tiệm bán "Ổ cắm", "Đèn LED", "Ống nước" — gõ thường mà không ra thì coi
+ * như ô tìm hỏng. Thêm nữa, người đứng quầy quen gõ không dấu.
+ */
+export const vnFold = (v) => String(v ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+  .toLowerCase();
+
+/* Khai cho SQLite dùng được hàm trên ngay trong câu truy vấn */
+db.function('vnfold', { deterministic: true, varargs: false }, vnFold);
+
 export function searchMode(v) {
   return String(v ?? '').toLowerCase() === 'exact' ? 'exact' : 'contains';
 }
@@ -537,8 +554,10 @@ export function searchMode(v) {
 /**
  * Điều kiện tìm kiếm cho một hoặc nhiều cột.
  *
- * Tìm chính xác thì so khớp cả chuỗi (không phân biệt hoa thường, vì LIKE
- * của SQLite vốn không phân biệt với chữ không dấu).
+ * Mọi so khớp đi qua vnfold(): BỎ DẤU và hạ chữ thường cả hai vế, nên gõ
+ * "ong thuy luc", "Ống Thuỷ Lực" hay "ống thuỷ lực" đều ra như nhau.
+ *
+ * Tìm chính xác thì so khớp cả chuỗi.
  *
  * Tìm có chứa KHÔNG BẮT ĐÚNG THỨ TỰ TỪ (tài liệu 16, mục 3): tách từ khoá
  * thành từng từ, mỗi từ phải có mặt ở một cột nào đó. Khách tên "Quốc Anh"
@@ -552,8 +571,8 @@ export function searchWhere(columns, value, mode = 'contains') {
 
   if (searchMode(mode) === 'exact') {
     return {
-      sql: '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')',
-      params: cols.map(() => v),
+      sql: '(' + cols.map((c) => `vnfold(${c}) LIKE ?`).join(' OR ') + ')',
+      params: cols.map(() => vnFold(v)),
     };
   }
 
@@ -562,8 +581,8 @@ export function searchWhere(columns, value, mode = 'contains') {
   const words = v.split(/\s+/).filter(Boolean).slice(0, 6);
   const params = [];
   const parts = words.map((w) => {
-    for (const _ of cols) params.push(`%${w}%`);
-    return '(' + cols.map((c) => `${c} LIKE ?`).join(' OR ') + ')';
+    for (const _ of cols) params.push(`%${vnFold(w)}%`);
+    return '(' + cols.map((c) => `vnfold(${c}) LIKE ?`).join(' OR ') + ')';
   });
   return { sql: '(' + parts.join(' AND ') + ')', params };
 }

@@ -19,6 +19,7 @@ import Production from './pages/Production';
 import Requisitions from './pages/Requisitions';
 import Warranty from './pages/Warranty';
 import Cash from './pages/Cash';
+import Consign from './pages/Consign';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Orders from './pages/Orders';
@@ -238,6 +239,8 @@ function Shell() {
               <Route path="warranty" element={<Guard perm="warranty.manage"><Warranty /></Guard>} />
 
               <Route path="cash" element={<Guard perm="cash.manage"><Cash /></Guard>} />
+              {/* Đối soát hàng gửi bán của chủ vãng lai (tài liệu 24, mục 5.3) */}
+              <Route path="consign" element={<Guard perm="cash.manage"><Consign /></Guard>} />
               <Route path="reports" element={<Guard perm="report.view"><Reports /></Guard>} />
               <Route path="settings" element={<Guard perm="settings.manage"><Settings /></Guard>} />
 

@@ -18,6 +18,7 @@ import orders from './routes/orders.js';
 import requisitions from './routes/requisitions.js';
 import drafts from './routes/drafts.js';
 import posExtras from './routes/pos-extras.js';
+import consign from './routes/consign.js';
 import { permFor } from './access-map.js';
 import { whoami, isLoginRequired } from './guard.js';
 import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
@@ -116,7 +117,7 @@ app.use('/api', (req, res, next) => {
 });
 
 app.use('/api', catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
-  inventory, production, warranty, cash, reports, system);
+  consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));
 

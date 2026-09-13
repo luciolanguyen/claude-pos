@@ -135,6 +135,8 @@ const TABLES = [
   'pos_featured_sets',
   /* Đợt 17 */
   'product_price_tiers',
+  /* Đợt 18 */
+  'customer_product_notes', 'consign_partners', 'consign_settlements', 'sale_consign_items',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -198,6 +200,9 @@ r.post('/clear-transactions', (req, res) => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
     for (const t of ['voucher_uses', 'vouchers', 'debt_allocations',
+      /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
+         (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
+      'sale_consign_items', 'consign_settlements',
       'sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_custom_items', 'purchase_custom_items',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
@@ -247,6 +252,9 @@ r.post('/reset-all', (req, res) => {
     'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
     'production_items', 'productions', 'product_boms',
     'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
+    /* Hàng mua hộ vãng lai: dòng hàng -> đợt đối soát -> chủ hàng */
+    'sale_consign_items', 'consign_settlements', 'consign_partners',
+    'customer_product_notes',
     'sale_return_items', 'sale_returns', 'sale_items', 'sales',
     'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',

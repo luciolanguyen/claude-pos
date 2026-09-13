@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
+  PanelRightOpen, PanelRightClose, BarChart3, Check, X,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
@@ -457,6 +458,213 @@ export default function Purchases() {
   );
 }
 
+/* ==================================================================== *
+ * THANH TRƯỢT CHỌN HÀNG BÊN PHẢI (tài liệu 24, mục 5.2)
+ *
+ * Lập phiếu cho mối nào thì chín phần mười là lấy lại đúng những món đã
+ * từng lấy của mối đó. Công tắc "chỉ hiện hàng từng mua của mối này" bật
+ * sẵn, danh sách cô lập ngay, kèm giá và ngày lấy gần nhất.
+ *
+ * Bấm một món là nó nhảy sang giỏ với đúng đơn vị và giá lần trước — một
+ * giây một món, khỏi gõ lại.
+ * ==================================================================== */
+function SupplierProductDrawer({ supplierId, supplierName, onClose, onPick, inCart }) {
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 250);
+  /* Chưa chọn mối thì không lọc được theo mối — công tắc tự tắt và khoá */
+  const [onlyBought, setOnlyBought] = useState(true);
+  const filtering = !!supplierId && onlyBought;
+
+  const { data: bought, busy, error, reload } = useFetch(
+    () => api.supplierBoughtProducts(supplierId, { q: dq }),
+    [supplierId, dq], { skip: !filtering });
+  const { data: all } = useFetch(
+    () => api.posProducts({}), [], { skip: filtering });
+
+  /* Không lọc theo mối thì lọc ngay trên danh mục đã tải, gõ không cần
+     đúng thứ tự từ (match() lo phần đó) */
+  const rows = filtering
+    ? (Array.isArray(bought) ? bought : [])
+    : (Array.isArray(all) ? all : [])
+      .filter((x) => !dq.trim() || match(x.name, dq) || match(x.sku, dq) || match(x.alias || '', dq))
+      .slice(0, 200)
+      .map((x) => ({ ...x, last_price: 0, last_ts: null, times: 0 }));
+
+  return (
+    <aside
+      className="w-[30%] min-w-[260px] max-w-[420px] shrink-0 border border-line rounded-lg
+                 bg-muted/30 flex flex-col max-h-[62vh]"
+      aria-label="Bảng chọn hàng nhập"
+    >
+      <div className="p-2 border-b border-line space-y-1.5 shrink-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[13px] font-bold">Chọn hàng nhập</span>
+          <IconButton icon={X} size={14} label="Đóng bảng chọn hàng" onClick={onClose} />
+        </div>
+        <SearchInput value={q} onChange={setQ} size="sm" autoFocus
+          placeholder="Gõ tên hàng, mã hàng..." />
+        <label
+          className={`flex items-start gap-2 text-2xs ${supplierId ? 'cursor-pointer' : 'opacity-55'}`}
+          title={supplierId
+            ? `Chỉ hiện những món tiệm đã từng lấy của ${supplierName}`
+            : 'Chọn nhà cung cấp ở trên trước thì mới lọc được theo mối'}
+        >
+          <input
+            type="checkbox"
+            className="w-3.5 h-3.5 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={filtering}
+            disabled={!supplierId}
+            onChange={(e) => setOnlyBought(e.target.checked)}
+          />
+          <span>
+            Chỉ hiện hàng từng mua của {supplierName ? <b>{supplierName}</b> : 'mối này'}
+            {filtering && <span className="block text-muted-ink">Kèm giá và ngày lấy gần nhất</span>}
+          </span>
+        </label>
+      </div>
+
+      <div className="flex-1 overflow-y-auto min-h-0 p-1">
+        {filtering && busy && !bought ? <Spinner />
+          : error ? <ErrorBox error={error} onRetry={reload} />
+            : rows.length === 0 ? (
+              <p className="text-2xs text-muted-ink p-2">
+                {filtering
+                  ? `Chưa từng lấy món nào của ${supplierName || 'mối này'}${dq ? ` khớp "${q}"` : ''}. `
+                    + 'Bỏ tích ở trên để tìm trong toàn bộ danh mục.'
+                  : `Không tìm thấy hàng nào khớp "${q}".`}
+              </p>
+            ) : rows.map((x) => (
+              <button
+                key={x.id}
+                type="button"
+                onClick={() => onPick(x)}
+                className={`w-full text-left rounded px-2 py-1.5 mb-0.5 cursor-pointer
+                            transition-colors duration-100 border
+                            ${inCart.has(x.id)
+                              ? 'border-accent bg-accent-soft/40'
+                              : 'border-transparent hover:bg-accent-soft/50'}`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[13px] font-medium truncate">{x.name}</span>
+                  {inCart.has(x.id) && <Check size={12} className="text-accent shrink-0" aria-hidden="true" />}
+                </div>
+                <div className="flex items-baseline justify-between gap-2 text-2xs text-muted-ink">
+                  <span className="font-mono">{x.sku}</span>
+                  {x.last_price > 0 ? (
+                    <span className="tabular whitespace-nowrap">
+                      <b className="text-ink">{money(x.last_price)}</b>/{x.last_unit_name}
+                      {' · '}{date(x.last_ts)}
+                    </span>
+                  ) : (
+                    <span className="tabular">Tồn {fq(x.stock)} {x.base_unit}</span>
+                  )}
+                </div>
+                {filtering && x.times > 1 && (
+                  <div className="text-2xs text-muted-ink">Đã lấy {n(x.times)} lần của mối này</div>
+                )}
+              </button>
+            ))}
+      </div>
+
+      <div className="p-1.5 border-t border-line shrink-0 text-2xs text-muted-ink text-center">
+        Bấm một món là nhảy sang giỏ với giá lần trước
+      </div>
+    </aside>
+  );
+}
+
+/* ==================================================================== *
+ * MA TRẬN GIÁ NHẬP CỦA MỌI MỐI CHO MỘT MẶT HÀNG (tài liệu 24, mục 5.2)
+ *
+ * Đang gõ phiếu mà cần biết "mấy mối kia bán món này bao nhiêu" thì mở
+ * bảng này: 3 lần gần nhất của TỪNG mối, giá quy về đơn vị cơ bản nên so
+ * được giữa lần lấy nguyên thùng và lần lấy lẻ từng cái.
+ * ==================================================================== */
+function SupplierPriceMatrix({ line, currentSupplierId, onClose, onUsePrice }) {
+  const { data, busy, error, reload } = useFetch(
+    () => api.productSupplierPrices(line.product_id), [line?.product_id], { skip: !line });
+
+  return (
+    <Modal
+      open={!!line}
+      onClose={onClose}
+      title={`Giá nhập các mối — ${line?.name || ''}`}
+      subtitle="Ba lần gần nhất của từng mối, quy về đơn vị cơ bản để so cho bằng"
+      size="lg"
+      footer={<Button onClick={onClose}>Đóng</Button>}
+    >
+      {busy && !data ? <Spinner />
+        : error ? <ErrorBox error={error} onRetry={reload} />
+          : !data?.groups?.length ? (
+            <Empty icon={BarChart3} title="Chưa có lịch sử nhập"
+              message="Món này chưa từng nhập của mối nào, nên chưa có gì để so giá." />
+          ) : (
+            <div className="space-y-2">
+              <p className="text-2xs text-muted-ink">
+                Giá tính trên <b>1 {data.product.base_unit}</b>. Mối rẻ nhất đang là{' '}
+                <b className="text-emerald-700">{money(data.best)}</b>
+                {data.worst > data.best && <> · đắt nhất <b className="text-danger">{money(data.worst)}</b></>}.
+              </p>
+              <div className="table-wrap max-h-[52vh]">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Nhà cung cấp</th>
+                      <th className="text-right">Gần nhất</th>
+                      <th>3 lần gần nhất</th>
+                      <th style={{ width: 90 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.groups.map((g) => {
+                      const cheapest = g.last_price > 0 && g.last_price === data.best;
+                      return (
+                        <tr key={g.supplier_id || 0} className="hoverable">
+                          <td>
+                            <div className="font-medium flex items-center gap-1.5">
+                              {g.supplier_name}
+                              {g.supplier_id === currentSupplierId && (
+                                <Badge tone="info">Mối trên phiếu</Badge>
+                              )}
+                              {/* Không chỉ dựa vào màu: có chữ kèm theo */}
+                              {cheapest && <Badge tone="good">Rẻ nhất</Badge>}
+                            </div>
+                            {g.supplier_phone && (
+                              <div className="text-2xs text-muted-ink tabular">{g.supplier_phone}</div>
+                            )}
+                          </td>
+                          <td className={`num font-bold ${cheapest ? 'text-emerald-700' : ''}`}>
+                            {money(g.last_price)}
+                          </td>
+                          <td>
+                            <div className="flex flex-wrap gap-1">
+                              {g.rows.map((x) => (
+                                <span key={x.purchase_id + '-' + x.ts}
+                                  className="text-2xs rounded border border-line bg-muted/60 px-1 py-0.5 tabular whitespace-nowrap"
+                                  title={`${x.code} · ${fq(x.qty)} ${x.unit_name} × ${money(x.price)}`}>
+                                  {date(x.ts)}: <b>{money(x.unit_price_base)}</b>
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="text-center">
+                            <Button size="sm" variant="outline"
+                              onClick={() => onUsePrice(g.last_price, g.rows[0]?.unit_name)}>
+                              Lấy giá
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+    </Modal>
+  );
+}
+
 /* ==================================================================== */
 /* Form tạo phiếu nhập hàng                                              */
 /* ==================================================================== */
@@ -472,6 +680,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   const [warehouseId, setWarehouseId] = useState(defaultWarehouse);
   const [lines, setLines] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /* Thanh trượt chọn hàng bên phải (tài liệu 24, mục 5.2) */
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [priceMatrixOf, setPriceMatrixOf] = useState(null);   // dòng đang xem giá đa NCC
   const [discount, setDiscount] = useState(0);
   const [otherCost, setOtherCost] = useState(0);
   const [applyVat, setApplyVat] = useState(true);
@@ -548,6 +759,37 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         pack_spec: p.pack_spec || null,
         units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
         qty: add, price: Math.round(p.cost_price * unit.factor), discount: 0,
+        vat_rate: p.vat_rate, current_stock: p.stock, current_cost: p.cost_price,
+        overwrite_cost: false,
+      }];
+    });
+  };
+
+  /**
+   * Bấm một món trong thanh trượt: nhảy sang giỏ với ĐÚNG đơn vị và GIÁ của
+   * lần lấy gần nhất của chính mối này (tài liệu 24, mục 5.2) — đỡ phải gõ
+   * lại giá cũ, và nhìn là biết mối có tăng giá hay không.
+   */
+  const addFromDrawer = (row) => {
+    const p = (products || []).find((x) => x.id === row.id);
+    if (!p) { toast('Chưa tải xong danh mục hàng, thử lại một nhịp.', 'warn'); return; }
+    const unit = p.units.find((u) => u.unit_name === row.last_unit_name)
+      || p.units.find((u) => u.id === p.buy_unit_id)
+      || p.units.find((u) => u.factor === 1) || p.units[0];
+    const key = `${p.id}:${unit.id}`;
+    setLines((prev) => {
+      if (prev.some((l) => l.key === key)) {
+        return prev.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l));
+      }
+      return [...prev, {
+        key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
+        pack_spec: p.pack_spec || null,
+        units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
+        qty: 1,
+        price: row.last_price > 0 && row.last_unit_name === unit.unit_name
+          ? Math.round(row.last_price)
+          : Math.round(p.cost_price * unit.factor),
+        discount: 0,
         vat_rate: p.vat_rate, current_stock: p.stock, current_cost: p.cost_price,
         overwrite_cost: false,
       }];
@@ -652,7 +894,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         onClose={onClose}
         title="Tạo phiếu nhập hàng"
         subtitle="Hàng sẽ được cộng vào tồn kho và cập nhật giá vốn bình quân"
-        size="xl"
+        /* Toàn màn hình (tài liệu 24, mục 5.2): người lập phiếu Tab gõ số liệu
+           thênh thang, không bị tràn dòng khi phiếu dài. */
+        size="full"
         footer={<>
           <SaveDraftButton
             className="mr-auto"
@@ -706,9 +950,25 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
             </Field>
           </div>
 
+          {/* Giỏ nhập chính 70% | thanh trượt chọn hàng 30% (tài liệu 24, 5.2) */}
+          <div className="flex gap-3 items-start">
+          <div className="flex-1 min-w-0 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <span className="label !mb-0">Danh sách hàng nhập ({lines.length})</span>
-            <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant={drawerOpen ? 'secondary' : 'primary'}
+                icon={drawerOpen ? PanelRightClose : PanelRightOpen}
+                onClick={() => setDrawerOpen((v) => !v)}
+                title={supplierId
+                  ? 'Bảng chọn hàng, lọc sẵn những món từng lấy của mối này'
+                  : 'Bảng chọn hàng — chọn mối trước thì lọc được theo mối'}
+              >
+                {drawerOpen ? 'Đóng bảng chọn' : 'Chọn hàng nhanh'}
+              </Button>
+              <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
+            </div>
           </div>
 
           {lines.length === 0 ? (
@@ -825,7 +1085,11 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                             : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
                         />
                       </td>
-                      <td>
+                      <td className="whitespace-nowrap">
+                        {/* Ma trận giá nhập của mọi mối cho món này — để ép giá
+                            ngay tại chỗ (tài liệu 24, mục 5.2) */}
+                        <IconButton icon={BarChart3} label={`Xem giá nhập các mối của ${l.name}`} size={14}
+                          onClick={() => setPriceMatrixOf(l)} />
                         <IconButton icon={Trash2} label={`Bỏ ${l.name}`} size={14}
                           className="!text-danger hover:!bg-red-50" onClick={() => removeLine(l.key)} />
                       </td>
@@ -835,6 +1099,18 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
               </table>
             </div>
           )}
+          </div>
+
+          {drawerOpen && (
+            <SupplierProductDrawer
+              supplierId={supplierId}
+              supplierName={suppliers?.find((x) => x.id === supplierId)?.name || ''}
+              onClose={() => setDrawerOpen(false)}
+              onPick={addFromDrawer}
+              inCart={new Set(lines.map((l) => l.product_id))}
+            />
+          )}
+          </div>
 
           {/* ---------- Hàng giao sai / ngoài danh mục (tài liệu 11) ---------- */}
           <div className="rounded-lg border border-red-200 bg-red-50/40 p-2.5 space-y-2">
@@ -985,6 +1261,23 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
           {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
         </div>
       </Modal>
+
+      {/* Ma trận giá nhập 3 lần gần nhất của mọi mối (tài liệu 24, mục 5.2) */}
+      <SupplierPriceMatrix
+        line={priceMatrixOf}
+        currentSupplierId={supplierId}
+        onClose={() => setPriceMatrixOf(null)}
+        onUsePrice={(price, unitName) => {
+          if (!priceMatrixOf) return;
+          /* Giá trong bảng quy về ĐƠN VỊ CƠ BẢN; nhân lại theo đơn vị đang
+             nhập của dòng, không thì lấy giá mét áp cho cả cuộn. */
+          const f = Number(priceMatrixOf.factor) || 1;
+          updateLine(priceMatrixOf.key, { price: Math.round(price * f) });
+          toast(`Đã lấy giá ${money(Math.round(price * f))} / ${priceMatrixOf.unit_name}`
+            + (unitName ? ` (mối báo theo ${unitName})` : ''), 'ok', 5000);
+          setPriceMatrixOf(null);
+        }}
+      />
 
       {/* Hộp chọn hàng đồng bộ hai chiều với phiếu (tài liệu 15, mục 3) */}
       <CartPickerModal

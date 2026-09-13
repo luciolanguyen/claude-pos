@@ -578,4 +578,123 @@ r.get('/supplier-debts', (req, res) => {
   res.json(out.filter((s) => s.debt !== 0 || req.query.all === '1'));
 });
 
+/* ==================================================================== *
+ * LỌC NHANH HÀNG TỪNG MUA CỦA MỘT MỐI (tài liệu 24, mục 5.2)
+ *
+ * Lập phiếu nhập cho mối nào thì chín phần mười là lấy lại đúng những món
+ * đã từng lấy của mối đó. Bắt người lập phiếu gõ tìm trong hai nghìn mã
+ * hàng chung vừa chậm vừa dễ chọn nhầm mã na ná.
+ *
+ * Trả kèm GIÁ NHẬP và NGÀY NHẬP gần nhất của đúng mối này, để bấm một cái
+ * là món nhảy sang giỏ với giá cũ điền sẵn.
+ * ==================================================================== */
+
+r.get('/suppliers/:id/bought-products', (req, res) => {
+  const supplierId = Number(req.params.id);
+  if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) {
+    return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+  }
+
+  /* Gom theo mặt hàng. MAX(pu.ts) đi kèm các cột trần là cách SQLite lấy
+     đúng DÒNG của lần nhập gần nhất, không phải trộn cột của nhiều dòng. */
+  const hist = all(`
+    SELECT pi.product_id,
+           COUNT(*) AS times,
+           SUM(pi.qty * pi.factor) AS qty_base,
+           MAX(pu.ts) AS last_ts,
+           pu.code AS last_code,
+           pi.unit_name AS last_unit_name,
+           pi.factor AS last_factor,
+           pi.price AS last_price
+    FROM purchase_items pi
+    JOIN purchases pu ON pu.id = pi.purchase_id
+    WHERE pu.supplier_id = ? AND pu.status = 'done'
+    GROUP BY pi.product_id`, [supplierId]);
+  if (!hist.length) return res.json([]);
+
+  const byId = new Map(hist.map((h) => [h.product_id, h]));
+  const ids = [...byId.keys()];
+
+  const q = String(req.query.q || '').trim();
+  const where = [`p.id IN (${ids.map(() => '?').join(',')})`, 'p.active = 1'];
+  const params = [...ids];
+  if (q) {
+    /* Gõ không cần đúng thứ tự từ (tài liệu 24, mục 5.2) */
+    const c = searchWhere(['p.name', 'p.sku', 'p.alias', 'p.barcode', 'p.brand'], q);
+    where.push(c.sql);
+    params.push(...c.params);
+  }
+  const rows = all(`
+    SELECT p.id, p.sku, p.name, p.alias, p.base_unit, p.track_stock, p.cost_price,
+           p.category_id, p.pack_spec, p.purchase_note, c.name AS category_name,
+           COALESCE((SELECT SUM(st.qty) FROM stock st WHERE st.product_id = p.id), 0) AS stock
+    FROM products p
+    LEFT JOIN categories c ON c.id = p.category_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY p.name
+    LIMIT 400`, params);
+
+  for (const row of rows) Object.assign(row, byId.get(row.id));
+  /* Lần lấy gần đây nhất lên đầu — món đang lấy đều đặn bao giờ cũng là
+     món sắp lấy tiếp. */
+  rows.sort((a, b) => String(b.last_ts || '').localeCompare(String(a.last_ts || '')));
+  res.json(rows);
+});
+
+/* ==================================================================== *
+ * MA TRẬN GIÁ NHẬP CỦA MỌI MỐI CHO MỘT MẶT HÀNG (tài liệu 24, mục 5.2)
+ *
+ * Đang gõ phiếu, kế toán cần biết ngay "món này mấy mối kia bán bao nhiêu"
+ * để ép giá tại chỗ. Trả 3 lần gần nhất của TỪNG mối, giá quy về đơn vị cơ
+ * bản để so được giữa lần lấy nguyên thùng và lần lấy lẻ từng cái.
+ * ==================================================================== */
+
+r.get('/products/:id/supplier-prices', (req, res) => {
+  const id = Number(req.params.id);
+  const p = get('SELECT id, sku, name, base_unit FROM products WHERE id = ?', [id]);
+  if (!p) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+
+  const rows = all(`
+    SELECT pu.id AS purchase_id, pu.code, pu.ts,
+           s.id AS supplier_id, COALESCE(s.name, 'Không ghi mối') AS supplier_name,
+           s.phone AS supplier_phone,
+           pi.unit_name, pi.factor, pi.qty, pi.price,
+           CAST(ROUND(pi.price * 1.0 / COALESCE(NULLIF(pi.factor, 0), 1)) AS INTEGER) AS unit_price_base
+    FROM purchase_items pi
+    JOIN purchases pu ON pu.id = pi.purchase_id
+    LEFT JOIN suppliers s ON s.id = pu.supplier_id
+    WHERE pi.product_id = ? AND pu.status = 'done'
+    ORDER BY pu.ts DESC, pi.id DESC
+    LIMIT 300`, [id]);
+
+  const bySupplier = new Map();
+  for (const row of rows) {
+    const key = row.supplier_id || 0;
+    if (!bySupplier.has(key)) {
+      bySupplier.set(key, {
+        supplier_id: row.supplier_id,
+        supplier_name: row.supplier_name,
+        supplier_phone: row.supplier_phone,
+        rows: [],
+      });
+    }
+    const g = bySupplier.get(key);
+    if (g.rows.length < 3) g.rows.push(row);      // 3 lần gần nhất của mối đó
+  }
+  const groups = [...bySupplier.values()].map((g) => ({
+    ...g,
+    last_price: g.rows[0]?.unit_price_base || 0,
+    last_ts: g.rows[0]?.ts || null,
+  })).sort((a, b) => String(b.last_ts || '').localeCompare(String(a.last_ts || '')));
+
+  const prices = groups.map((g) => g.last_price).filter((v) => v > 0);
+  res.json({
+    product: p,
+    groups,
+    /* Mối nào đang rẻ nhất / đắt nhất trong các lần gần nhất — để tô một phát */
+    best: prices.length ? Math.min(...prices) : 0,
+    worst: prices.length ? Math.max(...prices) : 0,
+  });
+});
+
 export default r;

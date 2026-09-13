@@ -27,6 +27,7 @@ export const CASH_CATEGORIES = {
     { code: 'transport', label: 'Vận chuyển, xăng xe' },
     { code: 'tax', label: 'Thuế, lệ phí' },
     { code: 'capital_out', label: 'Chủ rút vốn' },
+    { code: 'consign_out', label: 'Trả tiền hàng gửi bán của chủ vãng lai' },
     { code: 'other_out', label: 'Chi khác' },
   ],
 };

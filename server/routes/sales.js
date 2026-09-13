@@ -90,6 +90,14 @@ r.get('/sales/:id', (req, res) => {
     SELECT si.*, p.sku, p.base_unit, p.barcode
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?`, [s.id]);
+  /* Hàng mua hộ vãng lai: in ra cho khách thì phẳng như hàng của tiệm,
+     nhưng màn hình quản lý vẫn phải đọc được lấy của ai (tài liệu 24) */
+  s.consign_items = all(`
+    SELECT ci.*, (ci.amount - ci.commission) AS payable, st.code AS settlement_code
+    FROM sale_consign_items ci
+    LEFT JOIN consign_settlements st ON st.id = ci.settlement_id
+    WHERE ci.sale_id = ? ORDER BY ci.id`, [s.id]);
+
   /* Giá khách THỰC TRẢ và số còn trả được của từng dòng — để hộp đổi trả
      tính tiền hoàn ngay trên màn hình, khớp đúng số máy chủ sẽ ghi */
   const returned = returnedByLine(s.id, s.items);
@@ -130,7 +138,11 @@ function badRequest(message, code) {
  */
 export function createSale(b) {
   const items = Array.isArray(b.items) ? b.items.filter((i) => Number(i.qty) > 0) : [];
-  if (!items.length) throw badRequest('Hoá đơn phải có ít nhất 1 mặt hàng');
+  /* Khách hỏi món tiệm không có sẵn thì cả hoá đơn có thể CHỈ gồm hàng mua
+     hộ vãng lai (tài liệu 24, phần 5.1) — không được chặn. */
+  const hasConsign = (Array.isArray(b.consign_items) ? b.consign_items : [])
+    .some((c) => String(c?.name || '').trim() && Number(c?.qty) > 0);
+  if (!items.length && !hasConsign) throw badRequest('Hoá đơn phải có ít nhất 1 mặt hàng');
 
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!warehouseId) throw badRequest('Chưa thiết lập kho');
@@ -168,6 +180,50 @@ export function createSale(b) {
    *   null       tiệm tắt đăng nhập — một máy dùng chung, coi như toàn quyền
    *   {role}     người đang đăng nhập
    * ------------------------------------------------------------------ */
+  /* ---------------- Hàng mua hộ vãng lai (tài liệu 24, phần 5.1) -------
+     Không trừ kho, không sinh mã hàng. Có chọn chủ hàng thì phần tiền còn
+     lại sau hoa hồng là NỢ CHỦ HÀNG, chờ đối soát; không chọn ai thì tiệm
+     tự bốc ngoài, trả đứt tại chỗ, giá bốc chính là giá vốn của dòng. */
+  const consign = (Array.isArray(b.consign_items) ? b.consign_items : [])
+    .map((c) => {
+      const name = String(c?.name || '').trim();
+      if (!name) return null;
+      const qty = Number(c.qty) || 0;
+      if (qty <= 0) return null;
+      const price = Math.max(0, Math.round(Number(c.price) || 0));
+      const amount = Math.round(qty * price);
+      const partnerId = Number(c.partner_id) || null;
+      const ctype = c.commission_type === 'percent' ? 'percent' : 'amount';
+      const cvalue = Math.max(0, Number(c.commission_value) || 0);
+      /* Hoa hồng chỉ có nghĩa khi hàng của người khác. Tự bốc ngoài thì
+         tiệm ăn chênh lệch chứ không "trích hoa hồng của chính mình". */
+      const commission = partnerId
+        ? Math.min(amount, ctype === 'percent'
+          ? Math.round(amount * cvalue / 100) : Math.round(cvalue))
+        : 0;
+      return {
+        partner_id: partnerId,
+        name,
+        unit_name: String(c.unit_name || '').trim() || null,
+        qty,
+        price,
+        cost: partnerId ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
+        commission_type: ctype,
+        commission_value: cvalue,
+        commission,
+        amount,
+        note: String(c.note || '').trim() || null,
+      };
+    })
+    .filter(Boolean);
+
+  for (const c of consign) {
+    if (!c.partner_id) continue;
+    const row = get('SELECT id, name FROM consign_partners WHERE id = ?', [c.partner_id]);
+    if (!row) throw badRequest(`Không tìm thấy chủ hàng của món "${c.name}".`, 'CONSIGN_PARTNER');
+    c.partner_name = row.name;
+  }
+
   const policy = posPolicy();
   const actor = b._actor;
   const fromRoute = actor !== undefined;
@@ -187,7 +243,10 @@ export function createSale(b) {
       : Math.round(Number(it.discount) || 0);
     return gross - Math.min(disc, gross);
   };
-  const sub0 = items.reduce((a, it) => a + lineTotal(it), 0);
+  /* Hàng mua hộ cũng là tiền khách phải trả: phải cộng vào ước tính, không
+     thì phép soát hạn mức nợ tính thiếu. */
+  const consign0 = consign.reduce((a, c) => a + c.amount, 0);
+  const sub0 = items.reduce((a, it) => a + lineTotal(it), 0) + consign0;
   const orderDisc0 = b.discount_type === 'percent'
     ? Math.round(sub0 * (Number(b.discount_percent) || 0) / 100)
     : Math.round(Number(b.discount) || 0);
@@ -278,6 +337,15 @@ export function createSale(b) {
         if (b.is_vat_invoice) vatAmount += Math.round(amount * (Number(it.vat_rate) || 0) / 100);
         cogs += Math.round(qty * (Number(it.factor) || 1) * it._unitCost);
       }
+      /* Hàng mua hộ: cộng tiền vào tạm tính, cộng giá vốn cho đúng lãi.
+           - có chủ hàng: giá vốn là phần phải trả lại chủ (đã trừ hoa hồng);
+           - tự bốc ngoài: giá vốn là tiền bỏ ra bốc hàng.
+         Không tính thuế GTGT trên dòng mua hộ: hàng không có hoá đơn đầu vào. */
+      for (const c of consign) {
+        subtotal += c.amount;
+        cogs += c.partner_id ? (c.amount - c.commission) : Math.round(c.qty * c.cost);
+      }
+
       // Giảm giá toàn hoá đơn: theo % của tạm tính, hoặc số tiền cố định
       const discountType = b.discount_type === 'percent' ? 'percent' : 'amount';
       const discountPercent = discountType === 'percent' ? (Number(b.discount_percent) || 0) : 0;
@@ -374,6 +442,16 @@ export function createSale(b) {
           buyerId, buyerName, buyerPhone, voucherUse,
           approvedBy, approvedBy ? approvalNotes.join('; ') : null]);
       const saleId = Number(info.lastInsertRowid);
+
+      for (const c of consign) {
+        run(`INSERT INTO sale_consign_items(sale_id, partner_id, partner_name, name, unit_name,
+                                            qty, price, cost, commission_type, commission_value,
+                                            commission, amount, note)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [saleId, c.partner_id, c.partner_name || null, c.name, c.unit_name,
+            c.qty, c.price, c.cost, c.commission_type, c.commission_value,
+            c.commission, c.amount, c.note]);
+      }
 
       if (voucherUse > 0) {
         redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });

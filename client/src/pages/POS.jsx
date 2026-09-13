@@ -4,16 +4,19 @@ import {
   Search, Plus, X, UserPlus, Printer, Percent, Package, ShoppingCart, ArrowLeft,
   FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
   ClipboardList, RefreshCcw, MapPin, ShieldCheck, Trash2, Star,
-  FolderTree, Layers, Zap, Check,
+  FolderTree, Layers, Zap, Check, Handshake, Lightbulb, GripVertical,
+  Maximize2, Wallet,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal, useSearchMode } from '../lib/store';
 import {
   money, n, qty as fq, match, matchMode, matchCustomer, customerPhones,
   datetime, date, smartTime, tierRows, tierIndexFor, tierPriceFor,
+  blindCode, DEFAULT_BLIND_KEY,
 } from '../lib/format';
 import {
   Button, IconButton, Input, Modal, Field, Empty, Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
+  Select, MoneyInput, ErrorBox,
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
 import DeliveryNotePrint from '../components/DeliveryNotePrint';
@@ -48,6 +51,26 @@ import { tabTitle, tabNoOf, smallestFree, normalizeTabs } from '../lib/posTabs';
    Máy chủ cũng gỡ hẳn các cột này khỏi dữ liệu trả cho người không có quyền. */
 const canSeeCost = (user, can) => !!can?.('cost.view') || user?.role === 'owner' || user?.role === 'manager';
 
+/**
+ * Hoa hồng của một dòng hàng mua hộ (tài liệu 24, phần 5.1). Chỉ có nghĩa
+ * khi hàng của người khác gửi — tự bốc ngoài thì tiệm ăn chênh lệch chứ
+ * không "trích hoa hồng của chính mình".
+ */
+const consignCommission = (c, amount) => {
+  if (!c?.partner_id) return 0;
+  const v = Number(c.commission_value) || 0;
+  const raw = c.commission_type === 'percent' ? Math.round(amount * v / 100) : Math.round(v);
+  return Math.max(0, Math.min(amount, raw));
+};
+
+/* Bốn cấp co giãn lưới | giỏ (tài liệu 24, phần 6). Số là % của LƯỚI. */
+const SPLIT_LEVELS = [
+  { grid: 60, label: 'Cân bằng 60/40', hint: 'Tỷ lệ tiêu chuẩn khi bán hàng thông thường' },
+  { grid: 40, label: 'Rộng giỏ 40/60', hint: 'Giỏ rộng ra để xem rõ nhãn mua hộ và sửa giá sỉ' },
+  { grid: 0, label: 'Toàn giỏ 0/100', hint: 'Ẩn hẳn lưới hàng, rà soát hoá đơn trước khi đóng đơn' },
+  { grid: 85, label: 'Rộng lưới 85/15', hint: 'Lưới bung tối đa, giỏ thu thành thanh dọc' },
+];
+
 const newTab = (no, priceListId) => ({
   id: 'tab' + Date.now() + Math.random().toString(36).slice(2, 6),
   tabNo: no,
@@ -63,6 +86,7 @@ const newTab = (no, priceListId) => ({
   isVat: false,
   delivery: null,
   approval: null,          // phiếu duyệt giảm giá của quản lý — không bao giờ giữ mã PIN
+  consign: [],             // hàng mua hộ vãng lai (tài liệu 24, phần 5.1)
 });
 
 /**
@@ -86,7 +110,7 @@ const sellUnitOf = (p, unit = null) => unit
 function ProductTile({
   p, priceListId, showCost, onPick, inCart = 0, bought = null,
   showUnits = false, showConverted = false, unit = null, onInfo, onHover,
-  showTiers = false, line = null,
+  showTiers = false, line = null, blindKeys = null, alias = null,
 }) {
   const [unitsOpen, setUnitsOpen] = useState(false);
   /* Mỗi đơn vị bán chính được vẽ thành MỘT ô riêng ngoài lưới (tài liệu 16,
@@ -173,6 +197,17 @@ function ProductTile({
         {p.alias && !unitLabel && (
           <div className="text-2xs text-muted-ink italic truncate leading-tight">{p.alias}</div>
         )}
+        {/* Khách này gọi món đó bằng tên riêng (tài liệu 24, phần 3) */}
+        {alias && (
+          <div className="text-2xs font-semibold text-amber-900 bg-amber-100 border border-amber-300
+                          rounded px-1 py-0.5 leading-snug flex items-start gap-1">
+            <Lightbulb size={10} className="shrink-0 mt-px" aria-hidden="true" />
+            <span>
+              Khách gọi: <b>{alias.alias}</b>
+              {alias.note && <span className="block font-normal">{alias.note}</span>}
+            </span>
+          </div>
+        )}
         {/* Bảo hành mặc định của mặt hàng (tài liệu 09, mục 4) */}
         {p.warranty_months > 0 && (
           <div className="text-2xs font-semibold text-emerald-800 flex items-center gap-0.5 leading-tight">
@@ -219,7 +254,7 @@ function ProductTile({
                   : `Bấm để lấy ${t.min_qty} ${sellUnit?.unit_name} với giá ${n(t.price)}`
                     + (last ? ' — lần trước khách này lấy nấc này' : '')}
                 className={`text-2xs font-semibold rounded px-1.5 py-0.5 border tabular
-                            cursor-pointer transition-colors duration-100
+                            cursor-pointer transition-colors duration-100 whitespace-nowrap
                             ${on
                               ? 'bg-indigo-600 border-indigo-700 text-white'
                               : last
@@ -285,14 +320,29 @@ function ProductTile({
       )}
 
       {showCost && (
+        /* Mã hoá giá vốn (tài liệu 24, phần 4): bật thì hiện chuỗi chữ thay vì
+           con số, để khách đứng cạnh quầy không đọc trộm được. Phần trăm lãi
+           vẫn hiện — biết lãi bao nhiêu phần trăm không suy ra được giá vốn. */
         <div className="text-2xs text-muted-ink tabular border-t border-line pt-0.5 leading-snug">
-          Vốn {n(p.cost_price)}
+          <span className="whitespace-nowrap">
+            Vốn{' '}
+            {blindKeys
+              ? <b className="font-mono tracking-wider text-ink">{blindCode(p.cost_price, blindKeys.cost)}</b>
+              : n(p.cost_price)}
+          </span>
           {price > 0 && p.cost_price > 0 && (
-            <span className="ml-1 text-emerald-700 font-semibold">
+            <span className="ml-1 text-emerald-700 font-semibold whitespace-nowrap">
               +{Math.round((price - p.cost_price) / p.cost_price * 100)}%
             </span>
           )}
-          {p.last_purchase_price > 0 && <div>Nhập gần nhất {n(p.last_purchase_price)}</div>}
+          {p.last_purchase_price > 0 && (
+            <div className="whitespace-nowrap">
+              Nhập gần nhất{' '}
+              {blindKeys
+                ? <b className="font-mono tracking-wider text-ink">{blindCode(p.last_purchase_price, blindKeys.purchase)}</b>
+                : n(p.last_purchase_price)}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -338,6 +388,12 @@ export default function POS() {
        3. tự áp giá nấc khi số lượng trong giỏ đổi — CHỈ hiện khi công tắc 2
           đang bật, để quầy bán lẻ không phải nhìn nút thừa. */
   const [catDrawer, setCatDrawer] = useLocal('thpos.cat_drawer', false);
+  /* Bốn cấp co giãn giữa lưới hàng và giỏ (tài liệu 24, phần 6). Số là % bề
+     ngang dành cho LƯỚI; phần còn lại là của giỏ hàng. */
+  const [splitLevel, setSplitLevel] = useLocal('thpos.split_level', 0);
+  const [dragging, setDragging] = useState(false);
+  const [consignOpen, setConsignOpen] = useState(false);   // hộp thêm món mua hộ
+  const [notesOpen, setNotesOpen] = useState(false);       // xem ghi chú đặc thù của khách
   const [tierOn, setTierOn] = useLocal('thpos.tier_on', false);
   const [tierAuto, setTierAuto] = useLocal('thpos.tier_auto', true);
   const [quickOpen, setQuickOpen] = useState(false);
@@ -358,6 +414,14 @@ export default function POS() {
   const showUnitPicker = settings?.pos?.show_unit_picker === true;
   /* Hiện thêm giá quy đổi về đơn vị cơ bản trong menu ĐVT (tài liệu 16, mục 5) */
   const showConvertedPrice = settings?.pos?.show_converted_price === true;
+  /* Ba phân hệ mở rộng của tài liệu 24, phần 1 — tắt thì màn hình gọn như cũ */
+  const notesOn = settings?.pos?.customer_notes === true;
+  const blindOn = settings?.pos?.blind_cost === true;
+  const consignOn = settings?.pos?.consign === true;
+  const blindKeys = {
+    cost: settings?.pos?.blind_key_cost || DEFAULT_BLIND_KEY,
+    purchase: settings?.pos?.blind_key_purchase || 'SOBMANTỆIV',
+  };
 
   const maySeeCost = canSeeCost(user, can);
 
@@ -422,6 +486,10 @@ export default function POS() {
   );
   const { data: customers, reload: reloadCustomers } = useFetch(() => api.customers({ active: 1 }), []);
   const { data: carriers } = useFetch(() => api.get('/carriers'), []);
+  /* Chủ hàng vãng lai để chọn lúc thêm món mua hộ (tài liệu 24, phần 5.1) */
+  const { data: partners, reload: reloadPartners } = useFetch(
+    () => api.consignPartners({ active: 1 }), [],
+    { skip: settings?.pos?.consign !== true });
   /* Nợ quá hạn cả tiệm — nút cạnh ô tìm hàng (thay nút Thu nợ trùng cũ) */
   const {
     data: overdue, busy: overdueBusy, error: overdueErr, reload: reloadOverdue,
@@ -435,6 +503,15 @@ export default function POS() {
       .then(setPriceHist)
       .catch(() => setPriceHist({}));
   }, [tab?.customerId]);
+
+  /* Ghi chú hàng đặc thù của khách đang chọn (tài liệu 24, phần 3) */
+  const [custNotes, setCustNotes] = useState([]);
+  useEffect(() => {
+    if (!notesOn || !tab?.customerId) { setCustNotes([]); return; }
+    api.customerProductNotes(tab.customerId)
+      .then((rows) => setCustNotes(Array.isArray(rows) ? rows : []))
+      .catch(() => setCustNotes([]));
+  }, [notesOn, tab?.customerId]);
 
   /* Khách có bảng giá riêng -> tự đổi bảng giá */
   useEffect(() => {
@@ -557,6 +634,17 @@ export default function POS() {
     });
   }, [patchTab, defaultPriceList]);
 
+  /* ---------------- Dòng hàng mua hộ vãng lai (tài liệu 24) ------------- */
+  const addConsign = (row) => patchTab((t) => ({
+    consign: [...(t.consign || []), { ...row, key: `cs${Date.now()}${Math.random().toString(36).slice(2, 5)}` }],
+  }));
+  const updateConsign = (key, patch) => patchTab((t) => ({
+    consign: (t.consign || []).map((c) => (c.key === key ? { ...c, ...patch } : c)),
+  }));
+  const removeConsign = (key) => patchTab((t) => ({
+    consign: (t.consign || []).filter((c) => c.key !== key),
+  }));
+
   /* Đổi bảng giá -> áp lại giá cho dòng chưa sửa tay */
   const applyPriceList = (plId) => {
     patchTab((t) => ({
@@ -678,7 +766,7 @@ export default function POS() {
   };
 
   const clearTab = () => patchTab({
-    cart: [], discountType: 'amount', discountValue: 0,
+    cart: [], consign: [], discountType: 'amount', discountValue: 0,
     note: '', customerId: null, buyer: null, isVat: false, delivery: null, approval: null,
   });
 
@@ -692,6 +780,20 @@ export default function POS() {
     let vat = 0;
     let cogs = 0;
     let lineDiscount = 0;
+    /* Hàng mua hộ vãng lai cũng là tiền khách phải trả. Không chịu thuế GTGT
+       vì không có hoá đơn đầu vào (tài liệu 24, phần 5.1). Giá vốn:
+         - có chủ hàng: phần phải trả lại chủ, đã trừ hoa hồng tiệm giữ;
+         - tự bốc ngoài: tiền tiệm bỏ ra bốc hàng. */
+    const consignRows = Array.isArray(tab.consign) ? tab.consign : [];
+    let consignSub = 0;
+    for (const c of consignRows) {
+      const amount = Math.round((Number(c.qty) || 0) * (Number(c.price) || 0));
+      consignSub += amount;
+      subtotal += amount;
+      cogs += c.partner_id
+        ? amount - consignCommission(c, amount)
+        : Math.round((Number(c.qty) || 0) * (Number(c.cost) || 0));
+    }
     for (const l of tab.cart) {
       const { disc, amount } = lineAmount(l);
       lineDiscount += disc;
@@ -709,7 +811,9 @@ export default function POS() {
     return {
       subtotal, vat, discount, lineDiscount, cogs, shipCharged,
       total: Math.max(0, subtotal - discount + vat + shipCharged),
-      count: tab.cart.length,
+      count: tab.cart.length + consignRows.length,
+      consign: consignSub,
+      consignCount: consignRows.length,
     };
   }, [tab]);
 
@@ -724,6 +828,24 @@ export default function POS() {
     () => categoryFilterSet(meta.categories, pickedCats, browseCat),
     [meta.categories, pickedCats, browseCat]);
 
+  /* Ghi chú đặc thù tra theo mã hàng, để ô hàng biết khách gọi nó là gì */
+  const noteByProduct = useMemo(() => {
+    const m = new Map();
+    for (const nt of custNotes) if (nt.product_id) m.set(nt.product_id, nt);
+    return m;
+  }, [custNotes]);
+
+  /* Gõ đúng TÊN KHÁCH GỌI thì lôi món thật ra, dù tên thật chẳng dính chữ
+     nào với từ khoá (tài liệu 24, phần 3). */
+  const aliasHits = useMemo(() => {
+    const out = new Set();
+    if (!search.trim()) return out;
+    for (const nt of custNotes) {
+      if (nt.product_id && match(nt.alias, search)) out.add(nt.product_id);
+    }
+    return out;
+  }, [custNotes, search]);
+
   const filtered = useMemo(() => {
     if (!products) return [];
     let list = products;
@@ -734,7 +856,8 @@ export default function POS() {
       /* Kiểu tìm do thu ngân chọn: "chính xác" khi quét mã, "có chứa" khi
          gõ một khúc tên (tài liệu 13, mục 2.1) */
       list = list.filter((p) =>
-        matchMode(p.name, search, searchMode) || matchMode(p.alias || '', search, searchMode)
+        aliasHits.has(p.id)
+        || matchMode(p.name, search, searchMode) || matchMode(p.alias || '', search, searchMode)
         || matchMode(p.sku, search, searchMode) || matchMode(p.brand || '', search, searchMode)
         || (searchMode === 'exact'
           ? (p.barcode || '') === search.trim()
@@ -751,17 +874,21 @@ export default function POS() {
             "lần trước tôi lấy cái nào"
        Chỉ đổi THỨ TỰ, không lọc bớt: món khác vẫn còn nguyên ở dưới. */
     const rank = (p) => {
+      /* Món khách vừa gọi bằng tên riêng của họ lên trên cùng, đè cả hàng
+         ghim mùa vụ lẫn món đang trong giỏ (tài liệu 24, phần 3) */
+      if (aliasHits.has(p.id)) return -2;
       if (inCartQty.get(p.id)) return -1;
       return pinOn ? (p.featured_rank ?? 9999) : 9999;
     };
     const seen = (p) => (priceHist?.[p.id] ? 0 : 1);
     const hasFeatured = pinOn
       && list.some((p) => p.featured_rank !== null && p.featured_rank !== undefined);
-    if (hasFeatured || inCartQty.size > 0 || (priceHist && Object.keys(priceHist).length)) {
+    if (hasFeatured || aliasHits.size > 0 || inCartQty.size > 0
+        || (priceHist && Object.keys(priceHist).length)) {
       list = [...list].sort((a, b) => rank(a) - rank(b) || seen(a) - seen(b));
     }
     return list;
-  }, [products, catSet, search, searchMode, priceHist, pinOn, inCartQty]);
+  }, [products, catSet, search, searchMode, priceHist, pinOn, inCartQty, aliasHits]);
 
   /**
    * Lưới vẽ theo Ô, không theo mặt hàng: một mặt hàng khai nhiều ĐƠN VỊ BÁN
@@ -976,6 +1103,18 @@ export default function POS() {
       warranty_note: Number(l.warrantyMonths) > 0 ? (l.warrantyNote || null) : null,
       serial: l.serial || null,
     })),
+    /* Hàng mua hộ vãng lai (tài liệu 24, phần 5.1) */
+    consign_items: (tab.consign || []).map((c) => ({
+      partner_id: c.partner_id || null,
+      name: c.name,
+      unit_name: c.unit_name || null,
+      qty: c.qty,
+      price: c.price,
+      cost: c.partner_id ? 0 : (c.cost || 0),
+      commission_type: c.commission_type || 'amount',
+      commission_value: c.commission_value || 0,
+      note: c.note || null,
+    })),
     customer_id: tab.customerId,
     buyer_id: tab.buyer?.id || null,
     buyer_name: tab.buyer?.name || null,
@@ -1079,8 +1218,52 @@ export default function POS() {
       discount: lineAmount(l).disc, amount: lineAmount(l).amount,
       unit_cost: l.cost_price, vat_rate: l.vat_rate, note: l.note,
     })),
+    /* Hoá đơn tạm tính cũng phải có hàng mua hộ, không thì khách nhìn thiếu tiền */
+    consign_items: (tab.consign || []).map((c, i) => ({
+      id: i, name: c.name, unit_name: c.unit_name, qty: c.qty, price: c.price,
+      amount: Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)),
+    })),
     returns: [],
   });
+
+  /* ---------------- Thanh vạch co giãn lưới | giỏ (tài liệu 24, phần 6) ----
+     Kéo tới đâu thì NHẢY VỀ CẤP GẦN NHẤT ngay, không để tỉ lệ tự do: bốn cấp
+     là bốn tư thế làm việc, kéo trúng 63% hay 58% chẳng khác gì nhau mà lần
+     sau mở máy lại ra một con số lạ. */
+  const splitRowRef = useRef(null);
+  const split = SPLIT_LEVELS[splitLevel] || SPLIT_LEVELS[0];
+  const cartTiny = split.grid >= 85;          // giỏ thu thành thanh dọc
+  const gridHidden = split.grid <= 0;
+
+  const nearestLevel = (pct) => {
+    let best = 0;
+    for (let i = 1; i < SPLIT_LEVELS.length; i += 1) {
+      if (Math.abs(SPLIT_LEVELS[i].grid - pct) < Math.abs(SPLIT_LEVELS[best].grid - pct)) best = i;
+    }
+    return best;
+  };
+
+  useEffect(() => {
+    if (!dragging) return undefined;
+    const move = (e) => {
+      const box = splitRowRef.current?.getBoundingClientRect();
+      if (!box || box.width <= 0) return;
+      const x = (e.touches?.[0]?.clientX ?? e.clientX) - box.left;
+      setSplitLevel(nearestLevel(Math.max(0, Math.min(100, x / box.width * 100))));
+    };
+    const stop = () => setDragging(false);
+    window.addEventListener('mousemove', move);
+    window.addEventListener('touchmove', move, { passive: true });
+    window.addEventListener('mouseup', stop);
+    window.addEventListener('touchend', stop);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('touchmove', move);
+      window.removeEventListener('mouseup', stop);
+      window.removeEventListener('touchend', stop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragging]);
 
   if (!warehouseId || !tab) return <Spinner />;
 
@@ -1284,7 +1467,7 @@ export default function POS() {
         </button>
       </div>
 
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex min-h-0" ref={splitRowRef}>
         {/* ------------- Bảng lọc nhóm hàng trượt cạnh trái (tài liệu 22) --- */}
         <CategoryDrawer
           open={catDrawer}
@@ -1299,7 +1482,13 @@ export default function POS() {
         />
 
         {/* ------------------------- Lưới chọn hàng ------------------------ */}
-        <section className={`flex-1 min-w-0 flex flex-col ${showGrid ? '' : 'hidden lg:flex'}`}>
+        <section
+          /* Bề ngang theo cấp co giãn đang chọn; màn hình nhỏ thì vẫn một cột
+             một màn như cũ, không chia đôi. */
+          style={{ flexBasis: `${split.grid}%` }}
+          className={`min-w-0 flex flex-col grow shrink basis-0
+                      ${gridHidden ? 'hidden' : ''} ${showGrid ? '' : 'hidden lg:flex'}`}
+        >
           <CategoryFilter
             categories={meta.categories}
             browseId={browseCat}
@@ -1403,7 +1592,10 @@ export default function POS() {
                     /* Số cột tự nhảy theo BỀ RỘNG CÒN LẠI của lưới, không theo
                        bề rộng màn hình: đẩy bảng lọc ra thì lưới hẹp lại và bớt
                        cột ngay, không bị tràn ngang (tài liệu 22, mục 2.1). */
-                    className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))]"
+                    /* Ô rộng tối thiểu 220px rồi tự nở đều kín hàng (tài liệu 24,
+                       phần 2): bật thêm nấc giá sỉ hay giá quy đổi thì ô cao
+                       lên chứ chữ không bị gãy dòng hay đè lên nhau. */
+                    className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(13.75rem,1fr))]"
                     renderItem={(t) => (
                       <ProductTile key={t.key} p={t.p} unit={t.unit} priceListId={tab.priceListId}
                         showCost={maySeeCost && showCost} onPick={addToCart}
@@ -1412,6 +1604,8 @@ export default function POS() {
                         showUnits={showUnitPicker}
                         showConverted={showConvertedPrice}
                         showTiers={tierOn}
+                        blindKeys={blindOn ? blindKeys : null}
+                        alias={noteByProduct.get(t.p.id) || null}
                         line={lineByKey.get(`${t.p.id}:${sellUnitOf(t.p, t.unit)?.id}`) || null}
                         onInfo={setInfoOf}
                         onHover={setHoverPid} />
@@ -1422,9 +1616,92 @@ export default function POS() {
           </div>
         </section>
 
+        {/* --------- Thanh vạch kéo co giãn lưới | giỏ (tài liệu 24, phần 6) --- */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={`Cấp co giãn giỏ hàng: ${split.label}`}
+          aria-valuenow={splitLevel + 1}
+          aria-valuemin={1}
+          aria-valuemax={SPLIT_LEVELS.length}
+          tabIndex={0}
+          title={`${split.label} — ${split.hint}. Kéo ngang hoặc bấm để đổi cấp; mũi tên trái/phải cũng được.`}
+          onMouseDown={() => setDragging(true)}
+          onTouchStart={() => setDragging(true)}
+          onClick={() => setSplitLevel((v) => (v + 1) % SPLIT_LEVELS.length)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') { e.preventDefault(); setSplitLevel((v) => (v + SPLIT_LEVELS.length - 1) % SPLIT_LEVELS.length); }
+            if (e.key === 'ArrowRight' || e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault(); setSplitLevel((v) => (v + 1) % SPLIT_LEVELS.length);
+            }
+          }}
+          className={`hidden lg:flex w-3 shrink-0 items-center justify-center cursor-col-resize
+                      border-l border-line select-none touch-none
+                      focus:outline-none focus:ring-2 focus:ring-accent/60
+                      transition-colors duration-100
+                      ${dragging ? 'bg-accent/30' : 'bg-muted hover:bg-accent-soft'}`}
+        >
+          <GripVertical size={12} className="text-muted-ink" aria-hidden="true" />
+        </div>
+
         {/* ---------------------------- Giỏ hàng --------------------------- */}
-        <aside className={`w-full lg:w-[440px] xl:w-[480px] shrink-0 bg-card border-l border-line
-                           flex flex-col ${showGrid ? 'hidden lg:flex' : 'flex'}`}>
+        <aside
+          style={{ flexBasis: `${100 - split.grid}%` }}
+          className={`w-full grow shrink basis-0 lg:w-auto lg:min-w-0 bg-card border-l border-line
+                      flex flex-col ${showGrid && !gridHidden ? 'hidden lg:flex' : 'flex'}`}>
+          {cartTiny ? (
+            /* Cấp 4: giỏ thu thành thanh dọc — chỉ số liệu tổng và ba nút cốt
+               lõi, vẫn chốt được đơn ngay tại chỗ (tài liệu 24, phần 6). */
+            <div className="flex-1 min-h-0 flex flex-col p-1.5 gap-2 overflow-y-auto text-center">
+              <button
+                type="button"
+                onClick={() => setSplitLevel(0)}
+                className="btn btn-sm btn-outline !px-1 w-full"
+                title="Mở rộng giỏ hàng trở lại"
+              >
+                <Maximize2 size={13} aria-hidden="true" />
+              </button>
+              <div className="rounded border border-line bg-muted/50 py-1.5">
+                <div className="text-2xs text-muted-ink">Số món</div>
+                <div className="text-lg font-bold tabular">{n(totals.count)}</div>
+              </div>
+              <div className="rounded border border-line bg-muted/50 py-1.5">
+                <div className="text-2xs text-muted-ink">Tổng tiền</div>
+                <div className="text-[13px] font-bold tabular text-accent break-words leading-tight">
+                  {money(totals.total)}
+                </div>
+              </div>
+              <div className="rounded border border-line bg-muted/50 py-1.5">
+                <div className="text-2xs text-muted-ink">Khách trả</div>
+                <div className="text-[13px] font-semibold tabular break-words leading-tight">
+                  {money(totals.total)}
+                </div>
+              </div>
+              {customer && (
+                <div className="text-2xs text-muted-ink break-words leading-tight">{customer.name}</div>
+              )}
+              <div className="flex-1" />
+              <button onClick={() => setPayOpen(true)} disabled={!totals.count}
+                className="btn btn-primary btn-sm w-full flex-col !gap-0 !py-2 !px-1"
+                title="Thanh toán và in nhanh (F4)">
+                <Wallet size={15} aria-hidden="true" />
+                <span className="text-2xs font-bold">TT</span>
+              </button>
+              <button onClick={saveDraft} disabled={!tab.cart.length}
+                className="btn btn-outline btn-sm w-full flex-col !gap-0 !py-2 !px-1"
+                title="Lưu tạm đơn đang chờ">
+                <Save size={15} aria-hidden="true" />
+                <span className="text-2xs">Lưu</span>
+              </button>
+              <button onClick={clearTab} disabled={!totals.count}
+                className="btn btn-outline btn-sm w-full flex-col !gap-0 !py-2 !px-1 !text-danger"
+                title="Xoá trắng đơn đang lập">
+                <X size={15} aria-hidden="true" />
+                <span className="text-2xs">Huỷ</span>
+              </button>
+            </div>
+          ) : (
+          <>
           {/* Khách hàng */}
           <div className="p-2.5 border-b border-line shrink-0">
             <div className="flex items-center gap-1.5">
@@ -1445,6 +1722,19 @@ export default function POS() {
               {customer && (
                 <IconButton icon={History} label={`Xem lịch sử mua của ${customer.name}`}
                   variant="outline" onClick={() => setQuickOpen(true)} />
+              )}
+              {/* Ghi chú hàng đặc thù của khách này (tài liệu 24, phần 3) */}
+              {notesOn && customer && custNotes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setNotesOpen(true)}
+                  title={`${customer.name} có ${custNotes.length} ghi chú hàng đặc thù — bấm để xem`}
+                  aria-label={`Xem ${custNotes.length} ghi chú hàng đặc thù của ${customer.name}`}
+                  className="btn btn-sm btn-outline !px-1.5 !text-amber-800 !border-amber-400 shrink-0"
+                >
+                  <ClipboardList size={14} aria-hidden="true" />
+                  <span className="tabular text-2xs">{n(custNotes.length)}</span>
+                </button>
               )}
               <IconButton icon={UserPlus} label="Thêm khách hàng mới (F8)"
                 variant="outline" onClick={() => setCustOpen(true)} />
@@ -1468,13 +1758,41 @@ export default function POS() {
 
           {/* Các dòng hàng */}
           <div className="flex-1 overflow-y-auto min-h-0">
-            {tab.cart.length === 0 ? (
+            {/* Hàng mua hộ vãng lai — nằm trên cùng cho dễ soát (tài liệu 24) */}
+            {consignOn && (tab.consign || []).length > 0 && (
+              <ul className="divide-y divide-line bg-violet-50/40">
+                {tab.consign.map((c) => (
+                  <ConsignLine
+                    key={c.key}
+                    c={c}
+                    partners={partners || []}
+                    onChange={(patch) => updateConsign(c.key, patch)}
+                    onRemove={() => removeConsign(c.key)}
+                  />
+                ))}
+              </ul>
+            )}
+            {consignOn && (
+              <button
+                type="button"
+                onClick={() => setConsignOpen(true)}
+                className="w-full flex items-center justify-center gap-1.5 py-2 text-2xs font-semibold
+                           text-violet-800 bg-violet-50 border-b border-violet-200
+                           hover:bg-violet-100 cursor-pointer transition-colors duration-100"
+                title="Khách hỏi món tiệm không có sẵn: bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác gửi"
+              >
+                <Handshake size={13} aria-hidden="true" />
+                Món mua hộ vãng lai
+                <Plus size={13} aria-hidden="true" />
+              </button>
+            )}
+            {tab.cart.length === 0 && (tab.consign || []).length === 0 ? (
               <Empty
                 icon={ShoppingCart}
                 title="Chưa chọn hàng"
                 message="Quét mã vạch, gõ tên hàng ở ô tìm kiếm, hoặc bấm vào ô hàng bên trái."
               />
-            ) : (
+            ) : tab.cart.length === 0 ? null : (
               <ul className="divide-y divide-line">
                 {tab.cart.map((l) => (
                   <CartLine
@@ -1504,6 +1822,15 @@ export default function POS() {
             <OrderNote value={tab.note} onChange={(v) => patchTab({ note: v })} />
 
             <div className="space-y-1 mb-2.5">
+              {totals.consignCount > 0 && (
+                <div className="flex items-center justify-between text-[13px]">
+                  <span className="text-violet-800 flex items-center gap-1">
+                    <Handshake size={12} aria-hidden="true" />
+                    Hàng mua hộ ({n(totals.consignCount)} món)
+                  </span>
+                  <span className="tabular font-mono font-semibold">{money(totals.consign)}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-[13px]">
                 <span className="text-muted-ink">
                   Tạm tính ({totals.count} mặt hàng)
@@ -1630,12 +1957,12 @@ export default function POS() {
                 <Save size={14} aria-hidden="true" />
                 Lưu tạm
               </button>
-              <button onClick={() => setProvisional(buildProvisional())} disabled={!tab.cart.length}
+              <button onClick={() => setProvisional(buildProvisional())} disabled={!totals.count}
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs">
                 <Printer size={14} aria-hidden="true" />
                 Tạm tính
               </button>
-              <button onClick={clearTab} disabled={!tab.cart.length}
+              <button onClick={clearTab} disabled={!totals.count}
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs !text-danger">
                 <X size={14} aria-hidden="true" />
                 Xoá hết
@@ -1643,11 +1970,13 @@ export default function POS() {
             </div>
 
             <Button variant="primary" size="lg" className="w-full"
-              disabled={!tab.cart.length} onClick={() => setPayOpen(true)}>
+              disabled={!totals.count} onClick={() => setPayOpen(true)}>
               {tab.delivery ? 'Thanh toán đơn giao' : 'Thanh toán'}
               <span className="kbd !bg-white/20 !text-white !border-white/25 ml-1">F4</span>
             </Button>
           </div>
+          </>
+          )}
         </aside>
       </div>
 
@@ -1714,6 +2043,28 @@ export default function POS() {
         customerId={tab.customerId}
         onClose={() => setDebtOpen(false)}
         onDone={(res) => { reloadCustomers(); reloadOverdue(); showVoucher(res?.transaction?.id); }}
+      />
+
+      {/* Thêm một món mua hộ vãng lai vào giỏ (tài liệu 24, phần 5.1) */}
+      <ConsignItemModal
+        open={consignOpen}
+        partners={partners || []}
+        onClose={() => setConsignOpen(false)}
+        onPartnerAdded={reloadPartners}
+        onSave={(row) => { addConsign(row); setConsignOpen(false); }}
+      />
+
+      {/* Ghi chú hàng đặc thù của khách đang chọn (tài liệu 24, phần 3) */}
+      <CustomerNotesModal
+        open={notesOpen}
+        customer={customer}
+        notes={custNotes}
+        onClose={() => setNotesOpen(false)}
+        onPick={(nt) => {
+          const p = products?.find((x) => x.id === nt.product_id);
+          if (p) { addToCart(p); setNotesOpen(false); }
+          else toast('Ghi chú này chưa nối với mặt hàng nào trong kho.', 'warn');
+        }}
       />
 
       {/* Bảng nợ quá hạn cả tiệm, mở từ nút cạnh ô tìm hàng */}
@@ -1905,6 +2256,318 @@ function PriceHistoryModal({ line, customer, onClose, onApply }) {
 }
 
 /* ==================================================================== */
+
+/* ==================================================================== *
+ * MỘT DÒNG HÀNG MUA HỘ VÃNG LAI TRONG GIỎ (tài liệu 24, phần 5.1)
+ *
+ * Nhìn là biết ngay hàng của ai: có tên chủ hàng thì nhãn tím kèm số tiền
+ * phải trả lại chủ; không có tên thì tiệm tự bốc ngoài, hiện luôn phần
+ * chênh lệch ăn được.
+ *
+ * Hoá đơn in cho khách KHÔNG có mấy dòng này — xem mẫu in.
+ * ==================================================================== */
+function ConsignLine({ c, partners, onChange, onRemove }) {
+  const amount = Math.round((Number(c.qty) || 0) * (Number(c.price) || 0));
+  const commission = consignCommission(c, amount);
+  const payable = amount - commission;
+  const margin = amount - Math.round((Number(c.qty) || 0) * (Number(c.cost) || 0));
+  const partner = c.partner_id ? partners.find((x) => x.id === c.partner_id) : null;
+
+  return (
+    <li className="p-2.5 border-l-4 border-violet-500">
+      <div className="flex items-start gap-1">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold leading-snug">{c.name}</div>
+          <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+            <span className="text-2xs font-semibold text-violet-800 bg-violet-100 border border-violet-300
+                             rounded px-1 leading-5 inline-flex items-center gap-0.5">
+              <Handshake size={10} aria-hidden="true" />
+              {partner || c.partner_id
+                ? `Hàng gửi: ${partner?.name || c.partner_name || 'chủ hàng'}`
+                : 'Tiệm tự bốc ngoài'}
+            </span>
+            {c.partner_id ? (
+              <span className="text-2xs text-muted-ink tabular">
+                Trả chủ {n(payable)}
+                {commission > 0 && <span className="text-emerald-700 font-semibold"> · hoa hồng {n(commission)}</span>}
+              </span>
+            ) : (
+              <span className="text-2xs tabular">
+                Bốc {n(c.cost)}/{c.unit_name || 'đv'}
+                <span className={`ml-1 font-semibold ${margin < 0 ? 'text-danger' : 'text-emerald-700'}`}>
+                  chênh {n(margin)}
+                </span>
+              </span>
+            )}
+          </div>
+          {c.note && <div className="text-2xs text-muted-ink italic mt-0.5">{c.note}</div>}
+        </div>
+        <IconButton icon={Trash2} size={14} label={`Bỏ ${c.name} khỏi giỏ`}
+          className="!text-danger hover:!bg-red-50" onClick={onRemove} />
+      </div>
+
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <input
+          type="number" step="any" min="0"
+          className="w-16 h-7 text-center text-[13px] tabular font-mono border border-line rounded
+                     focus:outline-none focus:bg-accent-soft/50"
+          aria-label={`Số lượng ${c.name}`}
+          value={c.qty}
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => onChange({ qty: e.target.value === '' ? '' : Number(e.target.value) })}
+          onBlur={(e) => { if (e.target.value === '' || Number(e.target.value) <= 0) onChange({ qty: 1 }); }}
+        />
+        <span className="text-2xs text-muted-ink shrink-0">{c.unit_name || 'đơn vị'}</span>
+        <MoneyCell
+          value={c.price}
+          onCommit={(v) => onChange({ price: v })}
+          label={`Giá bán hộ ${c.name}`}
+          title="Giá bán cho khách"
+          className="flex-1 min-w-0"
+        />
+        <span className="text-[13px] font-bold tabular font-mono w-24 text-right shrink-0">
+          {n(amount)}
+        </span>
+      </div>
+    </li>
+  );
+}
+
+/* ==================================================================== *
+ * HỘP THÊM MỘT MÓN MUA HỘ VÃNG LAI (tài liệu 24, phần 5.1)
+ *
+ * Để trống tên chủ hàng = tiệm tự chạy đi bốc, trả đứt tiền mặt tại chỗ,
+ * ăn chênh lệch — không treo công nợ với ai.
+ * Chọn đích danh chủ hàng = hàng người ta gửi, tiệm giữ hoa hồng, phần còn
+ * lại treo chờ đối soát.
+ * ==================================================================== */
+function ConsignItemModal({ open, partners, onClose, onSave, onPartnerAdded }) {
+  const { toast } = useApp();
+  const EMPTY = {
+    name: '', unit_name: '', qty: 1, price: 0, cost: 0,
+    partner_id: null, commission_type: 'percent', commission_value: 10, note: '',
+  };
+  const [f, setF] = useState(EMPTY);
+  const [newPartner, setNewPartner] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => { if (open) { setF(EMPTY); setNewPartner(''); setErr(''); } }, [open]);
+
+  const amount = Math.round((Number(f.qty) || 0) * (Number(f.price) || 0));
+  const commission = consignCommission(f, amount);
+  const payable = amount - commission;
+  const margin = amount - Math.round((Number(f.qty) || 0) * (Number(f.cost) || 0));
+
+  const addPartner = async () => {
+    const name = newPartner.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const p = await api.addConsignPartner({ name });
+      onPartnerAdded?.();
+      setF((x) => ({ ...x, partner_id: p.id }));
+      setNewPartner('');
+      toast(`Đã thêm chủ hàng ${p.name}`, 'ok');
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const save = () => {
+    if (!f.name.trim()) { setErr('Bắt buộc nhập tên món.'); return; }
+    if (!(Number(f.qty) > 0)) { setErr('Số lượng phải lớn hơn 0.'); return; }
+    if (!(Number(f.price) > 0)) { setErr('Bắt buộc nhập giá bán cho khách.'); return; }
+    onSave({
+      ...f,
+      name: f.name.trim(),
+      unit_name: f.unit_name.trim() || null,
+      qty: Number(f.qty),
+      price: Math.round(Number(f.price) || 0),
+      cost: f.partner_id ? 0 : Math.round(Number(f.cost) || 0),
+      partner_name: partners.find((x) => x.id === f.partner_id)?.name || null,
+    });
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Thêm món mua hộ vãng lai"
+      subtitle="Món tiệm không có sẵn — bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác gửi"
+      size="md"
+      footer={<>
+        <Button onClick={onClose}>Huỷ</Button>
+        <Button variant="primary" onClick={save} disabled={busy}>Thêm vào giỏ</Button>
+      </>}
+    >
+      <div className="space-y-3">
+        {err && <ErrorBox error={err} />}
+
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Field label="Tên món" required className="sm:col-span-3" htmlFor="cs-name">
+            <Input id="cs-name" value={f.name} autoFocus
+              onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))}
+              placeholder="Mô tơ bơm nước 1HP" />
+          </Field>
+          <Field label="Đơn vị" htmlFor="cs-unit">
+            <Input id="cs-unit" value={f.unit_name}
+              onChange={(e) => setF((x) => ({ ...x, unit_name: e.target.value }))}
+              placeholder="Cái" />
+          </Field>
+          <Field label="Số lượng" required htmlFor="cs-qty">
+            <QtyInput id="cs-qty" size="md" value={f.qty}
+              onChange={(v) => setF((x) => ({ ...x, qty: v }))} />
+          </Field>
+          <Field label="Giá bán cho khách" required className="sm:col-span-3" htmlFor="cs-price">
+            <MoneyInput id="cs-price" value={f.price}
+              onChange={(v) => setF((x) => ({ ...x, price: v }))} />
+          </Field>
+        </div>
+
+        <Field
+          label="Chủ hàng gửi bán"
+          hint="Để trống nếu tiệm tự chạy đi bốc và trả đứt tiền mặt tại chỗ"
+        >
+          <Combo
+            items={[...partners]}
+            value={f.partner_id}
+            onChange={(id) => setF((x) => ({ ...x, partner_id: id || null }))}
+            placeholder="Không chọn ai — tiệm tự bốc ngoài"
+            filter={(x, q) => match(x.name, q) || (x.phone || '').includes(q.trim())}
+            render={(x) => ({ label: x.name, sub: x.phone || '' })}
+          />
+        </Field>
+
+        <div className="flex items-end gap-1.5">
+          <Field label="Thêm nhanh chủ hàng mới" className="flex-1" htmlFor="cs-newp">
+            <Input id="cs-newp" value={newPartner}
+              onChange={(e) => setNewPartner(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPartner(); } }}
+              placeholder="Tên chủ hàng, ví dụ: Anh Ruột" />
+          </Field>
+          <Button icon={Plus} onClick={addPartner} disabled={!newPartner.trim() || busy}>Thêm</Button>
+        </div>
+
+        {/* Hai kịch bản rẽ nhánh rõ ràng, không để người đứng quầy đoán */}
+        {f.partner_id ? (
+          <div className="card p-3 bg-violet-50 border-violet-200 space-y-2">
+            <h4 className="text-[13px] font-bold text-violet-900 flex items-center gap-1.5">
+              <Handshake size={14} aria-hidden="true" />
+              Hàng của chủ khác gửi — treo đối soát
+            </h4>
+            <div className="flex items-end gap-2">
+              <Field label="Hoa hồng tiệm giữ" className="flex-1">
+                <div className="flex gap-1.5">
+                  <Select className="!w-20" aria-label="Cách tính hoa hồng"
+                    value={f.commission_type}
+                    onChange={(e) => setF((x) => ({ ...x, commission_type: e.target.value }))}>
+                    <option value="percent">%</option>
+                    <option value="amount">đồng</option>
+                  </Select>
+                  <Input type="number" min="0" step="any" className="flex-1"
+                    aria-label="Mức hoa hồng"
+                    value={f.commission_value}
+                    onChange={(e) => setF((x) => ({ ...x, commission_value: e.target.value }))} />
+                </div>
+              </Field>
+            </div>
+            <div className="text-2xs space-y-0.5">
+              <div className="flex justify-between">
+                <span className="text-muted-ink">Khách trả</span>
+                <span className="tabular font-semibold">{money(amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-ink">Hoa hồng tiệm giữ</span>
+                <span className="tabular font-semibold text-emerald-700">{money(commission)}</span>
+              </div>
+              <div className="flex justify-between border-t border-violet-200 pt-0.5">
+                <span className="font-semibold text-violet-900">Còn nợ chủ hàng</span>
+                <span className="tabular font-bold text-violet-900">{money(payable)}</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="card p-3 bg-amber-50 border-warn/30 space-y-2">
+            <h4 className="text-[13px] font-bold text-amber-900 flex items-center gap-1.5">
+              <Wallet size={14} aria-hidden="true" />
+              Tiệm tự bốc ngoài — ăn chênh lệch, không treo nợ ai
+            </h4>
+            <Field
+              label="Giá tiệm bốc (một đơn vị)"
+              hint="Tiền trả đứt tại chỗ. Vào giá vốn của đơn để tính đúng lãi — không tự sinh phiếu chi, muốn ghi quỹ thì lập phiếu bên Quỹ tiền."
+            >
+              <MoneyInput value={f.cost} onChange={(v) => setF((x) => ({ ...x, cost: v }))} />
+            </Field>
+            <div className="text-2xs space-y-0.5">
+              <div className="flex justify-between">
+                <span className="text-muted-ink">Khách trả</span>
+                <span className="tabular font-semibold">{money(amount)}</span>
+              </div>
+              <div className="flex justify-between border-t border-warn/30 pt-0.5">
+                <span className="font-semibold text-amber-900">Tiệm ăn chênh</span>
+                <span className={`tabular font-bold ${margin < 0 ? 'text-danger' : 'text-emerald-700'}`}>
+                  {money(margin)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <Field label="Ghi chú" htmlFor="cs-note">
+          <Input id="cs-note" value={f.note}
+            onChange={(e) => setF((x) => ({ ...x, note: e.target.value }))}
+            placeholder="Lấy ở tiệm anh Tư chợ Cái Bè" />
+        </Field>
+
+        <p className="text-2xs text-muted-ink flex items-start gap-1.5">
+          <ShieldCheck size={12} className="shrink-0 mt-0.5" aria-hidden="true" />
+          Hoá đơn in cho khách <b className="mx-1">không hiện</b> tên chủ hàng hay giá bốc — món
+          này in phẳng như hàng của tiệm.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+/* ==================================================================== *
+ * GHI CHÚ HÀNG ĐẶC THÙ CỦA MỘT KHÁCH (tài liệu 24, phần 3)
+ * ==================================================================== */
+function CustomerNotesModal({ open, customer, notes, onClose, onPick }) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Ghi chú hàng đặc thù — ${customer?.name || ''}`}
+      subtitle="Khách này quen gọi món theo tên riêng của họ"
+      size="md"
+      footer={<Button onClick={onClose}>Đóng</Button>}
+    >
+      {!notes?.length ? (
+        <Empty icon={ClipboardList} title="Chưa khai ghi chú nào"
+          message="Khai trong hồ sơ khách hàng, thẻ Ghi chú hàng đặc thù." />
+      ) : (
+        <ul className="divide-y divide-line">
+          {notes.map((nt) => (
+            <li key={nt.id} className="py-2 flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px]">
+                  Khách gọi <b className="text-amber-900">{nt.alias}</b>
+                  {nt.product_name && <> ➔ <b>{nt.product_name}</b></>}
+                </div>
+                {nt.sku && <div className="text-2xs font-mono text-muted-ink">{nt.sku}</div>}
+                {nt.note && <div className="text-2xs text-muted-ink mt-0.5">{nt.note}</div>}
+              </div>
+              {nt.product_id && (
+                <Button size="sm" variant="soft" icon={Plus} onClick={() => onPick(nt)}>
+                  Thêm
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
+  );
+}
 
 function LineNoteModal({ line, onClose, onSave }) {
   const [text, setText] = useState('');

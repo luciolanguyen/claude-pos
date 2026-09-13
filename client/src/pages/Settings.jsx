@@ -2,11 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
-  ShieldCheck, Star, ChevronUp, ChevronDown,
+  ShieldCheck, Star, ChevronUp, ChevronDown, KeyRound, Handshake, ClipboardList,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
-import { money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT } from '../lib/format';
+import {
+  money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT,
+  blindCode, blindKeyError, DEFAULT_BLIND_KEY,
+} from '../lib/format';
 import {
   Button, IconButton, Input, Select, Textarea, Field, Modal, Spinner, Empty,
   Badge, Confirm, Tabs, MoneyInput,
@@ -15,6 +18,36 @@ import { PageHeader, Page } from '../components/Layout';
 import { CategorySelect } from '../components/CategoryTree';
 import CartPickerModal from '../components/CartPickerModal';
 import { ErrorBox } from '../components/ui';
+
+/**
+ * Ô khai một bộ mã hoá. Soát ngay lúc gõ và cho xem thử một con số thật —
+ * khai sai mười ký tự rồi mới biết thì cả tháng đọc nhầm giá vốn.
+ */
+function BlindKeyField({ label, hint, value, onChange }) {
+  const err = blindKeyError(value);
+  return (
+    <Field label={label} hint={err ? undefined : hint}>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={DEFAULT_BLIND_KEY}
+        className="!font-mono !tracking-widest !uppercase"
+        aria-label={label}
+      />
+      <div className="mt-1 text-2xs">
+        {err ? (
+          <span className="text-danger">{err}</span>
+        ) : (
+          <span className="text-muted-ink">
+            Thử: <b className="font-mono">125.000đ</b> ➔ <b className="font-mono text-indigo-800">{blindCode(125000, value)}</b>
+            {' · '}
+            <b className="font-mono">125.350đ</b> ➔ <b className="font-mono text-indigo-800">{blindCode(125350, value)}</b>
+          </span>
+        )}
+      </div>
+    </Field>
+  );
+}
 
 const TABS = [
   { key: 'store', label: 'Thông tin cửa hàng' },
@@ -444,6 +477,98 @@ function PosSettings() {
           </span>
         </label>
       </div>
+
+      {/* ====== Ba phân hệ mở rộng, bật tắt độc lập (tài liệu 24, phần 1) ======
+          Tắt hay bật đều KHÔNG đụng tới dữ liệu đã ghi: tắt chỉ là giấu chỗ
+          nhập liệu đi, số liệu cũ vẫn còn nguyên và vẫn xem lại được. */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Phân hệ mở rộng</h2>
+        <p className="text-2xs text-muted-ink mb-2">
+          Ba tính năng dưới đây độc lập nhau. Tiệm không dùng thì tắt cho màn hình gọn;
+          bật lại lúc nào cũng được, dữ liệu cũ không mất.
+        </p>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.customer_notes === true}
+            onChange={(e) => setForm((f) => ({ ...f, customer_notes: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <ClipboardList size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Ghi chú hàng đặc thù theo từng khách hàng
+            <span className="block text-2xs text-muted-ink">
+              Mỗi nhà thầu gọi món theo kiểu riêng — &quot;dây gân&quot;, &quot;cái cùi chỏ&quot;.
+              Khai trong hồ sơ khách: tên khách gọi ➔ mã hàng thật ➔ câu nhắc. Ngoài quầy gõ tên
+              khách gọi là món thật nhảy lên đầu lưới kèm dòng nhắc màu vàng.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.blind_cost === true}
+            onChange={(e) => setForm((f) => ({ ...f, blind_cost: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <KeyRound size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Mã hoá giá vốn thành chữ cái ngoài màn hình bán hàng
+            <span className="block text-2xs text-muted-ink">
+              Giá vốn hiện ra dưới dạng chữ thay vì con số, để khách đứng cạnh quầy không đọc trộm
+              được. Chỉ người có quyền xem giá vốn mới thấy chuỗi này.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.consign === true}
+            onChange={(e) => setForm((f) => ({ ...f, consign: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <Handshake size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Bán / nhập hàng của đối tác vãng lai và trích hoa hồng
+            <span className="block text-2xs text-muted-ink">
+              Khách hỏi món tiệm không có: bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác
+              gửi rồi chốt đối soát trả tiền. Hoá đơn in cho khách không bao giờ lộ hàng lấy của ai.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {/* ====== Bộ mã hoá giá vốn (tài liệu 24, phần 4) ====== */}
+      {form.blind_cost === true && (
+        <div className="card p-4">
+          <h2 className="font-bold text-sm mb-1 flex items-center gap-1.5">
+            <KeyRound size={14} aria-hidden="true" /> Bộ mã hoá giá vốn
+          </h2>
+          <p className="text-2xs text-muted-ink mb-3">
+            Khai mười ký tự thay cho mười chữ số <b>0 1 2 3 4 5 6 7 8 9</b>, theo thứ tự đó.
+            Số tiền được chia cho 1.000 và làm tròn lấy tối đa một chữ số thập phân trước khi đổi
+            sang chữ — nên <b>125.000đ</b> đọc là <b>125</b>, còn <b>125.350đ</b> đọc là <b>125,4</b>.
+            Nên chọn một câu dễ nhớ, ví dụ <b>VIỆTNAMBOS</b>.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <BlindKeyField
+              label="Bộ mã cho GIÁ VỐN"
+              hint="Hiện dưới mỗi ô hàng ngoài lưới bán hàng"
+              value={form.blind_key_cost ?? DEFAULT_BLIND_KEY}
+              onChange={(v) => setForm((f) => ({ ...f, blind_key_cost: v }))}
+            />
+            <BlindKeyField
+              label="Bộ mã cho GIÁ NHẬP GẦN NHẤT"
+              hint="Khai bộ khác bộ trên, để nhìn hai con số không suy ra nhau được"
+              value={form.blind_key_purchase ?? 'SOBMANTỆIV'}
+              onChange={(v) => setForm((f) => ({ ...f, blind_key_purchase: v }))}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-2">Cách xử lý khi hết hàng</h2>

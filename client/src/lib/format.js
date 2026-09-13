@@ -315,3 +315,56 @@ export function tierPriceFor(unit, q, listPrice = 0) {
   const i = tierIndexFor(rows, q);
   return i >= 0 ? rows[i].price : Math.round(Number(listPrice) || 0);
 }
+
+/* ==================================================================== *
+ * MÃ HOÁ GIÁ VỐN THÀNH CHỮ CÁI (tài liệu 24, phần 4)
+ *
+ * Chủ tiệm muốn nhìn thấy giá vốn ngay ngoài quầy để quyết giá bán, nhưng
+ * không muốn khách đứng cạnh đọc trộm con số. Cách cũ của nhà nghề: đổi
+ * mười chữ số sang mười chữ cái của một câu dễ nhớ.
+ *
+ *     0=V 1=I 2=Ệ 3=T 4=N 5=A 6=M 7=B 8=O 9=S   ("VIỆT NAM BỎ SỐ")
+ *
+ * Số tiền chia cho 1.000 rồi làm tròn tối đa MỘT chữ số thập phân, sau đó
+ * đổi từng chữ số sang chữ cái:
+ *     125.000đ -> 125    -> IỆA
+ *     125.350đ -> 125,4  -> IỆA.N
+ *
+ * Dấu chấm ngăn phần thập phân giữ nguyên, không mã hoá — không thì đọc
+ * không ra đâu là phần lẻ.
+ * ==================================================================== */
+
+/** Bộ mã mặc định, dùng khi chủ tiệm chưa khai bộ riêng. */
+export const DEFAULT_BLIND_KEY = 'VIỆTNAMBOS';
+
+/** Bộ mã hợp lệ: đúng 10 ký tự, không trùng nhau. Sai thì trả lý do. */
+export function blindKeyError(key) {
+  const chars = [...String(key || '').trim()];
+  if (chars.length !== 10) return `Bộ mã phải đúng 10 ký tự cho 10 chữ số 0-9 (đang có ${chars.length}).`;
+  if (new Set(chars.map((c) => c.toUpperCase())).size !== 10) {
+    return 'Mười ký tự phải khác nhau — trùng nhau thì đọc ngược lại ra hai số.';
+  }
+  if (chars.some((c) => /[\d.,\s]/.test(c))) {
+    return 'Không dùng chữ số, dấu chấm, dấu phẩy hay khoảng trắng làm ký tự mã.';
+  }
+  return '';
+}
+
+/**
+ * Đổi một số tiền thành chuỗi mã.
+ * @param value  số tiền gốc (đồng)
+ * @param key    chuỗi 10 ký tự cho chữ số 0..9
+ * @returns chuỗi mã, hoặc '' nếu tiền bằng 0 / bộ mã hỏng
+ */
+export function blindCode(value, key = DEFAULT_BLIND_KEY) {
+  const v = Number(value) || 0;
+  if (!v) return '';
+  const chars = [...String(key || '')];
+  if (chars.length !== 10) return '';
+  /* Làm tròn tới một chữ số thập phân của đơn vị NGHÌN đồng */
+  const k = Math.round(Math.abs(v) / 100) / 10;
+  /* toFixed(1) rồi bỏ đuôi ".0": 125.0 phải ra "125", không phải "125.0" */
+  const text = (Math.round(k * 10) % 10 === 0) ? String(Math.round(k)) : k.toFixed(1);
+  const body = [...text].map((c) => (c === '.' ? '.' : chars[Number(c)] ?? c)).join('');
+  return v < 0 ? `-${body}` : body;
+}

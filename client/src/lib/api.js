@@ -166,6 +166,28 @@ export const api = {
   assignRequisitionSupplier: (id, body) => request('POST', `/requisitions/${id}/assign-supplier`, body),
   mergeRequisitions: (body) => request('POST', '/requisitions/merge', body),
 
+  /* --- Ghi chú hàng đặc thù theo khách (tài liệu 24, phần 3) --- */
+  customerProductNotes: (id) => request('GET', `/customers/${id}/product-notes`),
+  addCustomerProductNote: (id, body) => request('POST', `/customers/${id}/product-notes`, body),
+  updateProductNote: (id, body) => request('PUT', `/product-notes/${id}`, body),
+  deleteProductNote: (id) => request('DELETE', `/product-notes/${id}`),
+
+  /* --- Hàng mua hộ vãng lai (tài liệu 24, phần 5) --- */
+  consignPartners: (params) => request('GET', '/consign-partners' + qs(params)),
+  addConsignPartner: (body) => request('POST', '/consign-partners', body),
+  updateConsignPartner: (id, body) => request('PUT', `/consign-partners/${id}`, body),
+  deleteConsignPartner: (id) => request('DELETE', `/consign-partners/${id}`),
+  consignItems: (params) => request('GET', '/consign-items' + qs(params)),
+  consignSummary: (params) => request('GET', '/consign-summary' + qs(params)),
+  consignSettlements: (params) => request('GET', '/consign-settlements' + qs(params)),
+  consignSettlement: (id) => request('GET', `/consign-settlements/${id}`),
+  settleConsign: (body) => request('POST', '/consign-settlements', body),
+
+  /* --- Lọc hàng từng mua của một mối, ma trận giá đa NCC (tài liệu 24, 5.2) --- */
+  supplierBoughtProducts: (id, params) =>
+    request('GET', `/suppliers/${id}/bought-products` + qs(params)),
+  productSupplierPrices: (id) => request('GET', `/products/${id}/supplier-prices`),
+
   /* --- Hệ thống --- */
   me: () => request('GET', '/me'),
   settings: () => request('GET', '/settings'),

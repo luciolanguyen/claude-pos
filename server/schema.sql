@@ -871,3 +871,75 @@ CREATE TABLE IF NOT EXISTS product_price_tiers (
 );
 CREATE INDEX IF NOT EXISTS idx_ppt_product ON product_price_tiers(product_id);
 CREATE INDEX IF NOT EXISTS idx_ppt_unit ON product_price_tiers(unit_id);
+
+-- ============================================================
+-- MO RONG v18: ghi chu hang dac thu, doi tac vang lai (tai lieu 24)
+-- ============================================================
+
+-- Khach goi mot mon hang bang ten rieng cua ho ("day gan", "ong nho").
+-- Noi ten khach goi voi mat hang that trong kho, kem loi nhac cho thu ngan.
+CREATE TABLE IF NOT EXISTS customer_product_notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  alias       TEXT NOT NULL,                      -- ten khach goi (Mon X)
+  product_id  INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  note        TEXT,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_cpn_customer ON customer_product_notes(customer_id);
+
+-- Chu hang vang lai gui ban qua tiem (anh ruot, co Ha...). Khac han
+-- nha cung cap: khong nhap kho, khong cong no mua hang.
+CREATE TABLE IF NOT EXISTS consign_partners (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  phone      TEXT,
+  note       TEXT,
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_cp_active ON consign_partners(active);
+
+-- Mot dot chot doi soat cho mot chu hang vang lai.
+CREATE TABLE IF NOT EXISTS consign_settlements (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  partner_id   INTEGER REFERENCES consign_partners(id) ON DELETE SET NULL,
+  partner_name TEXT,
+  gross        INTEGER NOT NULL DEFAULT 0,   -- tong tien ban ho
+  commission   INTEGER NOT NULL DEFAULT 0,   -- hoa hong tiem giu lai
+  discount     INTEGER NOT NULL DEFAULT 0,   -- chiet khau gop them
+  payout       INTEGER NOT NULL DEFAULT 0,   -- tien thuc tra chu hang
+  from_date    TEXT,
+  to_date      TEXT,
+  item_count   INTEGER NOT NULL DEFAULT 0,
+  cash_tx_id   INTEGER REFERENCES cash_transactions(id) ON DELETE SET NULL,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cs_partner ON consign_settlements(partner_id);
+
+-- Dong hang mua ho vang lai tren hoa don. KHONG tru kho, khong tao ma hang.
+--   partner_id NULL  = kich ban A: tiem tu di boc hang, tra tien ngay, an chenh lech
+--   partner_id co    = kich ban B: hang cua chu khac gui, treo doi soat
+CREATE TABLE IF NOT EXISTS sale_consign_items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  sale_id         INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  partner_id      INTEGER REFERENCES consign_partners(id) ON DELETE SET NULL,
+  partner_name    TEXT,
+  name            TEXT NOT NULL,
+  unit_name       TEXT,
+  qty             REAL NOT NULL DEFAULT 1,
+  price           INTEGER NOT NULL DEFAULT 0,   -- gia ban cho khach
+  cost            INTEGER NOT NULL DEFAULT 0,   -- gia tiem boc ngoai (kich ban A)
+  commission_type TEXT NOT NULL DEFAULT 'amount',
+  commission_value REAL NOT NULL DEFAULT 0,
+  commission      INTEGER NOT NULL DEFAULT 0,   -- hoa hong da tinh ra tien
+  amount          INTEGER NOT NULL DEFAULT 0,   -- qty * price
+  note            TEXT,
+  settlement_id   INTEGER REFERENCES consign_settlements(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sci_sale ON sale_consign_items(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sci_partner ON sale_consign_items(partner_id, settlement_id);
