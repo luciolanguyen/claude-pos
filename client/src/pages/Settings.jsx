@@ -3,6 +3,7 @@ import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
   ShieldCheck, Star, ChevronUp, ChevronDown, KeyRound, Handshake, ClipboardList,
+  Smartphone, ExternalLink,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -673,6 +674,65 @@ function PosSettings() {
       </div>
 
       <Button variant="primary" icon={Save} onClick={save} loading={busy}>Lưu thiết lập bán hàng</Button>
+
+      <PhoneSaleCard />
+    </div>
+  );
+}
+
+/**
+ * Bán hàng trên điện thoại (plan 31, hạng mục 2b): chỉ cho chủ tiệm biết
+ * gõ địa chỉ nào trên điện thoại. Không có gì để lưu — chứng chỉ máy chủ
+ * tự dựng, tự cấp lại khi đổi IP.
+ */
+function PhoneSaleCard() {
+  const { data: info, error } = useFetch(() => api.get('/tls-info'), []);
+  if (error) return null;
+  if (!info) return null;
+  const port = window.location.port || '80';
+  const lan = (info.addresses || []).find((a) => !a.virtual) || info.addresses?.[0];
+  const setupUrl = lan ? `http://${lan.ip}:${port}/dien-thoai` : null;
+
+  return (
+    <div className="card p-4">
+      <h2 className="font-bold text-sm mb-1 flex items-center gap-2">
+        <Smartphone size={16} className="text-accent" aria-hidden="true" />
+        Bán hàng trên điện thoại
+      </h2>
+      <p className="text-2xs text-muted-ink mb-3">
+        Điện thoại trong tiệm dùng như một máy thu ngân riêng: quét mã vạch bằng camera, hàng vào giỏ
+        của chính điện thoại đó. Mỗi điện thoại cài chứng chỉ của tiệm một lần.
+      </p>
+      {!info.enabled ? (
+        <p className="text-[13px] text-danger">
+          Máy chủ chưa bật HTTPS{info.error ? `: ${info.error}` : ''}. Điện thoại vẫn bán được, chỉ không mở được camera.
+        </p>
+      ) : !setupUrl ? (
+        <p className="text-[13px] text-warn">Máy chủ không có địa chỉ mạng nội bộ nào — kiểm tra dây mạng hoặc Wi-Fi.</p>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded border border-accent/30 bg-accent-soft/40 p-3 sm:col-span-2">
+            <div className="text-2xs text-muted-ink">Trên điện thoại, mở Chrome và gõ địa chỉ:</div>
+            <div className="font-mono text-base font-bold text-ink break-all select-all">{setupUrl}</div>
+            <a href="/dien-thoai" target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[13px] text-accent font-semibold mt-1 hover:underline">
+              Xem trước trang hướng dẫn <ExternalLink size={12} aria-hidden="true" />
+            </a>
+          </div>
+          <div className="text-[13px]">
+            <div className="text-2xs text-muted-ink">Địa chỉ bảo mật sau khi cài</div>
+            <div className="font-mono">https://{lan.ip}:{info.https_port}</div>
+          </div>
+          <div className="text-[13px]">
+            <div className="text-2xs text-muted-ink">Tên chứng chỉ hiện trên điện thoại</div>
+            <div className="font-semibold">{info.ca_name}</div>
+          </div>
+          <p className="text-2xs text-muted-ink sm:col-span-2">
+            Chứng chỉ chỉ có hiệu lực với địa chỉ trong mạng tiệm, không giả được trang web nào ngoài
+            Internet. Đừng mở cổng {port} và {info.https_port} của máy chủ ra Internet.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

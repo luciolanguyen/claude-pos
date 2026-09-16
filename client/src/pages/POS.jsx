@@ -5,7 +5,7 @@ import {
   FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
   ClipboardList, RefreshCcw, MapPin, ShieldCheck, Trash2, Star,
   FolderTree, Layers, Zap, Check, Handshake, Lightbulb, GripVertical,
-  Maximize2, Wallet,
+  Maximize2, Wallet, Camera,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useLocal, useSearchMode } from '../lib/store';
@@ -46,6 +46,8 @@ import {
   usePosPolicy, PinApprovalModal, cartDiscountPercent, canSelfApprove,
 } from '../components/PosApproval';
 import { tabTitle, tabNoOf, smallestFree, normalizeTabs } from '../lib/posTabs';
+import PosCameraScan from '../components/PosCameraScan';
+import { isTouchDevice, primeAudio } from '../lib/cameraScan';
 
 /* Người có quyền xem giá vốn mới thấy giá vốn và giá nhập gần nhất khi bán.
    Máy chủ cũng gỡ hẳn các cột này khỏi dữ liệu trả cho người không có quyền. */
@@ -437,6 +439,10 @@ export default function POS() {
   const [showCost, setShowCost] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const searchRef = useRef(null);
+  /* Quét bằng camera điện thoại (plan 31, hạng mục 2b). Nút camera chỉ hiện
+     trên máy cảm ứng — máy tính ở quầy đã có máy quét cầm tay. */
+  const [camOpen, setCamOpen] = useState(false);
+  const touch = useMemo(() => isTouchDevice(), []);
   const gridRef = useRef(null);
   /* Dòng giỏ hàng đang được tô sáng, để cuộn tới cho thấy (tài liệu 14, mục 3) */
   const hoverLineRef = useRef(null);
@@ -986,12 +992,32 @@ export default function POS() {
     return (Date.now() - t.startedAt) / term.length < 50;
   };
 
+  /** Món mang ĐÚNG mã này — mã vạch hoặc mã hàng, không tìm gần đúng. */
+  const findByCode = (term) => products?.find(
+    (p) => p.barcode === term || p.sku.toLowerCase() === term.toLowerCase(),
+  );
+
+  /**
+   * Camera điện thoại đọc được một mã. Cùng luật với máy quét cầm tay: khớp
+   * trọn mã thì vào giỏ của CHÍNH máy này, không vơ món gần đúng. Trả kết
+   * quả về cho màn hình quét tự báo — không bắn toast, vì toast nằm dưới
+   * lớp camera, người quét không thấy.
+   */
+  const scanCode = (code) => {
+    const term = String(code || '').trim();
+    const exact = term ? findByCode(term) : null;
+    if (!exact) return { kind: 'missing', code: term };
+    if (exact.track_stock && exact.stock <= 0) return { kind: 'out', code: term, product: exact };
+    addToCart(exact);
+    return { kind: 'added', code: term, product: exact };
+  };
+
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
     const term = search.trim();
     if (!term) return;
     const scanned = looksScanned(term);
-    const exact = products?.find((p) => p.barcode === term || p.sku.toLowerCase() === term.toLowerCase());
+    const exact = findByCode(term);
     /* Quét mã vạch luôn khớp trọn, không phụ thuộc kiểu tìm đang chọn */
     if (exact) {
       if (exact.track_stock && exact.stock <= 0) toast(`"${exact.name}" đã hết hàng trong kho`, 'warn');
@@ -1403,11 +1429,11 @@ export default function POS() {
             <Search size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <input
               ref={searchRef}
-              className="w-full h-9 rounded bg-white/10 text-white placeholder:text-slate-400 pl-8 pr-16
+              className={`w-full h-9 rounded bg-white/10 text-white placeholder:text-slate-400 pl-8 ${touch ? 'pr-[108px]' : 'pr-16'}
                          border border-white/15 focus:bg-white focus:text-ink focus:placeholder:text-slate-400
                          focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40
-                         transition-colors duration-150 text-[13px]"
-              placeholder="Quét mã vạch, gõ tên hàng hoặc tên phụ..."
+                         transition-colors duration-150 text-[13px]`}
+              placeholder={touch ? 'Tìm hàng...' : 'Quét mã vạch, gõ tên hàng hoặc tên phụ...'}
               aria-label="Tìm hàng hoá hoặc quét mã vạch"
               value={search}
               onChange={(e) => onSearchType(e.target.value)}
@@ -1422,7 +1448,7 @@ export default function POS() {
               title={searchMode === 'exact'
                 ? 'Đang tìm CHÍNH XÁC — chỉ ra món khớp trọn từ khoá. Bấm để đổi sang tìm có chứa.'
                 : 'Đang tìm CÓ CHỨA — ra mọi món chứa từ khoá. Bấm để đổi sang tìm chính xác.'}
-              className={`absolute right-10 top-1/2 -translate-y-1/2 text-2xs font-semibold rounded
+              className={`absolute ${touch ? 'right-11' : 'right-10'} top-1/2 -translate-y-1/2 text-2xs font-semibold rounded
                           px-1.5 py-0.5 border cursor-pointer transition-colors duration-100
                           ${searchMode === 'exact'
                             ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-100'
@@ -1430,7 +1456,21 @@ export default function POS() {
             >
               {searchMode === 'exact' ? 'Chính xác' : 'Có chứa'}
             </button>
-            <span className="kbd absolute right-2 top-1/2 -translate-y-1/2 !bg-white/15 !text-slate-300 !border-white/20">F2</span>
+            {touch ? (
+              <button
+                type="button"
+                onClick={() => { primeAudio(); setCamOpen(true); }}
+                className="absolute right-0.5 top-1/2 -translate-y-1/2 w-10 h-8 rounded flex items-center justify-center
+                           bg-emerald-500/25 border border-emerald-400/50 text-emerald-100
+                           active:bg-emerald-500/40 cursor-pointer"
+                aria-label="Quét mã vạch bằng camera điện thoại"
+                title="Quét mã vạch bằng camera"
+              >
+                <Camera size={18} aria-hidden="true" />
+              </button>
+            ) : (
+              <span className="kbd absolute right-2 top-1/2 -translate-y-1/2 !bg-white/15 !text-slate-300 !border-white/20">F2</span>
+            )}
           </div>
         </div>
 
@@ -1478,6 +1518,15 @@ export default function POS() {
           {showGrid ? <ShoppingCart size={18} aria-hidden="true" /> : <Grid3x3 size={18} aria-hidden="true" />}
         </button>
       </header>
+
+      <PosCameraScan
+        open={camOpen}
+        onClose={() => setCamOpen(false)}
+        onDone={() => { setCamOpen(false); setShowGrid(false); }}
+        onCode={scanCode}
+        onAddMore={(p) => addToCart(p)}
+        cart={tab.cart}
+      />
 
       {/* ---------------------------- Thanh tab đơn hàng --------------------- */}
       <div className="bg-slate-800 flex items-stretch gap-0.5 px-2 shrink-0 overflow-x-auto no-print"

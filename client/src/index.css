@@ -253,6 +253,16 @@
   }
 }
 
+/* Vạch quét chạy lên xuống trong khung camera (plan 31, hạng mục 2b).
+   Dời bằng transform chứ không đổi top, cho khỏi tính lại bố cục mỗi khung. */
+.scan-sweep {
+  animation: scan-sweep 1.6s ease-in-out infinite alternate;
+}
+@keyframes scan-sweep {
+  from { transform: translateY(0); }
+  to   { transform: translateY(100%); }
+}
+
 /* Tôn trọng thiết lập giảm chuyển động của hệ điều hành */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
