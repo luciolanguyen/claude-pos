@@ -9,7 +9,7 @@ import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager,
+  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
@@ -256,7 +256,9 @@ export default function Purchases() {
           {detail.status === 'done' && (
             <Button icon={Undo2} onClick={() => setReturnOf(detail)}>Trả hàng NCC</Button>
           )}
-          <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
+          </PermGate>
           <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
           <Button onClick={() => setDetail(null)}>Đóng</Button>
         </>}

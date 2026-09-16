@@ -90,7 +90,11 @@ app.use('/api', (req, res, next) => {
    thấy, mà thợ phụ biết giá vốn thì chủ tiệm mất thế khi trả giá với mối. */
 /* Giá nhập gần nhất cũng là giá vốn — lộ ra thì thu ngân biết tiệm lời bao nhiêu */
 const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
-  'last_purchase_price'];
+  'last_purchase_price',
+  /* Cột tên trơn "cost": giá tiệm bốc hàng mua hộ vãng lai (tài liệu 24),
+     chi phí lắp ráp, tiền linh kiện thay khi sửa bảo hành. Ba chỗ đó đều
+     là giá vốn thật, trước đây lọt ra ngoài vì tên cột không có hậu tố. */
+  'cost'];
 
 /* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
    chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */

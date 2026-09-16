@@ -82,6 +82,12 @@ export const ACCESS_RULES = [
   ['*',    /^\/warranty/,                 'warranty.manage'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */
+  /* Nhập danh mục hàng loạt từ file: đặt TRƯỚC mọi luật /products, vì
+     access-map đọc từ trên xuống và dừng ở luật khớp đầu tiên — để sau
+     thì luật rộng nuốt mất, quyền mới không có tác dụng mà không ai biết.
+     Một file nhập sai là hỏng cả danh mục, nặng hơn hẳn sửa một mặt hàng. */
+  ['POST', /^\/products\/import$/,        'data.import'],
+
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
      khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */
   ['GET',  /^\/products\/\d+\/purchase-history$/, 'cost.view'],

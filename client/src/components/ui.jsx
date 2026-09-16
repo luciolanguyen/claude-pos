@@ -5,6 +5,7 @@ import {
   CheckCircle2, Info, XCircle, ChevronDown,
 } from 'lucide-react';
 import { n, money } from '../lib/format';
+import { useApp } from '../lib/store';
 
 /* ============================== Nút ============================== */
 
@@ -28,6 +29,19 @@ export function Button({
 }
 
 /** Nút chỉ có biểu tượng — bắt buộc có nhãn cho trình đọc màn hình. */
+/**
+ * Bọc một nút / một khối lại sau MỘT quyền.
+ *
+ * Tự hỏi quyền lấy trong useApp(), nên nơi gọi không phải khai thêm `can`
+ * vào chỗ lấy từ useApp() — mà quên khai thì lỗi chỉ nổ lúc chạy, đúng vào
+ * màn hình ít ai mở. Ẩn nút chỉ là hàng rào chống bấm nhầm; chặn thật nằm
+ * ở access-map phía máy chủ.
+ */
+export function PermGate({ perm, children, fallback = null }) {
+  const { can } = useApp();
+  return can(perm) ? children : fallback;
+}
+
 export function IconButton({ icon: Icon, label, variant = 'ghost', size = 16, className = '', ...rest }) {
   const v = {
     primary: 'btn-primary', outline: 'btn-outline', ghost: 'btn-ghost', danger: 'btn-danger',

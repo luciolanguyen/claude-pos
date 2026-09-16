@@ -3,7 +3,8 @@ import { Download, Package, Truck, Users, Receipt, LayoutList, Table2 } from 'lu
 import { api } from '../lib/api';
 import { useFetch, useDebounced } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, pct, PAYMENT_LABEL } from '../lib/format';
-import { Button, Spinner, Empty, ErrorBox, Stat, SearchInput, Combo, AsyncCombo, Select, Badge } from '../components/ui';
+import { Button, Spinner, Empty, ErrorBox, Stat, SearchInput, Combo, AsyncCombo, Select, Badge, PermGate,
+} from '../components/ui';
 
 function downloadCsv(name, head, rows) {
   const csv = '﻿' + [head, ...rows]
@@ -94,18 +95,20 @@ export function PurchaseHistory({ r }) {
           ))}
         </div>
         <div className="flex-1" />
-        <Button size="sm" icon={Download} disabled={!data.rows.length}
-          onClick={() => view === 'product'
-            ? downloadCsv(`lichsu-muahang-theo-mathang-${r.from}-${r.to}.csv`,
-                ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lần nhập', 'Tổng SL', 'Tổng tiền', 'Giá thấp nhất', 'Giá cao nhất', 'Giá bình quân', 'Giá lần cuối', 'Lần cuối'],
-                data.products.map((p) => [p.sku, p.name, p.base_unit, p.times, p.qty, p.amount,
-                  p.min_price, p.max_price, p.avg_price, p.last_price, date(p.last_ts)]))
-            : downloadCsv(`lichsu-muahang-chitiet-${r.from}-${r.to}.csv`,
-                ['Ngày', 'Mã phiếu', 'Nhà cung cấp', 'Mã hàng', 'Tên hàng', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Số HĐ NCC'],
-                data.rows.map((x) => [datetime(x.ts), x.code, x.supplier_name, x.sku, x.product_name,
-                  x.unit_name, x.qty, x.price, x.amount, x.supplier_invoice || '']))}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!data.rows.length}
+            onClick={() => view === 'product'
+              ? downloadCsv(`lichsu-muahang-theo-mathang-${r.from}-${r.to}.csv`,
+                  ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lần nhập', 'Tổng SL', 'Tổng tiền', 'Giá thấp nhất', 'Giá cao nhất', 'Giá bình quân', 'Giá lần cuối', 'Lần cuối'],
+                  data.products.map((p) => [p.sku, p.name, p.base_unit, p.times, p.qty, p.amount,
+                    p.min_price, p.max_price, p.avg_price, p.last_price, date(p.last_ts)]))
+              : downloadCsv(`lichsu-muahang-chitiet-${r.from}-${r.to}.csv`,
+                  ['Ngày', 'Mã phiếu', 'Nhà cung cấp', 'Mã hàng', 'Tên hàng', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Số HĐ NCC'],
+                  data.rows.map((x) => [datetime(x.ts), x.code, x.supplier_name, x.sku, x.product_name,
+                    x.unit_name, x.qty, x.price, x.amount, x.supplier_invoice || '']))}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {!data.rows.length ? (
@@ -277,26 +280,28 @@ export function SaleHistory({ r }) {
           ))}
         </div>
         <div className="flex-1" />
-        <Button size="sm" icon={Download} disabled={!data.rows.length}
-          onClick={() => {
-            if (view === 'product') {
-              downloadCsv(`lichsu-banhang-theo-mathang-${r.from}-${r.to}.csv`,
-                ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lần bán', 'Tổng SL', 'Doanh thu', 'Lợi nhuận', 'Giá thấp nhất', 'Giá cao nhất', 'Giá bình quân', 'Giá lần cuối'],
-                data.products.map((p) => [p.sku, p.name, p.base_unit, p.times, p.qty, p.amount,
-                  p.profit, p.min_price, p.max_price, p.avg_price, p.last_price]));
-            } else if (view === 'customer') {
-              downloadCsv(`lichsu-banhang-theo-khach-${r.from}-${r.to}.csv`,
-                ['Khách hàng', 'Điện thoại', 'Số hoá đơn', 'Tổng SL', 'Doanh thu', 'Lợi nhuận'],
-                data.customers.map((c) => [c.name, c.phone || '', c.bills, c.qty, c.amount, c.profit]));
-            } else {
-              downloadCsv(`lichsu-banhang-chitiet-${r.from}-${r.to}.csv`,
-                ['Ngày', 'Mã HĐ', 'Khách hàng', 'Mã hàng', 'Tên hàng', 'ĐVT', 'SL', 'Đơn giá', 'Giảm', 'Thành tiền', 'Lãi', 'Ghi chú'],
-                data.rows.map((x) => [datetime(x.ts), x.code, x.customer_name, x.sku, x.product_name,
-                  x.unit_name, x.qty, x.price, x.discount, x.amount, x.profit, x.note || '']));
-            }
-          }}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!data.rows.length}
+            onClick={() => {
+              if (view === 'product') {
+                downloadCsv(`lichsu-banhang-theo-mathang-${r.from}-${r.to}.csv`,
+                  ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lần bán', 'Tổng SL', 'Doanh thu', 'Lợi nhuận', 'Giá thấp nhất', 'Giá cao nhất', 'Giá bình quân', 'Giá lần cuối'],
+                  data.products.map((p) => [p.sku, p.name, p.base_unit, p.times, p.qty, p.amount,
+                    p.profit, p.min_price, p.max_price, p.avg_price, p.last_price]));
+              } else if (view === 'customer') {
+                downloadCsv(`lichsu-banhang-theo-khach-${r.from}-${r.to}.csv`,
+                  ['Khách hàng', 'Điện thoại', 'Số hoá đơn', 'Tổng SL', 'Doanh thu', 'Lợi nhuận'],
+                  data.customers.map((c) => [c.name, c.phone || '', c.bills, c.qty, c.amount, c.profit]));
+              } else {
+                downloadCsv(`lichsu-banhang-chitiet-${r.from}-${r.to}.csv`,
+                  ['Ngày', 'Mã HĐ', 'Khách hàng', 'Mã hàng', 'Tên hàng', 'ĐVT', 'SL', 'Đơn giá', 'Giảm', 'Thành tiền', 'Lãi', 'Ghi chú'],
+                  data.rows.map((x) => [datetime(x.ts), x.code, x.customer_name, x.sku, x.product_name,
+                    x.unit_name, x.qty, x.price, x.discount, x.amount, x.profit, x.note || '']));
+              }
+            }}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {!data.rows.length ? (

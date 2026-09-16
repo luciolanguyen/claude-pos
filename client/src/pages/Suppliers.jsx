@@ -10,7 +10,7 @@ import { useLiveReload } from '../lib/useLive';
 import { money, n, short, date, datetime, smartTime, match, CASH_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Spinner, Empty, ErrorBox, Badge, Confirm, Stat, Tabs,
-  Modal, Field, MoneyInput, Select, Textarea,
+  Modal, Field, MoneyInput, Select, Textarea, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { SupplierForm } from '../components/CustomerForm';
@@ -96,7 +96,9 @@ export default function Suppliers() {
         title="Nhà cung cấp"
         subtitle={totals ? `${n(totals.count)} nhà cung cấp · ${n(totals.debtors)} đang nợ · tổng nợ ${money(totals.debt)}` : ''}
         actions={<>
-          <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          </PermGate>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm nhà cung cấp</Button>
         </>}
       >

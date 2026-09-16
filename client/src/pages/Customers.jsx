@@ -9,7 +9,7 @@ import { useLiveReload } from '../lib/useLive';
 import { money, n, short, smartTime, date } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Select, Textarea, Stat,
+  Confirm, Field, MoneyInput, Select, Textarea, Stat, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CustomerForm, { CUSTOMER_TYPES } from '../components/CustomerForm';
@@ -107,7 +107,9 @@ export default function Customers() {
         title="Khách hàng"
         subtitle={totals ? `${n(totals.count)} khách · ${n(totals.debtors)} đang nợ · tổng nợ ${money(totals.debt)}` : ''}
         actions={<>
-          <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          </PermGate>
           <Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>
             Thêm khách hàng
           </Button>

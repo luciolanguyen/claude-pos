@@ -9,7 +9,7 @@ import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '..
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, PAYMENT_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox,
-  Badge, Confirm, Field, MoneyInput, Textarea, Stat, Pager,
+  Badge, Confirm, Field, MoneyInput, Textarea, Stat, Pager, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import InvoicePrint from '../components/InvoicePrint';
@@ -99,7 +99,9 @@ export default function Sales() {
         title="Hoá đơn bán hàng"
         subtitle={`${r.label} · ${date(r.from)} — ${date(r.to)}`}
         actions={<>
-          <Button icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
+          </PermGate>
           <Link to="/pos" className="btn btn-primary btn-touch">
             <ShoppingCart size={16} aria-hidden="true" />
             Bán hàng

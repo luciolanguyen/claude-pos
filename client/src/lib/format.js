@@ -138,6 +138,7 @@ export const COST_METHOD_HINT = {
 export const ROLE_LABEL = {
   owner: 'Chủ cửa hàng', manager: 'Quản lý',
   cashier: 'Thu ngân', stock: 'Nhân viên kho',
+  warranty: 'Nhân viên bảo hành',
 };
 
 export const MOVE_LABEL = {
