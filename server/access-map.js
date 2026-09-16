@@ -87,6 +87,7 @@ export const ACCESS_RULES = [
      thì luật rộng nuốt mất, quyền mới không có tác dụng mà không ai biết.
      Một file nhập sai là hỏng cả danh mục, nặng hơn hẳn sửa một mặt hàng. */
   ['POST', /^\/products\/import$/,        'data.import'],
+  ['GET',  /^\/products\/import-meta$/,   'data.import'],
 
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
      khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */

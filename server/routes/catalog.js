@@ -6,6 +6,7 @@ import {
   all, get, run, tx, moveStock, costOf, costMethodOf, pageParams,
   categoryTree, categoryTreeIds, categoryFilter,
   searchWhere, searchMode, orderBy, unitTiers, PRODUCT_DIR } from '../db.js';
+import { validateImport, writeImport, importMeta } from '../import-products.js';
 
 const r = Router();
 
@@ -663,6 +664,13 @@ r.post('/pos-featured-sets/:id/activate', (req, res) => {
   }
 });
 
+/* Dữ liệu thật để dựng file mẫu nhập hàng (plan 26): đường dẫn nhóm, đơn
+   vị tính, 3 dòng mẫu. Đặt TRƯỚC /products/:id, không thì chữ "import-meta"
+   bị hiểu là mã mặt hàng. */
+r.get('/products/import-meta', (req, res) => {
+  res.json(importMeta());
+});
+
 r.get('/products/:id', (req, res) => {
   const p = hydrate(get('SELECT * FROM products WHERE id = ?', [req.params.id]));
   if (!p) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
@@ -1188,147 +1196,38 @@ r.put('/products/:id/price', (req, res) => {
 /* -------------------------------------------------------------------- */
 
 /**
- * rows: [{ sku, name, category, base_unit, cost_price, price_retail,
+ * rows: [{ _line, sku, name, alias, category, base_unit, cost_price, price_retail,
  *          price_wholesale, price_dealer, min_stock, opening_qty,
  *          barcode, brand, location, vat_rate,
  *          big_unit, big_factor, big_price }]
- * mode: 'create' (bỏ qua mã trùng) | 'update' (cập nhật mã trùng)
- * Trả về số dòng thêm mới / cập nhật / bỏ qua, kèm danh sách lỗi từng dòng.
+ *   Khoá nào vắng mặt = cột đó không có trong file. `_line` là số dòng thật
+ *   trong file để báo lỗi cho đúng chỗ.
+ * mode:    'create' (bỏ qua hàng đã có) | 'update' (cập nhật hàng đã có)
+ * dry_run: true → chỉ KIỂM, không ghi gì (bước "Kiểm tra dữ liệu")
+ *
+ * Một dòng hỏng là KHÔNG nhập dòng nào (chủ tiệm chốt, plan 26 §2.5): nhập
+ * nửa vời rồi sửa file nhập lại là gốc của hàng trùng và tồn kho sai.
  */
 r.post('/products/import', (req, res) => {
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
   const mode = req.body?.mode === 'update' ? 'update' : 'create';
-  const warehouseId = Number(req.body?.warehouse_id) ||
-    get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
+  const warehouseId = Number(req.body?.warehouse_id)
+    || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!rows.length) return res.status(400).json({ error: 'Không có dòng dữ liệu nào để nhập.' });
 
-  const priceLists = all('SELECT id, code FROM price_lists ORDER BY sort_order, id');
-  const plByCode = Object.fromEntries(priceLists.map((p) => [p.code, p.id]));
-  // Nếu cửa hàng đổi tên mã bảng giá thì vẫn dùng được theo thứ tự
-  const plRetail = plByCode.LE ?? priceLists[0]?.id;
-  const plWholesale = plByCode.SI ?? priceLists[1]?.id;
-  const plDealer = plByCode.THO ?? priceLists[2]?.id;
-
-  const errors = [];
-  let created = 0, updated = 0, skipped = 0;
-
-  const num = (v) => {
-    if (v === undefined || v === null || v === '') return 0;
-    // Chấp nhận "1.250.000", "1,250,000", "1250000"
-    const s = String(v).replace(/[^\d.,-]/g, '').replace(/[.,](?=\d{3}\b)/g, '');
-    const x = Number(s.replace(',', '.'));
-    return Number.isFinite(x) ? x : 0;
-  };
-
-  try {
-    tx(() => {
-      for (let i = 0; i < rows.length; i++) {
-        const raw = rows[i];
-        const line = i + 2; // dòng 1 là tiêu đề trong file gốc
-        const name = String(raw.name || '').trim();
-        if (!name) { errors.push({ line, error: 'Thiếu tên hàng hoá' }); continue; }
-
-        // Nhóm hàng: khớp theo tên, chưa có thì tạo mới
-        let categoryId = null;
-        const catName = String(raw.category || '').trim();
-        if (catName) {
-          const found = get('SELECT id FROM categories WHERE name = ? COLLATE NOCASE', [catName]);
-          categoryId = found
-            ? found.id
-            : Number(run('INSERT INTO categories(name, sort_order) VALUES(?, ?)',
-                [catName, get('SELECT COUNT(*) AS n FROM categories').n]).lastInsertRowid);
-        }
-
-        const baseUnit = String(raw.base_unit || '').trim() || 'Cái';
-        let sku = String(raw.sku || '').trim();
-        // Có mã thì khớp theo mã; không có mã thì khớp theo tên, để nhập lại
-        // file đã sửa không tạo ra bản trùng.
-        const existing = sku
-          ? get('SELECT id FROM products WHERE sku = ?', [sku])
-          : get('SELECT id FROM products WHERE name = ? COLLATE NOCASE', [name]);
-
-        if (existing && mode === 'create') { skipped++; continue; }
-
-        if (!sku) {
-          const n = get('SELECT COUNT(*) AS n FROM products').n + 1;
-          sku = 'SP' + String(n).padStart(5, '0');
-          let k = n;
-          while (get('SELECT id FROM products WHERE sku = ?', [sku])) {
-            sku = 'SP' + String(++k).padStart(5, '0');
-          }
-        }
-
-        const cost = Math.round(num(raw.cost_price));
-        const fields = [
-          raw.barcode ? String(raw.barcode).trim() : null,
-          name, categoryId, baseUnit,
-          Number(raw.vat_rate) >= 0 && raw.vat_rate !== '' ? Number(raw.vat_rate) : 8,
-          num(raw.min_stock),
-          raw.brand ? String(raw.brand).trim() : null,
-          raw.location ? String(raw.location).trim() : null,
-        ];
-
-        let productId;
-        if (existing) {
-          run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
-                 vat_rate = ?, min_stock = ?, brand = ?, location = ? WHERE id = ?`,
-            [fields[0], fields[1], raw.alias ? String(raw.alias).trim() : null,
-              fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], existing.id]);
-          productId = existing.id;
-          updated++;
-        } else {
-          productId = Number(run(`
-            INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price,
-                                 vat_rate, min_stock, brand, location, track_stock, active)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
-            [sku, fields[0], fields[1], raw.alias ? String(raw.alias).trim() : null,
-              fields[2], fields[3], cost, fields[4], fields[5], fields[6], fields[7]]).lastInsertRowid);
-          created++;
-        }
-
-        // Đơn vị cơ bản + giá bán 3 bảng giá
-        const units = [{
-          unit_name: baseUnit,
-          factor: 1,
-          prices: {
-            [plRetail]: Math.round(num(raw.price_retail)),
-            ...(plWholesale ? { [plWholesale]: Math.round(num(raw.price_wholesale) || num(raw.price_retail)) } : {}),
-            ...(plDealer ? { [plDealer]: Math.round(num(raw.price_dealer) || num(raw.price_retail)) } : {}),
-          },
-        }];
-
-        // Đơn vị lớn tuỳ chọn (Cuộn 100m, Thùng 50 cái...)
-        const bigName = String(raw.big_unit || '').trim();
-        const bigFactor = num(raw.big_factor);
-        if (bigName && bigFactor > 1) {
-          const bigPrice = Math.round(num(raw.big_price)) ||
-            Math.round(num(raw.price_retail) * bigFactor);
-          units.push({
-            unit_name: bigName,
-            factor: bigFactor,
-            prices: {
-              [plRetail]: bigPrice,
-              ...(plWholesale ? { [plWholesale]: Math.round((num(raw.price_wholesale) || num(raw.price_retail)) * bigFactor) } : {}),
-              ...(plDealer ? { [plDealer]: Math.round((num(raw.price_dealer) || num(raw.price_retail)) * bigFactor) } : {}),
-            },
-          });
-        }
-        saveUnitsAndPrices(productId, units, baseUnit);
-
-        // Tồn kho đầu kỳ chỉ ghi cho hàng mới, tránh cộng trùng khi nhập lại file
-        const openingQty = num(raw.opening_qty);
-        if (!existing && openingQty > 0 && warehouseId) {
-          moveStock({
-            productId, warehouseId, qtyChange: openingQty, unitCost: cost,
-            refType: 'opening', note: 'Tồn đầu kỳ (nhập từ file)',
-          });
-        }
-      }
-    });
-    res.json({ ok: true, created, updated, skipped, errors });
-  } catch (e) {
-    res.status(400).json({ error: e.message, errors });
+  const check = validateImport(rows, { mode });
+  const report = { summary: check.summary, errors: check.errors, warnings: check.warnings };
+  if (req.body?.dry_run === true) {
+    return res.json({ ok: check.errors.length === 0, dry_run: true, ...report });
   }
+  if (check.errors.length) {
+    return res.status(422).json({
+      error: `Có ${check.errors.length} lỗi nên CHƯA nhập dòng nào. Sửa hết lỗi rồi nhập lại.`,
+      code: 'IMPORT_INVALID', ...report,
+    });
+  }
+  const result = tx(() => writeImport(check.plan, { warehouseId }));
+  res.json({ ok: true, ...result, ...report });
 });
 
 export default r;
