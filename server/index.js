@@ -110,7 +110,12 @@ const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'm
   /* Cột tên trơn "cost": giá tiệm bốc hàng mua hộ vãng lai (tài liệu 24),
      chi phí lắp ráp, tiền linh kiện thay khi sửa bảo hành. Ba chỗ đó đều
      là giá vốn thật, trước đây lọt ra ngoài vì tên cột không có hậu tố. */
-  'cost'];
+  'cost',
+  /* Hoa hồng hàng mua hộ chính là lãi của tiệm trên món đó; "payable" là
+     số trả chủ hàng = tiền bán − hoa hồng, lộ ra thì trừ ngược ra hoa hồng
+     (plan 31, 1.1d). Thu ngân vẫn khai mức hoa hồng lúc bán — khoá đó tên
+     commission_value, không bị cắt. */
+  'commission', 'payable', 'consign_commission'];
 
 /* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
    chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */

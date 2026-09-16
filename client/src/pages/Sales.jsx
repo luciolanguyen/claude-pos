@@ -190,7 +190,8 @@ export default function Sales() {
                           {s.consign_count > 0 && (
                             <span
                               title={`${s.consign_count} món mua hộ · ${money(s.consign_amount)}`
-                                + ` · hoa hồng ${money(s.consign_commission)}`}
+                                /* Hoa hồng là lãi của tiệm: máy chủ không gửi cho người không xem được giá vốn */
+                                + (s.consign_commission !== undefined ? ` · hoa hồng ${money(s.consign_commission)}` : '')}
                               className="ml-1 inline-flex items-center gap-0.5 rounded border
                                          border-violet-300 bg-violet-50 px-1 text-2xs
                                          font-semibold text-violet-800"
@@ -395,13 +396,19 @@ export default function Sales() {
                     <span>Còn nợ</span><span className="tabular font-mono">{money(detail.total - detail.paid)}</span>
                   </div>
                 )}
-                <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
-                  <span>Giá vốn</span><span className="tabular font-mono">{money(detail.cogs)}</span>
-                </div>
-                <div className="flex justify-between font-semibold text-emerald-700">
-                  <span>Lợi nhuận</span>
-                  <span className="tabular font-mono">{money(detail.total - detail.vat_amount - detail.cogs)}</span>
-                </div>
+                {/* Không có quyền xem giá vốn thì máy chủ không gửi cogs — đừng hiện
+                    "Giá vốn 0 đ" và "Lợi nhuận NaN" cho nhân viên (plan 31, 1.1d) */}
+                {detail.cogs !== undefined && (
+                  <>
+                    <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
+                      <span>Giá vốn</span><span className="tabular font-mono">{money(detail.cogs)}</span>
+                    </div>
+                    <div className="flex justify-between font-semibold text-emerald-700">
+                      <span>Lợi nhuận</span>
+                      <span className="tabular font-mono">{money(detail.total - detail.vat_amount - detail.cogs)}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 

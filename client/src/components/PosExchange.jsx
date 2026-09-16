@@ -40,7 +40,11 @@ import {
   ConditionToggle, FeeField, RefundMethodPicker, VoucherCard, VoucherPrint, feeOf,
 } from './ReturnParts';
 
-export default function ExchangeModal({ open, onClose, products, policy, onQuickReturn, onDone }) {
+/**
+ * @param sale  hoá đơn mở sẵn — bấm "Đổi - Trả hàng" trong danh sách hoá đơn
+ *              trong ngày thì vào thẳng hoá đơn đó, khỏi tìm lại (plan 31, 1.1f)
+ */
+export default function ExchangeModal({ open, onClose, sale: preset = null, products, policy, onQuickReturn, onDone }) {
   const { user, meta, toast, defaultWarehouse, defaultPriceList, store, settings } = useApp();
   const [q, setQ] = useState('');
   const [sale, setSale] = useState(null);
@@ -79,8 +83,9 @@ export default function ExchangeModal({ open, onClose, products, policy, onQuick
     setRefundMethod('cash'); setPayMethod('cash');
     setPaid(0); setPaidTouched(false); setAccountId('');
     setReason(''); setErr(''); setDone(null); setScanA(''); setScanB('');
+    if (preset?.id) openSale(preset.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, preset?.id]);
 
   const priceListId = sale?.price_list_id || defaultPriceList;
   const hasCustomer = !!sale?.customer_id;

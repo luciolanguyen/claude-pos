@@ -1083,7 +1083,13 @@ r.get('/drafts', (req, res) => {
   res.json(all(`
     SELECT d.id, d.code, d.ts, d.updated_at, d.title, d.tab_no, d.customer_id, d.total, d.item_count,
            d.warehouse_id, d.price_list_id,
-           c.name AS customer_name, u.full_name AS user_name
+           c.name AS customer_name, u.full_name AS user_name,
+           /* Người mua hộ + số món mua hộ nằm trong payload (plan 31, 1.2b) —
+              đọc thẳng bằng json_extract, khỏi thêm cột */
+           CASE WHEN json_valid(d.payload) THEN json_extract(d.payload, '$.buyer.name') END AS buyer_name,
+           CASE WHEN json_valid(d.payload) THEN json_extract(d.payload, '$.buyer.phone') END AS buyer_phone,
+           CASE WHEN json_valid(d.payload)
+                THEN COALESCE(json_array_length(d.payload, '$.consign'), 0) ELSE 0 END AS consign_count
     FROM draft_sales d
     LEFT JOIN customers c ON c.id = d.customer_id
     LEFT JOIN users u ON u.id = d.user_id

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Search, Plus, X, UserPlus, Printer, Percent, Package, ShoppingCart, ArrowLeft,
   FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
-  ClipboardList, RefreshCcw, MapPin, ShieldCheck, Trash2, Star,
+  ClipboardList, MapPin, ShieldCheck, Trash2, Star, ReceiptText,
   FolderTree, Layers, Zap, Check, Handshake, Lightbulb, GripVertical,
   Maximize2, Wallet, Camera,
 } from 'lucide-react';
@@ -47,6 +47,7 @@ import {
 } from '../components/PosApproval';
 import { tabTitle, tabNoOf, smallestFree, normalizeTabs } from '../lib/posTabs';
 import PosCameraScan from '../components/PosCameraScan';
+import PosDayInvoices from '../components/PosDayInvoices';
 import { isTouchDevice, primeAudio } from '../lib/cameraScan';
 
 /* Người có quyền xem giá vốn mới thấy giá vốn và giá nhập gần nhất khi bán.
@@ -58,6 +59,14 @@ const canSeeCost = (user, can) => !!can?.('cost.view') || user?.role === 'owner'
  * khi hàng của người khác gửi — tự bốc ngoài thì tiệm ăn chênh lệch chứ
  * không "trích hoa hồng của chính mình".
  */
+/**
+ * Số dòng trong một tab, TÍNH CẢ hàng mua hộ vãng lai. Hoá đơn chỉ có hàng
+ * mua hộ là hợp lệ (tài liệu 24), nên mọi chỗ hỏi "tab có gì chưa" — lưu tạm,
+ * mở lại đơn tạm, đóng tab, phím F4 — phải đếm bằng hàm này, không đếm riêng
+ * giỏ hàng của tiệm. Trước đây tab chỉ có hàng mua hộ đóng là mất không hỏi.
+ */
+const lineCount = (t) => (t?.cart?.length || 0) + (t?.consign?.length || 0);
+
 const consignCommission = (c, amount) => {
   if (!c?.partner_id) return 0;
   const v = Number(c.commission_value) || 0;
@@ -394,7 +403,8 @@ export default function POS() {
   const [draftsOpen, setDraftsOpen] = useState(false);
   const [orderOpen, setOrderOpen] = useState(false);        // giỏ hàng -> đơn đặt
   const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn đặt để giao
-  const [exchangeOpen, setExchangeOpen] = useState(false);  // đổi trả hàng
+  const [exchangeOpen, setExchangeOpen] = useState(false);  // đổi trả hàng: true | { sale } mở sẵn hoá đơn
+  const [dayOpen, setDayOpen] = useState(false);            // hoá đơn trong ngày (plan 31, hạng mục 1.1)
   const [debtOpen, setDebtOpen] = useState(false);          // thu nợ khách đang chọn
   const [debtFor, setDebtFor] = useState(null);             // thu nợ của một khách khác tab
   const [overdueOpen, setOverdueOpen] = useState(false);    // bảng nợ quá hạn cả tiệm
@@ -1075,7 +1085,7 @@ export default function POS() {
 
   const closeTab = (id) => {
     const t = tabs.find((x) => x.id === id);
-    if (t?.cart.length) { setClosing(t); return; }
+    if (lineCount(t)) { setClosing(t); return; }
     dropTab(id);
   };
 
@@ -1084,7 +1094,7 @@ export default function POS() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'F2') { e.preventDefault(); searchRef.current?.focus(); }
-      else if (e.key === 'F4') { e.preventDefault(); if (tab?.cart.length) setPayOpen(true); }
+      else if (e.key === 'F4') { e.preventDefault(); if (lineCount(tab)) setPayOpen(true); }
       else if (e.key === 'F8') { e.preventDefault(); setCustOpen(true); }
       else if (e.key === 'F7') { e.preventDefault(); addTab(); }
       else if (e.key === 'Escape' && !payOpen && !custOpen) setSearch('');
@@ -1101,7 +1111,7 @@ export default function POS() {
    * số "Đơn Hàng X" của nó; tab mới mở sau đó không lấy trùng số này.
    */
   const saveDraft = async () => {
-    if (!tab?.cart.length) { toast('Giỏ hàng đang trống, chưa có gì để lưu.', 'warn'); return; }
+    if (!lineCount(tab)) { toast('Giỏ hàng đang trống, chưa có gì để lưu.', 'warn'); return; }
     const no = tabNoOf(tab);
     try {
       const res = await api.post('/drafts', {
@@ -1113,10 +1123,15 @@ export default function POS() {
         warehouse_id: warehouseId,
         price_list_id: tab.priceListId,
         total: totals.total,
-        item_count: tab.cart.length,
+        item_count: lineCount(tab),
         payload: {
           cart: tab.cart, discountType: tab.discountType, discountValue: tab.discountValue,
           note: tab.note, isVat: tab.isVat, delivery: tab.delivery, buyer: tab.buyer,
+          /* Hàng mua hộ vãng lai: trước đây KHÔNG lưu, mở lại đơn tạm là mất
+             sạch. Giá bốc hàng ghi dưới tên "pickup_cost" — máy chủ cắt mọi
+             khoá tên "cost" khỏi dữ liệu trả cho người không xem được giá vốn,
+             mà thu ngân mở lại đơn vẫn cần đúng giá mình đã bốc để chốt đơn. */
+          consign: (tab.consign || []).map(({ cost, ...c }) => ({ ...c, pickup_cost: Number(cost) || 0 })),
         },
       });
       /* Giữ ngay số của đơn vừa lưu, đừng đợi tải lại danh sách: tab mới mở
@@ -1150,7 +1165,7 @@ export default function POS() {
       return;
     }
     const p = full.payload || {};
-    if (!p.cart?.length) {
+    if (!p.cart?.length && !p.consign?.length) {
       toast('Đơn lưu tạm này không còn dòng hàng nào.', 'bad', 6000);
       return;
     }
@@ -1183,7 +1198,7 @@ export default function POS() {
 
     const t = {
       ...newTab(want, full.price_list_id || defaultPriceList),
-      cart: p.cart,
+      cart: p.cart || [],
       customerId: full.customer_id,
       buyer: p.buyer || null,
       discountType: p.discountType || 'amount',
@@ -1191,6 +1206,9 @@ export default function POS() {
       note: p.note || '',
       isVat: !!p.isVat,
       delivery: p.delivery || null,
+      consign: Array.isArray(p.consign)
+        ? p.consign.map(({ pickup_cost: pickup, ...c }) => ({ ...c, cost: Number(pickup ?? c.cost) || 0 }))
+        : [],
     };
     setTabs([...next, t]);
     setActiveId(t.id);
@@ -1533,7 +1551,7 @@ export default function POS() {
         role="tablist" aria-label="Các đơn hàng đang mở">
         {tabs.map((t) => {
           const active = t.id === activeId;
-          const count = t.cart.length;
+          const count = lineCount(t);
           const closable = tabs.length > 1 || count > 0;
           return (
             <div key={t.id} className="flex items-stretch shrink-0">
@@ -1587,11 +1605,15 @@ export default function POS() {
           <span className="kbd !bg-white/15 !text-slate-300 !border-white/20 hidden sm:inline">F7</span>
         </button>
         <div className="flex-1" />
-        <button onClick={() => setExchangeOpen(true)} className={barBtn} aria-label="Đổi trả hàng"
-          title="Khách đổi hoặc trả hàng — có hoá đơn thì quét hoá đơn, không có thì chọn Trả hàng nhanh">
-          <RefreshCcw size={14} aria-hidden="true" />
-          <span className="hidden sm:inline">Đổi trả hàng</span>
-        </button>
+        {/* Nút "Đổi trả hàng" cũ đã dời vào trong danh sách này (plan 31, 1.1c):
+            tìm đúng hoá đơn rồi đổi trả ngay trong khung chi tiết */}
+        {can('sale.view') && (
+          <button onClick={() => setDayOpen(true)} className={barBtn} aria-label="Hoá đơn trong ngày"
+            title="Hoá đơn bán trong ngày — xem chi tiết, in lại, đổi trả hàng">
+            <ReceiptText size={14} aria-hidden="true" />
+            <span className="hidden sm:inline">HĐ trong ngày</span>
+          </button>
+        )}
         <button onClick={() => setBoardOpen(true)} className={barBtn} aria-label="Theo dõi giao hàng"
           title="Theo dõi đơn giao và đối soát tiền thu hộ">
           <MapPin size={14} aria-hidden="true" />
@@ -1827,7 +1849,7 @@ export default function POS() {
                 <Wallet size={15} aria-hidden="true" />
                 <span className="text-2xs font-bold">TT</span>
               </button>
-              <button onClick={saveDraft} disabled={!tab.cart.length}
+              <button onClick={saveDraft} disabled={!lineCount(tab)}
                 className="btn btn-outline btn-sm w-full flex-col !gap-0 !py-2 !px-1"
                 title="Lưu tạm đơn đang chờ">
                 <Save size={15} aria-hidden="true" />
@@ -2111,7 +2133,7 @@ export default function POS() {
                 <Truck size={14} aria-hidden="true" />
                 {tab.delivery ? 'Đang giao' : 'Giao hàng'}
               </button>
-              <button onClick={saveDraft} disabled={!tab.cart.length}
+              <button onClick={saveDraft} disabled={!lineCount(tab)}
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs"
                 title="Lưu đơn này vào danh sách lưu tạm và đóng tab">
                 <Save size={14} aria-hidden="true" />
@@ -2159,7 +2181,7 @@ export default function POS() {
         customer={customer}
         carriers={carriers || []}
         goodsTotal={totals.total - totals.shipCharged}
-        canPay={tab.cart.length > 0}
+        canPay={lineCount(tab) > 0}
         onSave={(d) => {
           patchTab({ delivery: d });
           setDeliveryOpen(false);
@@ -2256,8 +2278,16 @@ export default function POS() {
         />
       )}
 
+      <PosDayInvoices
+        open={dayOpen}
+        onClose={() => setDayOpen(false)}
+        onExchange={(sale) => { setDayOpen(false); setExchangeOpen({ sale }); }}
+        onQuickExchange={() => { setDayOpen(false); setExchangeOpen(true); }}
+      />
+
       <ExchangeModal
-        open={exchangeOpen}
+        open={!!exchangeOpen}
+        sale={exchangeOpen?.sale || null}
         onClose={() => setExchangeOpen(false)}
         products={products || []}
         policy={policy}
@@ -2300,7 +2330,7 @@ export default function POS() {
         confirmText="Đóng tab, bỏ giỏ hàng"
         message={closing && (
           <>
-            "{closing.title}" đang có <b>{closing.cart.length} mặt hàng</b> chưa thanh toán. Đóng tab là mất
+            "{closing.title}" đang có <b>{lineCount(closing)} mặt hàng</b> chưa thanh toán. Đóng tab là mất
             giỏ hàng này — muốn giữ lại thì bấm Huỷ rồi dùng nút <b>Lưu tạm</b>.
           </>
         )}
@@ -3008,7 +3038,7 @@ function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
       onClose={onClose}
       title="Đơn lưu tạm"
       subtitle="Đơn đang bán dở, lưu trên máy chủ nên máy nào trong tiệm cũng mở tiếp được. Mở lại thì đơn rời khỏi danh sách này."
-      size="lg"
+      size="xl"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
       {busy ? <Spinner />
@@ -3023,7 +3053,7 @@ function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
             <table className="data">
               <thead>
                 <tr>
-                  <th>Tên</th><th>Mã</th><th>Khách hàng</th>
+                  <th>Tên</th><th>Mã</th><th>Khách hàng</th><th>Người mua hộ</th>
                   <th className="text-right">Số mặt</th>
                   <th className="text-right">Tạm tính</th>
                   <th>Lưu lúc</th><th>Người lưu</th>
@@ -3038,7 +3068,16 @@ function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
                       <td className="font-semibold">{d.tab_no ? tabTitle(d.tab_no) : (d.title || '(chưa đặt tên)')}</td>
                       <td className="font-mono text-muted-ink">{d.code}</td>
                       <td>{d.customer_name || 'Khách lẻ'}</td>
-                      <td className="num">{d.item_count}</td>
+                      {/* Người mua hộ (plan 31, 1.2b) — thợ lấy hàng cho chủ nhà */}
+                      <td className={d.buyer_name ? 'text-violet-800' : 'text-muted-ink'}>
+                        {d.buyer_name
+                          ? <>{d.buyer_name}{d.buyer_phone && <div className="text-2xs text-muted-ink">{d.buyer_phone}</div>}</>
+                          : '—'}
+                      </td>
+                      <td className="num">
+                        {d.item_count}
+                        {d.consign_count > 0 && <div className="text-2xs text-violet-700">+{d.consign_count} mua hộ</div>}
+                      </td>
                       <td className="num font-semibold">{money(d.total)}</td>
                       <td className="text-muted-ink whitespace-nowrap">{smartTime(d.updated_at)}</td>
                       <td className="text-muted-ink">{d.user_name || '—'}</td>
