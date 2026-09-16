@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   Receipt, Printer, Undo2, XCircle, Eye, Filter, Download, ShoppingCart, HandCoins,
-  ShieldCheck,
+  ShieldCheck, Handshake,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
@@ -182,6 +182,21 @@ export default function Sales() {
                           {s.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
                           <WarrantyFlag count={s.warranty_count} compact className="ml-1"
                             onClick={() => setWHistory({ query: { sale_id: s.id }, subtitle: `Hoá đơn ${s.code}` })} />
+                          {/* Hoá đơn có hàng bán giùm chủ vãng lai (plan 31,
+                              hạng mục 4d): tiền gộp chung vào tổng nhưng lãi
+                              chỉ là phần hoa hồng — phải phân biệt được. */}
+                          {s.consign_count > 0 && (
+                            <span
+                              title={`${s.consign_count} món mua hộ · ${money(s.consign_amount)}`
+                                + ` · hoa hồng ${money(s.consign_commission)}`}
+                              className="ml-1 inline-flex items-center gap-0.5 rounded border
+                                         border-violet-300 bg-violet-50 px-1 text-2xs
+                                         font-semibold text-violet-800"
+                            >
+                              <Handshake size={10} aria-hidden="true" />
+                              Mua hộ {s.consign_count}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap text-muted-ink">{datetime(s.ts)}</td>
                         <td>
@@ -193,7 +208,14 @@ export default function Sales() {
                             </div>
                           )}
                         </td>
-                        <td className="num">{s.item_count}</td>
+                        <td className="num">
+                          {s.item_count + (s.consign_count || 0)}
+                          {s.consign_count > 0 && (
+                            <span className="block text-2xs text-violet-700">
+                              {s.item_count} hàng tiệm · {s.consign_count} mua hộ
+                            </span>
+                          )}
+                        </td>
                         <td className="num font-semibold">{money(s.total)}</td>
                         <td className="num">{money(s.paid)}</td>
                         <td className={`num ${s.remaining > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}`}>

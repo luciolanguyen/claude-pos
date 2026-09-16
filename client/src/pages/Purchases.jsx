@@ -562,6 +562,15 @@ function SupplierProductDrawer({ supplierId, supplierName, onClose, onPick, inCa
                 {filtering && x.times > 1 && (
                   <div className="text-2xs text-muted-ink">Đã lấy {n(x.times)} lần của mối này</div>
                 )}
+                {/* Mối đã BÁO GIÁ cho món này — giá hứa cho lần tới, khác giá
+                    đã nhập lần trước (plan 31, hạng mục 5.1c) */}
+                {Number(x.quote_price) > 0 && (
+                  <div className="text-2xs text-violet-800 font-semibold flex items-center gap-0.5">
+                    <Tag size={10} aria-hidden="true" />
+                    Mối báo {money(x.quote_price)}
+                    {x.quote_at && <span className="font-normal text-muted-ink"> · {date(x.quote_at)}</span>}
+                  </div>
+                )}
               </button>
             ))}
       </div>
@@ -781,14 +790,23 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
       if (prev.some((l) => l.key === key)) {
         return prev.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l));
       }
+      /* Giá điền sẵn: ưu tiên BÁO GIÁ của mối nếu nó mới hơn lần nhập gần
+         nhất (plan 31, hạng mục 5.1c) — báo giá là giá mối hứa cho lần tới,
+         còn giá cũ chỉ là chuyện đã qua. Dòng nào lấy từ báo giá thì mang
+         cờ from_quote để hiện dấu hiệu, người lập phiếu biết mà đối chiếu. */
+      const quote = Math.round(Number(row.quote_price) || 0);
+      const quoteNewer = quote > 0
+        && String(row.quote_at || '') > String(row.last_ts || '');
+      const fromLast = row.last_price > 0 && row.last_unit_name === unit.unit_name;
       return [...prev, {
         key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
         pack_spec: p.pack_spec || null,
         units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
         qty: 1,
-        price: row.last_price > 0 && row.last_unit_name === unit.unit_name
-          ? Math.round(row.last_price)
-          : Math.round(p.cost_price * unit.factor),
+        price: quoteNewer ? quote
+          : fromLast ? Math.round(row.last_price)
+            : Math.round(p.cost_price * unit.factor),
+        from_quote: quoteNewer ? { price: quote, at: row.quote_at, note: row.quote_note } : null,
         discount: 0,
         vat_rate: p.vat_rate, current_stock: p.stock, current_cost: p.cost_price,
         overwrite_cost: false,
@@ -956,18 +974,28 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
           <div className="flex items-center justify-between gap-2">
             <span className="label !mb-0">Danh sách hàng nhập ({lines.length})</span>
             <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant={drawerOpen ? 'secondary' : 'primary'}
-                icon={drawerOpen ? PanelRightClose : PanelRightOpen}
-                onClick={() => setDrawerOpen((v) => !v)}
-                title={supplierId
-                  ? 'Bảng chọn hàng, lọc sẵn những món từng lấy của mối này'
-                  : 'Bảng chọn hàng — chọn mối trước thì lọc được theo mối'}
-              >
-                {drawerOpen ? 'Đóng bảng chọn' : 'Chọn hàng nhanh'}
-              </Button>
-              <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
+              {/* Chưa chọn mối thì chưa cho chọn hàng (plan 31, hạng mục 5.1a):
+                  chọn hàng trước rồi mới chọn mối là mất luôn cái lợi lớn
+                  nhất — lọc sẵn những món từng lấy của đúng mối đó, kèm giá
+                  lần trước và giá mối báo. */}
+              {!supplierId ? (
+                <span className="text-2xs text-muted-ink">
+                  Chọn nhà cung cấp ở trên trước, rồi mới chọn hàng.
+                </span>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant={drawerOpen ? 'secondary' : 'primary'}
+                    icon={drawerOpen ? PanelRightClose : PanelRightOpen}
+                    onClick={() => setDrawerOpen((v) => !v)}
+                    title="Bảng chọn hàng, lọc sẵn những món từng lấy của mối này"
+                  >
+                    {drawerOpen ? 'Đóng bảng chọn' : 'Chọn hàng nhanh'}
+                  </Button>
+                  <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
+                </>
+              )}
             </div>
           </div>
 
@@ -975,8 +1003,12 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
             <Empty
               icon={FileText}
               title="Chưa chọn hàng nào"
-              message="Bấm Chọn hàng để thêm các mặt hàng lấy về từ nhà cung cấp."
-              action={<CartPickerButton kind="purchase" size="md" onClick={() => setPickerOpen(true)} />}
+              message={supplierId
+                ? 'Bấm Chọn hàng để thêm các mặt hàng lấy về từ nhà cung cấp.'
+                : 'Chọn nhà cung cấp ở trên trước — bảng chọn hàng sẽ lọc sẵn những món từng lấy của mối đó.'}
+              action={supplierId
+                ? <CartPickerButton kind="purchase" size="md" onClick={() => setPickerOpen(true)} />
+                : null}
             />
           ) : (
             <div className="table-wrap">
@@ -1020,7 +1052,22 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                   {lines.map((l) => (
                     <tr key={l.key}>
                       <td>
-                        <div className="font-semibold">{l.name}</div>
+                        <div className="font-semibold flex items-center gap-1.5">
+                          {l.name}
+                          {/* Giá đang lấy từ BÁO GIÁ của mối, không phải giá
+                              nhập lần trước (plan 31, hạng mục 5.1c) */}
+                          {l.from_quote && (
+                            <span
+                              title={`Mối báo ${money(l.from_quote.price)} ngày ${date(l.from_quote.at)}`
+                                + (l.from_quote.note ? ` — ${l.from_quote.note}` : '')}
+                              className="inline-flex items-center gap-0.5 rounded border border-violet-300
+                                         bg-violet-50 px-1 text-2xs font-semibold text-violet-800 shrink-0"
+                            >
+                              <Tag size={10} aria-hidden="true" />
+                              Mối báo
+                            </span>
+                          )}
+                        </div>
                         <div className="text-2xs text-muted-ink font-mono">
                           {l.sku} · tồn hiện tại {fq(l.current_stock)} {l.base_unit}
                         </div>

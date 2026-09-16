@@ -114,11 +114,26 @@ export function SaleReturns() {
 export function PurchaseReturns() {
   const { toast } = useApp();
   const [rangeKey, setRangeKey] = useState('day30');
-  const r = useMemo(() => range(rangeKey), [rangeKey]);
+  /* Lọc nâng cao (plan 31, hạng mục 5.2a): ngoài khoảng ngày dựng sẵn còn
+     cho chọn ngày tuỳ ý, lọc theo mối, và gõ tìm số phiếu. Trước đây chỉ
+     có mỗi khoảng ngày, muốn tìm một phiếu cũ là phải lật từng trang. */
+  const [custom, setCustom] = useState({ from: '', to: '' });
+  const [supplierId, setSupplierId] = useState(null);
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 300);
+  const preset = useMemo(() => range(rangeKey), [rangeKey]);
+  const r = rangeKey === 'custom'
+    ? { ...custom, label: custom.from || custom.to ? `${custom.from || '…'} → ${custom.to || '…'}` : 'Chọn ngày' }
+    : preset;
+  const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), []);
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
-  } = usePaged((pg) => api.purchaseReturns({ from: r.from, to: r.to, ...pg }), [r.from, r.to],
+  } = usePaged(
+    (pg) => api.purchaseReturns({
+      from: r.from, to: r.to, supplier_id: supplierId || '', q: dq, ...pg,
+    }),
+    [r.from, r.to, supplierId, dq],
     { key: 'purchase-returns' });
   const [detail, setDetail] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -139,9 +154,34 @@ export function PurchaseReturns() {
           </>
         }
       >
-        <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
-          {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-        </Select>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
+            {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            <option value="custom">Chọn ngày…</option>
+          </Select>
+          {rangeKey === 'custom' && (
+            <>
+              <Input type="date" size="sm" className="!w-36" aria-label="Từ ngày"
+                value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
+              <span className="text-2xs text-muted-ink">đến</span>
+              <Input type="date" size="sm" className="!w-36" aria-label="Đến ngày"
+                value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
+            </>
+          )}
+          <div className="w-52">
+            <Combo
+              size="sm"
+              items={suppliers || []}
+              value={supplierId}
+              onChange={setSupplierId}
+              placeholder="Mọi nhà cung cấp"
+              filter={(x, k) => match(x.name, k) || (x.phone || '').includes(k) || match(x.code, k)}
+              render={(x) => ({ label: x.name, sub: x.phone || '' })}
+            />
+          </div>
+          <SearchInput value={q} onChange={setQ} size="sm" className="w-52"
+            placeholder="Số phiếu, số phiếu nhập, lý do..." />
+        </div>
       </PageHeader>
 
       <Page className="space-y-3">

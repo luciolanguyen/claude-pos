@@ -322,12 +322,18 @@ r.post('/purchases/:id/cancel', (req, res) => {
 /* ======================= TRẢ HÀNG NHÀ CUNG CẤP ====================== */
 
 r.get('/purchase-returns', (req, res) => {
-  const { from, to, supplier_id } = req.query;
+  const { from, to, supplier_id: supplierId, q = '', match: mode = 'contains' } = req.query;
   const where = [];
   const params = [];
-  if (supplier_id) { where.push('pr.supplier_id = ?'); params.push(supplier_id); }
+  if (supplierId) { where.push('pr.supplier_id = ?'); params.push(supplierId); }
   if (from) { where.push('date(pr.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(pr.ts) <= date(?)'); params.push(to); }
+  /* Gõ tìm theo số phiếu, số phiếu nhập gốc hoặc tên mối (plan 31, 5.2a) */
+  if (String(q).trim()) {
+    const c = searchWhere(['pr.code', 'p.code', 's.name', 'pr.reason'], q, mode);
+    where.push(c.sql);
+    params.push(...c.params);
+  }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);
   const total = get(`
@@ -354,6 +360,9 @@ r.get('/purchase-returns', (req, res) => {
            COALESCE(SUM(pr.expense), 0) AS expense
     FROM purchase_returns pr
     LEFT JOIN suppliers s ON s.id = pr.supplier_id
+    /* Phải nối luôn bảng phiếu nhập: bộ lọc gõ tìm có tra cả số phiếu nhập
+       gốc (p.code), thiếu chỗ nối này là câu tổng vỡ ngay. */
+    LEFT JOIN purchases p ON p.id = pr.purchase_id
     ${w}`, params);
   res.json({ rows, total, page, page_size: size, totals: sums });
 });
@@ -627,12 +636,16 @@ r.get('/suppliers/:id/bought-products', (req, res) => {
   const rows = all(`
     SELECT p.id, p.sku, p.name, p.alias, p.base_unit, p.track_stock, p.cost_price,
            p.category_id, p.pack_spec, p.purchase_note, c.name AS category_name,
-           COALESCE((SELECT SUM(st.qty) FROM stock st WHERE st.product_id = p.id), 0) AS stock
+           COALESCE((SELECT SUM(st.qty) FROM stock st WHERE st.product_id = p.id), 0) AS stock,
+           /* Giá mối này BÁO cho món đó (tài liệu 15, mục 4.3) — khác giá đã
+              nhập lần trước: báo giá là giá mối hứa cho lần tới. */
+           ps.quote_price, ps.quote_at, ps.quote_note, ps.supplier_sku
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
+    LEFT JOIN product_suppliers ps ON ps.product_id = p.id AND ps.supplier_id = ?
     WHERE ${where.join(' AND ')}
     ORDER BY p.name
-    LIMIT 400`, params);
+    LIMIT 400`, [supplierId, ...params]);
 
   for (const row of rows) Object.assign(row, byId.get(row.id));
   /* Lần lấy gần đây nhất lên đầu — món đang lấy đều đặn bao giờ cũng là

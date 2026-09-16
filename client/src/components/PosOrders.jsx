@@ -416,9 +416,10 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
       footer={
         <>
           <Button onClick={onClose}>Quay lại</Button>
-          <Button icon={Truck} onClick={() => submit(false)} loading={busy} disabled={!chosen.length}>
-            Xuất hoá đơn giao hàng
-          </Button>
+          {/* Trước đây có thêm nút [Xuất hoá đơn giao hàng] không in. Bỏ đi
+              vì thừa: giao hàng thì bao giờ cũng phải có tờ phiếu đưa người
+              giao, mà hai nút cạnh nhau chỉ khác nhau chữ "và in" là hay bấm
+              nhầm. Cần bản không in thì vào màn hình Hoá đơn in lại. */}
           <Button variant="primary" icon={Printer} onClick={() => submit(true)} loading={busy}
             disabled={!chosen.length}>
             Xuất hoá đơn giao hàng và in

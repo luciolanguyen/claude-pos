@@ -40,7 +40,7 @@ import PaymentModal from '../components/PosPayment';
 import ProxyBuyer from '../components/PosBuyer';
 import { CartLine, OrderNote, MoneyCell, PercentCell, lineAmount } from '../components/PosCart';
 import {
-  GridToolbar, CategoryDrawer, categoryFilterSet, LazyGrid,
+  GridToolbar, GridSortPanel, CategoryDrawer, categoryFilterSet, LazyGrid,
 } from '../components/PosCatalog';
 import {
   usePosPolicy, PinApprovalModal, cartDiscountPercent, canSelfApprove,
@@ -403,6 +403,12 @@ export default function POS() {
   /* Công tắc hàng ghim (tài liệu 16, mục 4). Tắt thì KHÔNG ẩn món nào, chỉ
      xả ghim: lưới về thứ tự thường. Nhớ theo từng máy đứng quầy. */
   const [pinOn, setPinOn] = useLocal('thpos.featured_on', true);
+  /* Ba quy tắc xếp lưới còn lại, gộp vào bảng [Sắp xếp lưới] (plan 31, mục
+     3.2). Nhớ theo từng máy đứng quầy — quầy 1 và quầy 2 quen khác nhau. */
+  const [boughtTop, setBoughtTop] = useLocal('thpos.sort_bought_top', true);
+  const [cartTop, setCartTop] = useLocal('thpos.sort_cart_top', true);
+  /* Quầy quen gõ tìm / quét mã thì lưới hàng chỉ tổ chật màn hình */
+  const [hideGrid, setHideGrid] = useLocal('thpos.grid_on_search', false);
   /* Ba công tắc của tài liệu 22, mục 1 — nhớ theo từng máy đứng quầy:
        1. bảng lọc nhóm hàng đẩy ra / thu vào ở cạnh trái
        2. hiện ma trận nấc giá sỉ dưới mỗi ô hàng
@@ -528,6 +534,20 @@ export default function POS() {
       .then(setPriceHist)
       .catch(() => setPriceHist({}));
   }, [tab?.customerId]);
+
+  /**
+   * Khách đang chọn có đơn LƯU TẠM nào chưa xử không (plan 31, hạng mục 7b).
+   * Lập đơn mới cho người đang có đơn treo là hay quên mất đơn cũ, tới lúc
+   * khách hỏi lại thì đã bán trùng.
+   */
+  const draftsOfCustomer = useMemo(() => {
+    if (!tab?.customerId) return [];
+    /* Đơn tạm đang mở sẵn ở một tab khác thì không phải "bỏ quên" — người
+       đứng quầy nhìn thấy nó ngay trên thanh tab rồi. */
+    const openIds = new Set(tabs.map((t) => t.draftId).filter(Boolean));
+    return (draftList || [])
+      .filter((d) => d.customer_id === tab.customerId && !openIds.has(d.id));
+  }, [draftList, tab?.customerId, tabs]);
 
   /* Ghi chú hàng đặc thù của khách đang chọn (tài liệu 24, phần 3) */
   const [custNotes, setCustNotes] = useState([]);
@@ -903,20 +923,23 @@ export default function POS() {
        Chỉ đổi THỨ TỰ, không lọc bớt: món khác vẫn còn nguyên ở dưới. */
     const rank = (p) => {
       /* Món khách vừa gọi bằng tên riêng của họ lên trên cùng, đè cả hàng
-         ghim mùa vụ lẫn món đang trong giỏ (tài liệu 24, phần 3) */
+         ghim mùa vụ lẫn món đang trong giỏ (tài liệu 24, phần 3). Quy tắc
+         này CỐ Ý không có công tắc: nó chỉ bật khi khách đó có ghi chú
+         riêng, và đó đúng là lúc nó hữu ích nhất (plan 31, mục 3.2). */
       if (aliasHits.has(p.id)) return -2;
-      if (inCartQty.get(p.id)) return -1;
+      if (cartTop && inCartQty.get(p.id)) return -1;
       return pinOn ? (p.featured_rank ?? 9999) : 9999;
     };
-    const seen = (p) => (priceHist?.[p.id] ? 0 : 1);
+    const seen = (p) => (boughtTop && priceHist?.[p.id] ? 0 : 1);
     const hasFeatured = pinOn
       && list.some((p) => p.featured_rank !== null && p.featured_rank !== undefined);
-    if (hasFeatured || aliasHits.size > 0 || inCartQty.size > 0
-        || (priceHist && Object.keys(priceHist).length)) {
+    if (hasFeatured || aliasHits.size > 0 || (cartTop && inCartQty.size > 0)
+        || (boughtTop && priceHist && Object.keys(priceHist).length)) {
       list = [...list].sort((a, b) => rank(a) - rank(b) || seen(a) - seen(b));
     }
     return list;
-  }, [products, catSet, search, searchMode, priceHist, pinOn, inCartQty, aliasHits]);
+  }, [products, catSet, search, searchMode, priceHist, pinOn, inCartQty, aliasHits,
+    cartTop, boughtTop]);
 
   /**
    * Lưới vẽ theo Ô, không theo mặt hàng: một mặt hàng khai nhiều ĐƠN VỊ BÁN
@@ -941,19 +964,57 @@ export default function POS() {
     return out;
   }, [filtered]);
 
+  /**
+   * Phân biệt QUÉT với GÕ TAY bằng tốc độ (plan 31, mục 3.3).
+   *
+   * Máy quét bắn cả chuỗi trong vài chục mili giây rồi Enter. Trước đây quét
+   * trượt thì ô tìm KHÔNG được xoá, nên lần quét sau nối vào chuỗi cũ thành
+   * chuỗi rác — lại không khớp, lại không xoá, cứ thế dồn lại.
+   */
+  const typing = useRef({ startedAt: 0, chars: 0 });
+  const onSearchType = (v) => {
+    const now = Date.now();
+    /* Ô đang trống mà có chữ vào là bắt đầu một lượt mới */
+    if (!search) typing.current = { startedAt: now, chars: 0 };
+    typing.current.chars += 1;
+    setSearch(v);
+  };
+  const looksScanned = (term) => {
+    const t = typing.current;
+    if (term.length < 4 || !t.startedAt) return false;
+    /* Trung bình dưới 50ms một ký tự thì tay người không gõ kịp */
+    return (Date.now() - t.startedAt) / term.length < 50;
+  };
+
   const onSearchKey = (e) => {
     if (e.key !== 'Enter') return;
     const term = search.trim();
     if (!term) return;
+    const scanned = looksScanned(term);
     const exact = products?.find((p) => p.barcode === term || p.sku.toLowerCase() === term.toLowerCase());
     /* Quét mã vạch luôn khớp trọn, không phụ thuộc kiểu tìm đang chọn */
     if (exact) {
       if (exact.track_stock && exact.stock <= 0) toast(`"${exact.name}" đã hết hàng trong kho`, 'warn');
-      else { addToCart(exact); setSearch(''); }
+      else addToCart(exact);
+      setSearch('');              // hết hàng cũng phải xoá, để quét tiếp được
       return;
     }
-    if (filtered.length === 1) { addToCart(filtered[0]); setSearch(''); }
-    else if (filtered.length === 0) toast(`Không tìm thấy hàng nào khớp "${term}"`, 'warn');
+    if (scanned) {
+      /* Đã là quét thì phải khớp trọn mã — không được vơ đại món đầu lưới */
+      toast(`Không có hàng nào mang mã "${term}"`, 'warn', 5000);
+      setSearch('');
+      return;
+    }
+    /* Gõ tay: Enter lấy MÓN ĐẦU LƯỚI, không đòi phải còn đúng một kết quả */
+    if (filtered.length) {
+      const first = filtered[0];
+      addToCart(first);
+      setSearch('');
+      if (filtered.length > 1) toast(`Đã thêm "${first.name}"`, 'ok', 3000);
+      return;
+    }
+    toast(`Không tìm thấy hàng nào khớp "${term}"`, 'warn');
+    setSearch('');
   };
 
   /* ------------------------------ Quản lý tab ---------------------------- */
@@ -1349,7 +1410,7 @@ export default function POS() {
               placeholder="Quét mã vạch, gõ tên hàng hoặc tên phụ..."
               aria-label="Tìm hàng hoá hoặc quét mã vạch"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => onSearchType(e.target.value)}
               onKeyDown={onSearchKey}
               autoFocus
             />
@@ -1562,31 +1623,35 @@ export default function POS() {
                   Tự áp giá nấc {tierAuto ? 'bật' : 'tắt'}
                 </button>
               )}
-              {pinnedCount > 0 ? (
-              /* Công tắc hàng ghim (tài liệu 16, mục 4): tắt là XẢ GHIM, hàng
-                 về đúng vị trí thường trong lưới — không ẩn món nào. */
-              <button
-                type="button"
-                onClick={() => setPinOn((v) => !v)}
-                aria-pressed={pinOn}
-                title={pinOn
-                  ? `Đang đẩy ${pinnedCount} món ghim lên đầu lưới. Bấm để xả ghim, lưới về thứ tự thường.`
-                  : 'Đang xếp theo thứ tự thường. Bấm để đẩy hàng ghim lên đầu lưới.'}
-                className={`h-8 px-2 rounded border text-2xs font-semibold inline-flex items-center gap-1
-                            cursor-pointer transition-colors duration-100 shrink-0
-                            ${pinOn
-                              ? 'bg-amber-100 border-amber-400 text-amber-900'
-                              : 'bg-card border-line text-muted-ink hover:text-ink'}`}
-              >
-                <Star size={12} aria-hidden="true" className={pinOn ? 'fill-amber-400' : ''} />
-                Hàng ghim {pinOn ? `(${n(pinnedCount)})` : 'đang tắt'}
-              </button>
-              ) : null}
+              {/* Bốn quy tắc xếp lưới gộp vào một bảng (plan 31, mục 3.2) */}
+              <GridSortPanel
+                boughtTop={boughtTop}
+                onBoughtTop={setBoughtTop}
+                cartTop={cartTop}
+                onCartTop={setCartTop}
+                pinOn={pinOn}
+                onPinOn={setPinOn}
+                pinnedCount={pinnedCount}
+                hideUntilSearch={hideGrid}
+                onHideUntilSearch={setHideGrid}
+                hasCustomer={!!customer}
+              />
             </>}
           />
 
           <div ref={gridRef} className="flex-1 overflow-y-auto p-3">
             {busy ? <Spinner label="Đang tải hàng hoá..." />
+              /* Chế độ ẩn lưới: chỉ vẽ khi đã gõ tìm hoặc đã lọc nhóm hàng.
+                 Chọn nhóm cũng là một ý muốn xem hàng, nên tính luôn. */
+              : hideGrid && !search.trim() && !catSet ? (
+                <Empty
+                  icon={Search}
+                  title="Lưới hàng đang ẩn"
+                  message="Quét mã vạch hoặc gõ tên hàng ở ô tìm kiếm để hiện hàng ra.
+                           Mở bảng Sắp xếp lưới để bỏ chế độ này."
+                  action={<Button onClick={() => searchRef.current?.focus()}>Gõ tìm hàng</Button>}
+                />
+              )
               : filtered.length === 0 ? (
                 <Empty
                   icon={Package}
@@ -1780,6 +1845,24 @@ export default function POS() {
             />
             {/* Nhắc đòi nợ ngay lúc còn gặp mặt khách, không đợi tới lúc thanh toán */}
             <CustomerDebtBanner customer={customer} onCollect={() => setDebtOpen(true)} />
+
+            {/* Khách này còn đơn lưu tạm chưa xử (plan 31, hạng mục 7b) */}
+            {draftsOfCustomer.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setDraftsOpen(true)}
+                className="mt-1.5 w-full flex items-start gap-1.5 text-left rounded border
+                           border-warn/40 bg-amber-50 px-2 py-1.5 text-2xs text-amber-900
+                           cursor-pointer hover:bg-amber-100 transition-colors duration-150"
+              >
+                <AlertTriangle size={12} className="shrink-0 mt-0.5" aria-hidden="true" />
+                <span>
+                  <b>{customer?.name}</b> còn {n(draftsOfCustomer.length)} đơn lưu tạm chưa xử
+                  {draftsOfCustomer[0]?.code ? ` (${draftsOfCustomer[0].code})` : ''} — bấm để mở ra xem
+                  trước khi lập đơn mới.
+                </span>
+              </button>
+            )}
           </div>
 
           {/* Các dòng hàng */}

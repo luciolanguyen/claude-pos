@@ -38,6 +38,10 @@ r.get('/sales', (req, res) => {
   if (user_id) { where.push('s.user_id = ?'); params.push(user_id); }
   if (unpaid === '1') where.push("s.total > s.paid AND s.status = 'done'");
 
+  /* Lọc riêng hoá đơn có hàng mua hộ (plan 31, hạng mục 4d) */
+  if (req.query.consign === '1') {
+    where.push('EXISTS (SELECT 1 FROM sale_consign_items ci WHERE ci.sale_id = s.id)');
+  }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);
   const total = get(`
@@ -54,6 +58,15 @@ r.get('/sales', (req, res) => {
            (s.total - s.paid) AS remaining,
            (s.total - s.vat_amount - s.cogs) AS profit,
            (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
+           /* Hàng mua hộ vãng lai tách riêng (plan 31, hạng mục 4d): nhìn
+              danh sách hoá đơn phải phân biệt được đâu là hàng của tiệm,
+              đâu là hàng bán giùm — hai thứ đó vào lãi theo hai cách khác
+              nhau, mà tổng tiền hoá đơn thì gộp chung. */
+           (SELECT COUNT(*) FROM sale_consign_items ci WHERE ci.sale_id = s.id) AS consign_count,
+           (SELECT COALESCE(SUM(ci.amount), 0) FROM sale_consign_items ci
+             WHERE ci.sale_id = s.id) AS consign_amount,
+           (SELECT COALESCE(SUM(ci.commission), 0) FROM sale_consign_items ci
+             WHERE ci.sale_id = s.id) AS consign_commission,
            (SELECT COUNT(*) FROM warranty_tickets wt
              WHERE wt.sale_id = s.id AND wt.status <> 'cancelled') AS warranty_count
     FROM sales s
