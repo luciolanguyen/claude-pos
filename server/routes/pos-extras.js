@@ -8,10 +8,11 @@
    - Đối soát tiền thu hộ COD với đối tác giao hàng
    ==================================================================== */
 import { Router } from 'express';
-import { all, get, run, tx, addCashTx, defaultCashAccount, customerDebt } from '../db.js';
+import { all, get, run, tx, addCashTx, defaultCashAccount, customerDebt,
+  saleOwedSql } from '../db.js';
 import { verifyPin, issueApproval, posPolicy, maxDebtDaysFor } from '../policy.js';
 import { customerBuyers, proxyStats } from '../customers.js';
-import { customerLedger, overdueInvoices } from '../debt.js';
+import { customerLedger, overdueInvoices, debtBreakdown } from '../debt.js';
 import { lookupVoucher } from '../vouchers.js';
 
 const r = Router();
@@ -62,6 +63,54 @@ r.get('/customers/:id/credit-status', (req, res) => {
       id: i.id, code: i.code, ts: i.ts, remaining: i.remaining, age_days: i.age_days,
     })),
   });
+});
+
+/**
+ * Danh sách NỢ QUÁ HẠN của cả tiệm — nút cạnh ô tìm hàng ngoài màn hình
+ * bán hàng mở thẳng bảng này.
+ *
+ * Quá hạn tính theo số ngày cho phép nợ của TỪNG khách (khách ruột được
+ * thả dài hơn khách vãng lai), nên phải hỏi maxDebtDaysFor cho từng người
+ * chứ không so chung một mốc.
+ *
+ * Lọc thô bằng một câu SQL trước rồi mới bóc nợ từng hoá đơn: tiệm có vài
+ * nghìn khách mà chỉ vài chục người còn nợ, bóc hết là màn hình đứng hình.
+ */
+r.get('/pos/overdue-debts', (req, res) => {
+  const owing = all(`
+    SELECT c.id, c.name, c.phone, c.phone2, c.phone3, c.customer_type, c.max_debt_days
+    FROM customers c
+    WHERE c.opening_debt <> 0
+       OR EXISTS (SELECT 1 FROM sales s
+                   WHERE s.customer_id = c.id AND s.status = 'done'
+                     AND ${saleOwedSql('s')} > 0)
+    ORDER BY c.name`);
+
+  const rows = [];
+  for (const c of owing) {
+    const maxDays = maxDebtDaysFor(c.id);
+    if (!(maxDays > 0)) continue;             // khách không đặt hạn thì không có gì quá hạn
+    const bd = debtBreakdown(c.id);
+    const late = (bd?.invoices || []).filter((i) => i.remaining > 0 && i.age_days > maxDays);
+    if (!late.length) continue;
+    rows.push({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      customer_type: c.customer_type,
+      debt: bd.debt,
+      max_debt_days: maxDays,
+      overdue_count: late.length,
+      overdue_amount: late.reduce((a, i) => a + i.remaining, 0),
+      oldest_days: late[0].age_days,     // hoá đơn cũ nhất đứng đầu danh sách
+      invoices: late.map((i) => ({
+        id: i.id, code: i.code, ts: i.ts, remaining: i.remaining, age_days: i.age_days,
+      })),
+    });
+  }
+  /* Trễ nhất lên đầu: người đứng quầy gọi điện đòi từ trên xuống */
+  rows.sort((a, b) => b.oldest_days - a.oldest_days || b.overdue_amount - a.overdue_amount);
+  res.json(rows);
 });
 
 /** Sổ phụ công nợ thu nhỏ, mới nhất trên cùng. */

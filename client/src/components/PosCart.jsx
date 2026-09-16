@@ -285,7 +285,7 @@ function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
 
 export function CartLine({
   l, hist, showCost, onQty, onUnit, onPrice, onAmount, onDiscount, onRemove, onHistory, onNote,
-  highlight = false, lineRef = null,
+  onWarranty, highlight = false, lineRef = null, tier = null, alias = null,
 }) {
   const { gross, disc, amount } = lineAmount(l);
   const [tagAnchor, setTagAnchor] = useState(null);
@@ -298,16 +298,39 @@ export function CartLine({
        (tài liệu 14, mục 3) — đổi màu để nhìn một cái là thấy nó nằm đâu */
     <li
       ref={lineRef}
+      /* tier: dòng đang ăn một nấc giá sỉ (tài liệu 22, mục 4.1) — viền trái
+         xanh tím, cùng màu với tag nấc đang sáng ngoài lưới, để nhìn một cái
+         là biết dòng nào ăn nấc nào, khỏi lộn dòng. */
       className={`p-2.5 transition-colors duration-150
                   ${highlight
                     ? 'bg-amber-100 ring-2 ring-inset ring-amber-400'
-                    : 'hover:bg-muted/40'}`}
+                    : tier && !tier.edited
+                      ? 'bg-indigo-50/70 border-l-4 border-indigo-600 hover:bg-indigo-50'
+                      : 'hover:bg-muted/40'}`}
     >
       <div className="flex items-start gap-1">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold leading-snug">{l.name}</div>
           <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
             <span className="text-2xs text-muted-ink font-mono">{l.sku}</span>
+            {/* Không chỉ dựa vào màu: nhãn ghi rõ đang ăn nấc nào, giá bao nhiêu */}
+            {tier && (
+              <span
+                role="status"
+                aria-atomic="true"
+                className={`text-2xs font-bold rounded px-1 leading-5 tabular
+                            ${tier.edited
+                              ? 'bg-muted text-muted-ink border border-line font-semibold'
+                              : 'text-white bg-indigo-600'}`}
+                title={tier.edited
+                  ? `Đơn giá dòng này đã sửa tay. Nấc ${tier.label} ${l.unit_name} lẽ ra là ${n(tier.price)}.`
+                  : `Mua ${tier.label} ${l.unit_name} nên đang ăn giá nấc ${n(tier.price)}`}
+              >
+                {tier.edited
+                  ? `Sửa tay — nấc ${tier.label} là ${n(tier.price)}`
+                  : `Nấc ${tier.label}: ${n(tier.price)}`}
+              </span>
+            )}
             {/* Dòng phụ chỉ hiện khi thật sự có giảm — không giảm thì giỏ gọn */}
             {disc > 0 && (
               <button
@@ -343,12 +366,31 @@ export function CartLine({
           aria-haspopup="dialog"
           onClick={(e) => setTagAnchor(tagAnchor ? null : e.currentTarget)}
         />
+        {/* Ghi chú của dòng hàng VÀ ghi chú đặc thù của khách cho món này.
+            Bảo hành tách hẳn sang nút riêng bên cạnh — nhét chung một hộp
+            thì sửa ghi chú cũng phải lướt qua bốn ô bảo hành. */}
         <IconButton
           icon={StickyNote}
           size={14}
-          label={`Ghi chú và bảo hành cho ${l.name}`}
-          className={l.note || l.warrantyMonths > 0 ? '!text-info' : ''}
+          label={`Ghi chú cho ${l.name}`}
+          title={alias
+            ? `Ghi chú dòng hàng · khách gọi món này là "${alias.alias}"`
+            : 'Ghi chú dòng hàng và ghi chú đặc thù của khách'}
+          className={l.note || alias ? '!text-info' : ''}
           onClick={onNote}
+        />
+        {/* Bảo hành: CHỈ để sửa số tháng, điều kiện và số serial */}
+        <IconButton
+          icon={l.warrantyMonths > 0 ? ShieldCheck : ShieldPlus}
+          size={14}
+          label={l.warrantyMonths > 0
+            ? `Sửa bảo hành ${l.warrantyMonths} tháng của ${l.name}`
+            : `Thêm bảo hành cho ${l.name}`}
+          title={l.warrantyMonths > 0
+            ? `Đang bảo hành ${l.warrantyMonths} tháng — bấm để sửa hoặc huỷ`
+            : 'Thêm bảo hành cho món này'}
+          className={l.warrantyMonths > 0 ? '!text-emerald-700' : ''}
+          onClick={onWarranty}
         />
         <IconButton icon={Trash2} size={14} label={`Bỏ ${l.name} khỏi giỏ`}
           className="!text-danger hover:!bg-red-50" onClick={onRemove} />
@@ -432,38 +474,30 @@ export function CartLine({
           )}
           {overStock && <Badge tone="bad">Vượt tồn ({fq(l.stock)} {l.base_unit})</Badge>}
           {l.note && <span className="text-2xs text-info truncate max-w-[180px]">Ghi chú: {l.note}</span>}
+          {/* Khách này gọi món đó bằng tên riêng (tài liệu 24, phần 3) */}
+          {alias && (
+            <span className="text-2xs text-amber-900 bg-amber-100 border border-amber-300 rounded px-1
+                             truncate max-w-[200px]"
+              title={alias.note || `Khách gọi món này là "${alias.alias}"`}>
+              Khách gọi: {alias.alias}
+            </span>
+          )}
+          {/* Nhãn bảo hành ở đây CHỈ ĐỂ ĐỌC — nhìn lướt cả giỏ là biết món nào
+              bảo hành mấy tháng. Muốn sửa thì bấm cái khiên ở hàng nút trên. */}
           {l.warrantyMonths > 0 ? (
-            <button
-              type="button"
-              onClick={onNote}
-              aria-label={`Bảo hành ${l.warrantyMonths} tháng cho ${l.name} — bấm để sửa hoặc huỷ bảo hành`}
-              className="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5
-                         text-2xs font-semibold text-emerald-800 cursor-pointer transition-colors duration-150 hover:bg-emerald-100"
-            >
+            <span className="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50
+                             px-1.5 py-0.5 text-2xs font-semibold text-emerald-800">
               <ShieldCheck size={11} aria-hidden="true" /> BH {l.warrantyMonths} tháng
-            </button>
+            </span>
           ) : l.warrantyDefault > 0 ? (
-            <button
-              type="button"
-              onClick={onNote}
-              aria-label={`Đã huỷ bảo hành ${l.name} cho hoá đơn này — bấm để bật lại`}
+            <span
+              title={`Mặt hàng này mặc định bảo hành ${l.warrantyDefault} tháng, hoá đơn này đã huỷ`}
               className="inline-flex items-center gap-0.5 rounded border border-dashed border-line px-1.5 py-0.5
-                         text-2xs font-semibold text-muted-ink line-through cursor-pointer transition-colors duration-150 hover:text-ink"
+                         text-2xs font-semibold text-muted-ink line-through"
             >
               <ShieldCheck size={11} aria-hidden="true" /> BH {l.warrantyDefault} tháng
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onNote}
-              aria-label={`Thêm bảo hành cho ${l.name}`}
-              title="Thêm bảo hành cho món này"
-              className="inline-flex items-center justify-center rounded border border-dashed border-line w-6 h-5
-                         text-muted-ink cursor-pointer transition-colors duration-150 hover:text-ink hover:border-slate-400"
-            >
-              <ShieldPlus size={11} aria-hidden="true" />
-            </button>
-          )}
+            </span>
+          ) : null}
           {l.serial && <span className="text-2xs text-muted-ink font-mono">SN {l.serial}</span>}
         </div>
         {/* Giá vốn và giá nhập gần nhất đặt song song: vốn bình quân có khi

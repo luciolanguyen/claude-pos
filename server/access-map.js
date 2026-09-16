@@ -37,6 +37,9 @@ export const ACCESS_RULES = [
      duyệt. Khoá theo quyền bán hàng để biết ai đang thử, chặn gõ mò. */
   ['POST', /^\/auth\/approve$/,            'sale.pos'],
   ['GET',  /^\/pos\/policy$/,              null],
+  /* Danh sách nợ quá hạn ngoài thanh POS: người đứng quầy phải thấy ai đang
+     nợ trễ để đòi ngay lúc gặp mặt, nên mở theo quyền bán hàng. */
+  ['GET',  /^\/pos\/overdue-debts$/,        'sale.pos'],
   ['GET',  /^\/vouchers/,                  'sale.pos'],
   ['GET',  /^\/deliveries/,                'sale.view'],
   ['GET',  /^\/sales/,                    'sale.view'],
@@ -67,6 +70,10 @@ export const ACCESS_RULES = [
   /* Danh sách mối của một mặt hàng: xem thì cần biết giá nhập lần trước,
      nên khoá theo quyền mua hàng. */
   ['*',    /^\/products\/\d+\/suppliers$/, 'purchase.manage'],
+  /* Ghi chú hàng đặc thù: thu ngân đứng quầy phải ĐỌC được để biết khách
+     gọi món đó là gì, nhưng khai thì phải người quản danh mục khách. */
+  ['GET',  /^\/customers\/\d+\/product-notes$/, 'sale.pos'],
+  ['*',    /^\/product-notes/,            'customer.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
   /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá
@@ -83,6 +90,9 @@ export const ACCESS_RULES = [
   ['*',    /^\/products/,                 'product.manage'],
   /* Hàng ghim đầu lưới POS: chủ tiệm quyết bán mùa nào món nào */
   ['PUT',  /^\/pos-featured$/,            'product.manage'],
+  /* Bộ hàng ghim theo mùa: xem thì màn hình bán hàng cần, sửa thì phải người quản */
+  ['GET',  /^\/pos-featured-sets/,         null],
+  ['*',    /^\/pos-featured-sets/,         'product.manage'],
   ['*',    /^\/categories/,               'product.manage'],
   ['GET',  /^\/stock$/,                   'product.view'],
   ['*',    /^\/stock/,                    'stock.manage'],
@@ -92,6 +102,19 @@ export const ACCESS_RULES = [
   ['*',    /^\/purchases/,                'purchase.manage'],
   ['*',    /^\/purchase-returns/,         'purchase.manage'],
   ['*',    /^\/suppliers/,                'purchase.manage'],
+  /* Ma trận giá nhập của mọi mối cho một mặt hàng: là giá vốn, nhưng người
+     lập phiếu nhập bắt buộc phải thấy để ép giá — khoá theo quyền mua hàng. */
+  ['GET',  /^\/products\/\d+\/supplier-prices$/, 'purchase.manage'],
+  ['GET',  /^\/suppliers\/\d+\/bought-products$/, 'purchase.manage'],
+
+  /* --- Hàng mua hộ của chủ vãng lai (tài liệu 24, phần 5) --- */
+  /* Thu ngân ngoài quầy cần đọc danh sách chủ hàng để chọn lúc bán. */
+  ['GET',  /^\/consign-partners/,          'sale.pos'],
+  ['*',    /^\/consign-partners/,          'customer.manage'],
+  /* Đối soát là việc của kế toán: chốt sổ và chi tiền mặt cho chủ hàng. */
+  ['*',    /^\/consign-settlements/,       'cash.manage'],
+  ['GET',  /^\/consign-items$/,            'cash.manage'],
+  ['GET',  /^\/consign-summary$/,          'cash.manage'],
   ['*',    /^\/supplier-debts/,           'purchase.manage'],
 
   /* --- Tiền và số liệu --- */

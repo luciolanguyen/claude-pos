@@ -18,6 +18,30 @@ const FORMATS = [
 ];
 
 /** Mã QR chuyển khoản theo chuẩn VietQR, dựng bằng URL ảnh nên không cần thư viện. */
+/**
+ * Các dòng hàng in ra giấy.
+ *
+ * Hàng mua hộ vãng lai in PHẲNG như hàng chính quy của tiệm: tờ hoá đơn
+ * giao cho khách TUYỆT ĐỐI không lộ lấy của ai, giá bốc bao nhiêu, trích
+ * hoa hồng mấy phần (tài liệu 24, mục 5.1).
+ */
+function printLines(sale) {
+  return [
+    ...(sale.items || []),
+    ...(sale.consign_items || []).map((c, i) => ({
+      id: `cs${c.id ?? i}`,
+      name_snapshot: c.name,
+      sku: null,
+      unit_name: c.unit_name || '',
+      qty: c.qty,
+      price: c.price,
+      amount: c.amount,
+      discount: 0,
+      note: null,
+    })),
+  ];
+}
+
 function bankQr(store, amount, content) {
   if (!store?.bank_account) return null;
   const BANKS = {
@@ -42,6 +66,7 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
   // Bề rộng vùng in K80 tính bằng mm — chỉnh được khi máy in lệch mép
   const k80Width = Number(invoice.k80_width) || 72;
   const [showCost, setShowCost] = useState(false);
+
 
   useEffect(() => {
     const onKey = (e) => {
@@ -139,6 +164,7 @@ function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width }) {
 /* ------------------------- Khổ K80 (máy in nhiệt) ------------------- */
 
 function K80({ sale, store, showCost, qrUrl, width = 72 }) {
+  const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   return (
     <div className="print-k80 mx-auto text-black" style={{ width: `${width}mm` }}>
@@ -175,7 +201,7 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
 
       <table style={{ fontSize: 10 }}>
         <tbody>
-          {sale.items.map((it, i) => (
+          {lines.map((it, i) => (
             <tr key={it.id ?? i}>
               <td colSpan={2} style={{ paddingBottom: 3 }}>
                 <div style={{ fontWeight: 600 }}>{i + 1}. {it.name_snapshot}</div>
@@ -281,6 +307,7 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
 /* ------------------------- Khổ A5 / A4 ------------------------------ */
 
 function Sheet({ sale, store, showCost, qrUrl, size }) {
+  const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   const isA4 = size === 'a4';
   const title = sale.provisional ? 'PHIẾU TẠM TÍNH'
@@ -358,7 +385,7 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
           </tr>
         </thead>
         <tbody>
-          {sale.items.map((it, i) => (
+          {lines.map((it, i) => (
             <tr key={it.id ?? i}>
               <td style={{ textAlign: 'center' }}>{i + 1}</td>
               <td>
@@ -375,8 +402,8 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
             </tr>
           ))}
           {/* Dòng trống cho đủ khung khi in giấy */}
-          {isA4 && sale.items.length < 10 &&
-            Array.from({ length: 10 - sale.items.length }).map((_, i) => (
+          {isA4 && lines.length < 10 &&
+            Array.from({ length: 10 - lines.length }).map((_, i) => (
               <tr key={'blank' + i}><td>&nbsp;</td><td /><td /><td /><td /><td /></tr>
             ))}
         </tbody>

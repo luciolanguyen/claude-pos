@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
   BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
-  ShieldCheck, ClipboardList, PackageX,
+  ShieldCheck, ClipboardList, PackageX, Handshake,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
@@ -47,6 +47,8 @@ export const NAV = [
     ],
   },
   { to: '/cash', icon: Wallet, label: 'Quỹ tiền', perm: 'cash.manage' },
+  /* Hàng người khác gửi bán qua tiệm (tài liệu 24, mục 5.3) */
+  { to: '/consign', icon: Handshake, label: 'Đối tác vãng lai', perm: 'cash.manage' },
   { to: '/reports', icon: BarChart3, label: 'Báo cáo', perm: 'report.view' },
   { to: '/settings', icon: Cog, label: 'Thiết lập', perm: 'settings.manage' },
 ];

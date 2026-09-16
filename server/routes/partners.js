@@ -12,7 +12,7 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount,
-  searchWhere, searchMode,
+  searchWhere,
 } from '../db.js';
 import { planAllocation, writeAllocation, debtBreakdown } from '../debt.js';
 import { maxDebtDaysFor, posPolicy, isApproverRole, peekApproval, consumeApproval } from '../policy.js';
@@ -107,11 +107,14 @@ r.get('/suppliers', (req, res) => {
   const params = [];
   if (q.trim()) {
     /* Tìm chính xác thì khớp cả chuỗi — quét mã NCC hay dán đúng số điện
-       thoại thì không muốn ra thêm mấy mối tên gần giống (tài liệu 13) */
-    const needle = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    where.push(`(s.name LIKE ? OR s.code LIKE ? OR s.phone LIKE ? OR s.contact_name LIKE ?
-                 OR EXISTS (SELECT 1 FROM supplier_phones sp WHERE sp.supplier_id = s.id AND sp.phone LIKE ?))`);
-    params.push(needle, needle, needle, needle, needle);
+       thoại thì không muốn ra thêm mấy mối tên gần giống (tài liệu 13).
+       Tìm có chứa thì không bắt đúng thứ tự từ (tài liệu 16, mục 3). */
+    const c = searchWhere(
+      ['s.name', 's.code', 's.phone', 's.contact_name',
+        '(SELECT GROUP_CONCAT(sp.phone) FROM supplier_phones sp WHERE sp.supplier_id = s.id)'],
+      q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (active !== undefined && active !== '') { where.push('s.active = ?'); params.push(Number(active)); }
   let rows = all(`SELECT s.* FROM suppliers s ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY s.name`, params);
@@ -609,6 +612,55 @@ r.delete('/customers/:id', (req, res) => {
     return res.json({ ok: true, deactivated: true, message: 'Khách hàng đã có hoá đơn nên được chuyển sang trạng thái Ngừng theo dõi.' });
   }
   run('DELETE FROM customers WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+/* ==================================================================== *
+ * GHI CHÚ HÀNG ĐẶC THÙ THEO TỪNG KHÁCH (tài liệu 24, phần 3)
+ *
+ * Mỗi nhà thầu gọi món theo kiểu của họ: "dây gân", "ống nhỏ", "cái cùi
+ * chỏ". Thu ngân mới vào không biết đó là món gì trong kho. Bảng này nối
+ * TÊN KHÁCH GỌI với MÃ HÀNG THẬT, kèm một câu nhắc.
+ *
+ * Gõ tên khách gọi ngoài màn hình bán hàng thì món thật nhảy lên đầu lưới.
+ * ==================================================================== */
+
+r.get('/customers/:id/product-notes', (req, res) => {
+  res.json(all(`
+    SELECT n.*, p.sku, p.name AS product_name, p.base_unit
+    FROM customer_product_notes n
+    LEFT JOIN products p ON p.id = n.product_id
+    WHERE n.customer_id = ?
+    ORDER BY n.sort_order, n.id`, [req.params.id]));
+});
+
+r.post('/customers/:id/product-notes', (req, res) => {
+  const c = get('SELECT id FROM customers WHERE id = ?', [req.params.id]);
+  if (!c) return res.status(404).json({ error: 'Không tìm thấy khách hàng' });
+  const alias = String(req.body?.alias || '').trim();
+  if (!alias) return res.status(400).json({ error: 'Bắt buộc nhập tên khách quen gọi.' });
+  const info = run(`INSERT INTO customer_product_notes(customer_id, alias, product_id, note, sort_order)
+                    VALUES(?, ?, ?, ?, ?)`,
+    [c.id, alias, Number(req.body.product_id) || null, req.body.note || null,
+      Number(req.body.sort_order) || 0]);
+  res.json(get('SELECT * FROM customer_product_notes WHERE id = ?', [Number(info.lastInsertRowid)]));
+});
+
+r.put('/product-notes/:id', (req, res) => {
+  const n = get('SELECT * FROM customer_product_notes WHERE id = ?', [req.params.id]);
+  if (!n) return res.status(404).json({ error: 'Không tìm thấy ghi chú' });
+  const alias = String(req.body?.alias ?? n.alias).trim();
+  if (!alias) return res.status(400).json({ error: 'Bắt buộc nhập tên khách quen gọi.' });
+  run(`UPDATE customer_product_notes SET alias = ?, product_id = ?, note = ?, sort_order = ?
+       WHERE id = ?`,
+    [alias,
+      req.body.product_id === undefined ? n.product_id : (Number(req.body.product_id) || null),
+      req.body.note ?? n.note, Number(req.body.sort_order ?? n.sort_order) || 0, n.id]);
+  res.json(get('SELECT * FROM customer_product_notes WHERE id = ?', [n.id]));
+});
+
+r.delete('/product-notes/:id', (req, res) => {
+  run('DELETE FROM customer_product_notes WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 

@@ -7,8 +7,12 @@ import {
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
-import { money, n, short, date, datetime, smartTime, qty as fq, PAYMENT_LABEL } from '../lib/format';
-import { Button, Badge, Stat, Tabs, Spinner, ErrorBox, Empty, Field, MoneyInput, Input, Pager } from './ui';
+import {
+  money, n, short, date, datetime, smartTime, qty as fq, match, PAYMENT_LABEL,
+} from '../lib/format';
+import {
+  Button, Badge, Stat, Tabs, Spinner, ErrorBox, Empty, Field, MoneyInput, Input, Pager, Combo,
+} from './ui';
 import { StepBadge, CodBadge } from './PosDelivery';
 import { DebtCollectModal } from './PosDebt';
 import { PinApprovalModal, canSelfApprove } from './PosApproval';
@@ -51,7 +55,7 @@ function payState(s, inv) {
   return owe > 0 ? { label: `Còn nợ ${money(owe)}`, tone: 'warn' } : { label: 'Đã thanh toán', tone: 'ok' };
 }
 
-const TABS = ['info', 'history', 'debt'];
+const TABS = ['info', 'history', 'debt', 'notes'];
 const pickTab = (t) => (TABS.includes(t) ? t : 'info');
 
 export default function CustomerProfile({
@@ -64,7 +68,10 @@ export default function CustomerProfile({
   const refresh = useCallback(() => { reload(); reloadLedger(); }, [reload, reloadLedger]);
   useLiveReload(refresh, { enabled: !!customerId });
 
+  const { settings } = useApp();
   const [tab, setTab] = useState(pickTab(initialTab));
+  /* Phân hệ ghi chú hàng đặc thù có được bật không (tài liệu 24, phần 1) */
+  const notesOn = settings?.pos?.customer_notes === true;
   const [collecting, setCollecting] = useState(false);
   const [history, setHistory] = useState(null);
 
@@ -142,6 +149,9 @@ export default function CustomerProfile({
             { key: 'info', label: 'Thông tin khách hàng' },
             { key: 'history', label: 'Lịch sử mua hàng', count: c.order_count || null },
             { key: 'debt', label: 'Sổ công nợ', count: c.unpaid_bills || null },
+            /* Khai chỗ này thì ngoài quầy gõ tên khách gọi là ra món thật
+               (tài liệu 24, phần 3). Tiệm tắt phân hệ thì giấu thẻ đi. */
+            ...(notesOn ? [{ key: 'notes', label: 'Ghi chú hàng đặc thù' }] : []),
           ]}
         />
         {tab === 'info' && <InfoTab c={c} compact={compact} />}
@@ -156,6 +166,7 @@ export default function CustomerProfile({
         {tab === 'debt' && (
           <DebtTab c={c} ledger={ledger} onCollect={() => setCollecting(true)} onSaved={changed} />
         )}
+        {tab === 'notes' && notesOn && <ProductNotesTab c={c} />}
       </div>
 
       {/* Gắn khi mở: hộp thu nợ chỉ đọc mã khách lúc vừa gắn vào */}
@@ -174,6 +185,128 @@ export default function CustomerProfile({
         query={history?.query}
         subtitle={history?.subtitle}
       />
+    </div>
+  );
+}
+
+/* ==================================================================== *
+ * THẺ GHI CHÚ HÀNG ĐẶC THÙ (tài liệu 24, phần 3)
+ *
+ * Mỗi nhà thầu gọi món theo kiểu của họ. Nối TÊN KHÁCH GỌI với MÃ HÀNG
+ * THẬT, kèm một câu nhắc — thu ngân mới vào cũng phục vụ được ngay.
+ * ==================================================================== */
+function ProductNotesTab({ c }) {
+  const { toast } = useApp();
+  const { data, busy, error, reload } = useFetch(() => api.customerProductNotes(c.id), [c.id]);
+  /* Danh mục hàng để chọn — lấy gọn danh sách của màn hình bán hàng */
+  const { data: products } = useFetch(() => api.posProducts({}), []);
+  const [draft, setDraft] = useState({ alias: '', product_id: null, note: '' });
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const rows = Array.isArray(data) ? data : [];
+
+  const save = async () => {
+    const alias = String(draft.alias || '').trim();
+    if (!alias) { toast('Nhập tên khách quen gọi trước đã.', 'warn'); return; }
+    setSaving(true);
+    try {
+      if (editing) await api.updateProductNote(editing, { ...draft, alias });
+      else await api.addCustomerProductNote(c.id, { ...draft, alias });
+      setDraft({ alias: '', product_id: null, note: '' });
+      setEditing(null);
+      reload();
+      toast(editing ? 'Đã sửa ghi chú' : `Đã thêm ghi chú "${alias}"`, 'ok');
+    } catch (e) { toast(e.message, 'bad'); } finally { setSaving(false); }
+  };
+
+  const remove = async (nt) => {
+    try { await api.deleteProductNote(nt.id); reload(); toast('Đã xoá ghi chú', 'ok'); }
+    catch (e) { toast(e.message, 'bad'); }
+  };
+
+  return (
+    <div className="p-3 space-y-3">
+      <p className="text-2xs text-muted-ink">
+        Khai ở đây thì ngoài màn hình bán hàng, chọn <b>{c.name}</b> rồi gõ đúng tên khách quen gọi,
+        món thật sẽ nhảy lên đầu lưới kèm dòng nhắc màu vàng.
+      </p>
+
+      <div className="card p-3 grid gap-2.5 sm:grid-cols-[1fr_1.4fr_1.4fr_auto] sm:items-end">
+        <Field label="Tên khách gọi" required htmlFor="pn-alias">
+          <Input id="pn-alias" value={draft.alias}
+            onChange={(e) => setDraft((d) => ({ ...d, alias: e.target.value }))}
+            placeholder="dây gân, cái cùi chỏ..." />
+        </Field>
+        <Field label="Hàng thật trong kho" htmlFor="pn-prod">
+          <Combo
+            items={products || []}
+            value={draft.product_id}
+            onChange={(id) => setDraft((d) => ({ ...d, product_id: id || null }))}
+            placeholder="Gõ tìm mã hàng hoặc tên hàng..."
+            filter={(x, q) => match(x.name, q) || match(x.sku, q) || match(x.alias || '', q)}
+            render={(x) => ({ label: x.name, sub: `${x.sku} · ${x.base_unit}` })}
+          />
+        </Field>
+        <Field label="Câu nhắc cho thu ngân" htmlFor="pn-note">
+          <Input id="pn-note" value={draft.note}
+            onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
+            placeholder="Khách này luôn lấy loại lõi đồng, không lấy lõi nhôm" />
+        </Field>
+        <div className="flex gap-1.5">
+          <Button variant="primary" icon={Save} onClick={save} disabled={saving}>
+            {editing ? 'Lưu' : 'Thêm'}
+          </Button>
+          {editing && (
+            <Button onClick={() => { setEditing(null); setDraft({ alias: '', product_id: null, note: '' }); }}>
+              Thôi
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {busy && !data ? <Spinner />
+        : error ? <ErrorBox error={error} onRetry={reload} />
+          : rows.length === 0 ? (
+            <Empty icon={FileText} title="Chưa khai ghi chú nào"
+              message="Khách nào hay gọi món bằng tên riêng thì khai vào đây một lần, khỏi hỏi lại mỗi lần bán." />
+          ) : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th style={{ width: 180 }}>Khách gọi là</th>
+                    <th>Hàng thật trong kho</th>
+                    <th>Câu nhắc</th>
+                    <th style={{ width: 80 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((nt) => (
+                    <tr key={nt.id} className="hoverable">
+                      <td className="font-semibold text-amber-900">{nt.alias}</td>
+                      <td>
+                        {nt.product_name
+                          ? <>
+                              <span className="font-mono text-2xs text-muted-ink mr-1">{nt.sku}</span>
+                              {nt.product_name}
+                            </>
+                          : <span className="text-danger text-2xs">Chưa nối với mặt hàng nào</span>}
+                      </td>
+                      <td className="text-2xs text-muted-ink">{nt.note || '—'}</td>
+                      <td className="text-center whitespace-nowrap">
+                        <Button size="sm" variant="outline" onClick={() => {
+                          setEditing(nt.id);
+                          setDraft({ alias: nt.alias, product_id: nt.product_id, note: nt.note || '' });
+                        }}>Sửa</Button>
+                        <Button size="sm" variant="outline" className="!text-danger ml-1"
+                          onClick={() => remove(nt)}>Xoá</Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
     </div>
   );
 }

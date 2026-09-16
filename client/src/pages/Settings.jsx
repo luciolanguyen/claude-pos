@@ -2,19 +2,52 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
-  ShieldCheck, Star, ChevronUp, ChevronDown,
+  ShieldCheck, Star, ChevronUp, ChevronDown, KeyRound, Handshake, ClipboardList,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
-import { money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT } from '../lib/format';
+import {
+  money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT,
+  blindCode, blindKeyError, DEFAULT_BLIND_KEY,
+} from '../lib/format';
 import {
   Button, IconButton, Input, Select, Textarea, Field, Modal, Spinner, Empty,
   Badge, Confirm, Tabs, MoneyInput,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { CategorySelect } from '../components/CategoryTree';
-import { ProductPicker } from '../components/ProductPicker';
+import CartPickerModal from '../components/CartPickerModal';
 import { ErrorBox } from '../components/ui';
+
+/**
+ * Ô khai một bộ mã hoá. Soát ngay lúc gõ và cho xem thử một con số thật —
+ * khai sai mười ký tự rồi mới biết thì cả tháng đọc nhầm giá vốn.
+ */
+function BlindKeyField({ label, hint, value, onChange }) {
+  const err = blindKeyError(value);
+  return (
+    <Field label={label} hint={err ? undefined : hint}>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={DEFAULT_BLIND_KEY}
+        className="!font-mono !tracking-widest !uppercase"
+        aria-label={label}
+      />
+      <div className="mt-1 text-2xs">
+        {err ? (
+          <span className="text-danger">{err}</span>
+        ) : (
+          <span className="text-muted-ink">
+            Thử: <b className="font-mono">125.000đ</b> ➔ <b className="font-mono text-indigo-800">{blindCode(125000, value)}</b>
+            {' · '}
+            <b className="font-mono">125.350đ</b> ➔ <b className="font-mono text-indigo-800">{blindCode(125350, value)}</b>
+          </span>
+        )}
+      </div>
+    </Field>
+  );
+}
 
 const TABS = [
   { key: 'store', label: 'Thông tin cửa hàng' },
@@ -408,7 +441,134 @@ function PosSettings() {
             </span>
           </span>
         </label>
+        {/* Giá quy đổi trong menu ĐVT (tài liệu 16, mục 5) */}
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.show_converted_price === true}
+            disabled={form.show_unit_picker !== true}
+            onChange={(e) => setForm((f) => ({ ...f, show_converted_price: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Hiện thêm giá quy đổi về đơn vị nhỏ nhất trong menu đơn vị tính
+            <span className="block text-2xs text-muted-ink">
+              Ví dụ: &quot;Thùng — 1.200.000 đ | 10.000/Cái&quot;. Khách hỏi &quot;lấy nguyên thùng có rẻ hơn
+              không&quot; thì nhìn là trả lời được ngay. Cần bật ô trên trước.
+            </span>
+          </span>
+        </label>
+        {/* Đa đơn vị bán chính / mua chính (tài liệu 16, mục 2.1) */}
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.multi_main_units === true}
+            onChange={(e) => setForm((f) => ({ ...f, multi_main_units: e.target.checked }))}
+          />
+          <span className="text-[13px]">
+            Cho phép thiết lập đa ĐVT mua / bán chính
+            <span className="block text-2xs text-muted-ink">
+              Bật thì một mặt hàng tích được nhiều đơn vị bán chính — mỗi đơn vị thành một ô riêng
+              ngoài lưới bán hàng (bán lẻ theo Cái và bán nguyên Thùng nằm cạnh nhau). Tắt thì chỉ
+              chọn được 1 đơn vị bán chính và 1 đơn vị mua chính. <b>Tắt hay bật đều không đụng tới
+              dữ liệu đã lưu và hoá đơn cũ</b> — chỉ đổi cách ô tích hoạt động.
+            </span>
+          </span>
+        </label>
       </div>
+
+      {/* ====== Ba phân hệ mở rộng, bật tắt độc lập (tài liệu 24, phần 1) ======
+          Tắt hay bật đều KHÔNG đụng tới dữ liệu đã ghi: tắt chỉ là giấu chỗ
+          nhập liệu đi, số liệu cũ vẫn còn nguyên và vẫn xem lại được. */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Phân hệ mở rộng</h2>
+        <p className="text-2xs text-muted-ink mb-2">
+          Ba tính năng dưới đây độc lập nhau. Tiệm không dùng thì tắt cho màn hình gọn;
+          bật lại lúc nào cũng được, dữ liệu cũ không mất.
+        </p>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.customer_notes === true}
+            onChange={(e) => setForm((f) => ({ ...f, customer_notes: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <ClipboardList size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Ghi chú hàng đặc thù theo từng khách hàng
+            <span className="block text-2xs text-muted-ink">
+              Mỗi nhà thầu gọi món theo kiểu riêng — &quot;dây gân&quot;, &quot;cái cùi chỏ&quot;.
+              Khai trong hồ sơ khách: tên khách gọi ➔ mã hàng thật ➔ câu nhắc. Ngoài quầy gõ tên
+              khách gọi là món thật nhảy lên đầu lưới kèm dòng nhắc màu vàng.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.blind_cost === true}
+            onChange={(e) => setForm((f) => ({ ...f, blind_cost: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <KeyRound size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Mã hoá giá vốn thành chữ cái ngoài màn hình bán hàng
+            <span className="block text-2xs text-muted-ink">
+              Giá vốn hiện ra dưới dạng chữ thay vì con số, để khách đứng cạnh quầy không đọc trộm
+              được. Chỉ người có quyền xem giá vốn mới thấy chuỗi này.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+            checked={form.consign === true}
+            onChange={(e) => setForm((f) => ({ ...f, consign: e.target.checked }))}
+          />
+          <span className="text-[13px] flex-1">
+            <Handshake size={13} className="inline -mt-0.5 mr-1" aria-hidden="true" />
+            Bán / nhập hàng của đối tác vãng lai và trích hoa hồng
+            <span className="block text-2xs text-muted-ink">
+              Khách hỏi món tiệm không có: bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác
+              gửi rồi chốt đối soát trả tiền. Hoá đơn in cho khách không bao giờ lộ hàng lấy của ai.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {/* ====== Bộ mã hoá giá vốn (tài liệu 24, phần 4) ====== */}
+      {form.blind_cost === true && (
+        <div className="card p-4">
+          <h2 className="font-bold text-sm mb-1 flex items-center gap-1.5">
+            <KeyRound size={14} aria-hidden="true" /> Bộ mã hoá giá vốn
+          </h2>
+          <p className="text-2xs text-muted-ink mb-3">
+            Khai mười ký tự thay cho mười chữ số <b>0 1 2 3 4 5 6 7 8 9</b>, theo thứ tự đó.
+            Số tiền được chia cho 1.000 và làm tròn lấy tối đa một chữ số thập phân trước khi đổi
+            sang chữ — nên <b>125.000đ</b> đọc là <b>125</b>, còn <b>125.350đ</b> đọc là <b>125,4</b>.
+            Nên chọn một câu dễ nhớ, ví dụ <b>VIỆTNAMBOS</b>.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <BlindKeyField
+              label="Bộ mã cho GIÁ VỐN"
+              hint="Hiện dưới mỗi ô hàng ngoài lưới bán hàng"
+              value={form.blind_key_cost ?? DEFAULT_BLIND_KEY}
+              onChange={(v) => setForm((f) => ({ ...f, blind_key_cost: v }))}
+            />
+            <BlindKeyField
+              label="Bộ mã cho GIÁ NHẬP GẦN NHẤT"
+              hint="Khai bộ khác bộ trên, để nhìn hai con số không suy ra nhau được"
+              value={form.blind_key_purchase ?? 'SOBMANTỆIV'}
+              onChange={(v) => setForm((f) => ({ ...f, blind_key_purchase: v }))}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-2">Cách xử lý khi hết hàng</h2>
@@ -536,6 +696,10 @@ function FeaturedSettings() {
   const [adding, setAdding] = useState(false);
   const [catPick, setCatPick] = useState('');
   const [saving, setSaving] = useState(false);
+  /* Bộ hàng ghim theo mùa (tài liệu 16, mục 4) */
+  const { data: sets, reload: reloadSets } = useFetch(() => api.get('/pos-featured-sets'), []);
+  const [newSetName, setNewSetName] = useState('');
+  const activeSet = (sets || []).find((x) => x.active);
 
   useEffect(() => {
     if (data) setList(data.map((x) => ({ kind: x.kind, ref_id: x.ref_id, label: x.label, sku: x.sku })));
@@ -554,8 +718,15 @@ function FeaturedSettings() {
   const addProduct = (p) => {
     if (has('product', p.id)) { toast(`"${p.name}" đã có trong danh sách ưu tiên`, 'warn'); return; }
     setList((prev) => [...prev, { kind: 'product', ref_id: p.id, label: p.name, sku: p.sku }]);
-    setAdding(false);
   };
+
+  /* Giỏ của hộp chọn đọc thẳng danh sách đang ghim, nên sửa bên nào cũng
+     thấy ngay bên kia. Chỉ lấy phần MẶT HÀNG; nhóm hàng chọn ở ô riêng. */
+  const pinnedLines = list
+    .filter((x) => x.kind === 'product')
+    .map((x) => ({
+      key: `${x.kind}-${x.ref_id}`, product_id: x.ref_id, name: x.label, sku: x.sku,
+    }));
   const addCategory = (id) => {
     const c = meta.categories.find((x) => String(x.id) === String(id));
     if (!c) return;
@@ -647,13 +818,120 @@ function FeaturedSettings() {
         )}
       </div>
 
-      <ProductPicker
+      {/* ---------- Bộ hàng ghim theo mùa (tài liệu 16, mục 4) ---------- */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Bộ hàng ghim theo mùa</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Cất sẵn mỗi mùa một bộ rồi bật lại khi tới mùa, khỏi phải đi chọn lại từng món.
+          Bật một bộ là chép nội dung bộ đó sang danh sách đang dùng ở trên.
+          Tắt hết thì lưới bán hàng về thứ tự thường — <b>không ẩn món nào</b>.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <Input
+            value={newSetName}
+            onChange={(e) => setNewSetName(e.target.value)}
+            placeholder="Tên bộ mới, ví dụ: Hàng ghim mùa hè"
+            className="w-full sm:w-64"
+            aria-label="Tên bộ hàng ghim mới"
+          />
+          <Button
+            size="sm"
+            icon={Plus}
+            disabled={!newSetName.trim()}
+            onClick={async () => {
+              try {
+                await api.post('/pos-featured-sets', {
+                  name: newSetName.trim(), from_current: true,
+                });
+                setNewSetName('');
+                reloadSets();
+                toast(`Đã cất danh sách đang dùng thành bộ "${newSetName.trim()}"`, 'ok', 6000);
+              } catch (e) { toast(e.message, 'bad', 6000); }
+            }}
+          >
+            Cất danh sách hiện tại thành bộ
+          </Button>
+          {activeSet && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  await api.post('/pos-featured-sets/off/activate', { active: false });
+                  reloadSets();
+                  reload();
+                  toast('Đã xả ghim — lưới bán hàng về thứ tự thường', 'ok', 6000);
+                } catch (e) { toast(e.message, 'bad', 6000); }
+              }}
+            >
+              Tắt hết ghim
+            </Button>
+          )}
+        </div>
+
+        {(sets || []).length === 0 ? (
+          <p className="text-[13px] text-muted-ink">
+            Chưa cất bộ nào. Chọn xong danh sách ở trên rồi bấm <b>Cất danh sách hiện tại thành bộ</b>.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {sets.map((st) => (
+              <li key={st.id}
+                className={`flex flex-wrap items-center gap-2 rounded border px-2.5 py-1.5
+                            ${st.active ? 'border-amber-400 bg-amber-50' : 'border-line'}`}>
+                <Star size={13} aria-hidden="true"
+                  className={st.active ? 'text-amber-500 fill-amber-400' : 'text-muted-ink'} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold">{st.name}</div>
+                  <div className="text-2xs text-muted-ink">
+                    {n(st.item_count)} mục{st.active ? ' · đang dùng' : ''}
+                  </div>
+                </div>
+                {st.active
+                  ? <Badge tone="warn">Đang bật</Badge>
+                  : (
+                    <Button size="sm" variant="soft" onClick={async () => {
+                      try {
+                        const res = await api.post(`/pos-featured-sets/${st.id}/activate`, {});
+                        reloadSets();
+                        reload();
+                        toast(`Đã bật bộ "${st.name}" — ${n(res.count)} mục lên đầu lưới`, 'ok', 6000);
+                      } catch (e) { toast(e.message, 'bad', 6000); }
+                    }}>
+                      Bật bộ này
+                    </Button>
+                  )}
+                <IconButton icon={Trash2} size={14} label={`Xoá bộ ${st.name}`}
+                  className="!text-danger hover:!bg-red-50"
+                  onClick={async () => {
+                    try {
+                      await api.del(`/pos-featured-sets/${st.id}`);
+                      reloadSets();
+                      toast(`Đã xoá bộ "${st.name}"`, 'ok');
+                    } catch (e) { toast(e.message, 'bad', 6000); }
+                  }} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Hộp chọn đồng bộ hai chiều, KHÔNG có ô số lượng: đây là danh sách
+          ưu tiên hiển thị, không phải phiếu xuất nhập (tài liệu 17, mục 1.2) */}
+      <CartPickerModal
         open={adding}
         onClose={() => setAdding(false)}
-        products={(products || []).filter((p) => !has('product', p.id))}
-        onPick={addProduct}
-        withQty={false}
+        kind="featured"
         title="Chọn mặt hàng ghim lên đầu lưới"
+        products={products || []}
+        lines={pinnedLines}
+        onAdd={addProduct}
+        onPatch={() => {}}
+        onRemove={(key) => setList((prev) => prev.filter((x) => `${x.kind}-${x.ref_id}` !== key))}
+        noQty
+        showPrice={false}
+        footerNote="Đang ghim"
       />
     </div>
   );

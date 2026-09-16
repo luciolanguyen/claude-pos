@@ -207,19 +207,31 @@ export function noAccent(str) {
 /** Tìm kiếm mềm: khớp cả khi gõ không dấu, không phân biệt hoa thường. */
 export function match(haystack, needle) {
   if (!needle) return true;
-  return noAccent(haystack).includes(noAccent(needle));
+  const h = noAccent(haystack);
+  const n = noAccent(needle).trim();
+  if (!n) return true;
+  /* Không bắt đúng thứ tự từ (tài liệu 16, mục 3): gõ "Anh Quốc" vẫn ra
+     khách tên "Quốc Anh". Mọi ô tìm gọi qua hàm này đều được hưởng. */
+  return n.split(/\s+/).every((w) => h.includes(w));
 }
 
 /**
  * Khớp theo kiểu tìm người dùng chọn (tài liệu 13, mục 2.1).
  *   'exact'    — khớp trọn cả ô, dùng khi quét mã vạch hay dò đúng một mã
  *   'contains' — khớp một khúc, kiểu quen dùng
+ *
+ * Kiểu "có chứa" KHÔNG BẮT ĐÚNG THỨ TỰ TỪ (tài liệu 16, mục 3): tách từ
+ * khoá thành từng từ, từ nào cũng phải có mặt. Khách tên "Quốc Anh" mà gõ
+ * "Anh Quốc" vẫn ra — người đứng quầy nhớ tên theo kiểu gọi, không theo
+ * thứ tự ghi trong hồ sơ.
  */
 export function matchMode(haystack, needle, mode = 'contains') {
   if (!needle) return true;
   const h = noAccent(haystack);
-  const n = noAccent(needle);
-  return mode === 'exact' ? h === n : h.includes(n);
+  const n = noAccent(needle).trim();
+  if (!n) return true;
+  if (mode === 'exact') return h === n;
+  return n.split(/\s+/).every((w) => h.includes(w));
 }
 
 /**
@@ -243,3 +255,116 @@ export const SEARCH_MODES = [
   ['contains', 'Tìm có chứa', 'Ra mọi kết quả chứa từ khoá — kiểu quen dùng'],
   ['exact', 'Tìm chính xác', 'Chỉ ra kết quả khớp trọn từ khoá, ví dụ đúng một mã hàng'],
 ];
+
+/* ==================================================================== *
+ * MA TRẬN NẤC GIÁ SỈ THEO SỐ LƯỢNG (tài liệu 22, mục 3)
+ *
+ * Nấc khai theo TỪNG đơn vị tính. Nấc đầu tiên thường bắt đầu từ 1 và
+ * bằng luôn giá bán lẻ; chủ tiệm không khai nấc đó thì dựng thêm một nấc
+ * "1-..." lấy giá bảng giá đang chọn, để ma trận ngoài lưới đọc liền mạch
+ * như tờ báo giá: [1-9: 10.000] [10-19: 9.000] [≥20: 8.500].
+ * ==================================================================== */
+
+/** Nhãn khoảng số lượng của một nấc: "1-9", "10-19", "≥20". */
+const tierLabel = (min, nextMin) => {
+  if (nextMin == null) return `≥${qty(min)}`;
+  const hi = nextMin - 1;
+  return hi > min ? `${qty(min)}-${qty(hi)}` : `${qty(min)}`;
+};
+
+/**
+ * Các nấc để vẽ ra màn hình, kèm nhãn khoảng và giá.
+ * @param unit       một dòng đơn vị tính (có unit.tiers)
+ * @param listPrice  giá theo bảng giá đang chọn của chính đơn vị đó
+ * @returns [] nếu mặt hàng không khai nấc nào — lúc đó bán như cũ
+ */
+export function tierRows(unit, listPrice = 0) {
+  const raw = (unit?.tiers || [])
+    .map((t) => ({ min_qty: Number(t.min_qty) || 0, price: Math.round(Number(t.price) || 0) }))
+    .filter((t) => t.min_qty > 0 && t.price > 0)
+    .sort((a, b) => a.min_qty - b.min_qty);
+  if (!raw.length) return [];
+
+  const rows = raw[0].min_qty > 1 && listPrice > 0
+    ? [{ min_qty: 1, price: Math.round(listPrice), from_list: true }, ...raw]
+    : raw;
+  return rows.map((t, i) => ({
+    ...t,
+    key: `${t.min_qty}`,
+    label: tierLabel(t.min_qty, rows[i + 1]?.min_qty ?? null),
+  }));
+}
+
+/** Nấc đang ăn khi mua `q` đơn vị; chưa tới nấc nào thì -1. */
+export function tierIndexFor(rows, q) {
+  const v = Number(q) || 0;
+  let hit = -1;
+  for (let i = 0; i < (rows?.length || 0); i += 1) {
+    if (v + 1e-9 >= rows[i].min_qty) hit = i;
+    else break;
+  }
+  return hit;
+}
+
+/**
+ * Đơn giá đúng cho số lượng `q`. Không khai nấc, hoặc chưa tới nấc đầu
+ * tiên, thì trả lại đúng giá bảng giá — luồng bán lẻ cũ không đổi gì.
+ */
+export function tierPriceFor(unit, q, listPrice = 0) {
+  const rows = tierRows(unit, listPrice);
+  const i = tierIndexFor(rows, q);
+  return i >= 0 ? rows[i].price : Math.round(Number(listPrice) || 0);
+}
+
+/* ==================================================================== *
+ * MÃ HOÁ GIÁ VỐN THÀNH CHỮ CÁI (tài liệu 24, phần 4)
+ *
+ * Chủ tiệm muốn nhìn thấy giá vốn ngay ngoài quầy để quyết giá bán, nhưng
+ * không muốn khách đứng cạnh đọc trộm con số. Cách cũ của nhà nghề: đổi
+ * mười chữ số sang mười chữ cái của một câu dễ nhớ.
+ *
+ *     0=V 1=I 2=Ệ 3=T 4=N 5=A 6=M 7=B 8=O 9=S   ("VIỆT NAM BỎ SỐ")
+ *
+ * Số tiền chia cho 1.000 rồi làm tròn tối đa MỘT chữ số thập phân, sau đó
+ * đổi từng chữ số sang chữ cái:
+ *     125.000đ -> 125    -> IỆA
+ *     125.350đ -> 125,4  -> IỆA.N
+ *
+ * Dấu chấm ngăn phần thập phân giữ nguyên, không mã hoá — không thì đọc
+ * không ra đâu là phần lẻ.
+ * ==================================================================== */
+
+/** Bộ mã mặc định, dùng khi chủ tiệm chưa khai bộ riêng. */
+export const DEFAULT_BLIND_KEY = 'VIỆTNAMBOS';
+
+/** Bộ mã hợp lệ: đúng 10 ký tự, không trùng nhau. Sai thì trả lý do. */
+export function blindKeyError(key) {
+  const chars = [...String(key || '').trim()];
+  if (chars.length !== 10) return `Bộ mã phải đúng 10 ký tự cho 10 chữ số 0-9 (đang có ${chars.length}).`;
+  if (new Set(chars.map((c) => c.toUpperCase())).size !== 10) {
+    return 'Mười ký tự phải khác nhau — trùng nhau thì đọc ngược lại ra hai số.';
+  }
+  if (chars.some((c) => /[\d.,\s]/.test(c))) {
+    return 'Không dùng chữ số, dấu chấm, dấu phẩy hay khoảng trắng làm ký tự mã.';
+  }
+  return '';
+}
+
+/**
+ * Đổi một số tiền thành chuỗi mã.
+ * @param value  số tiền gốc (đồng)
+ * @param key    chuỗi 10 ký tự cho chữ số 0..9
+ * @returns chuỗi mã, hoặc '' nếu tiền bằng 0 / bộ mã hỏng
+ */
+export function blindCode(value, key = DEFAULT_BLIND_KEY) {
+  const v = Number(value) || 0;
+  if (!v) return '';
+  const chars = [...String(key || '')];
+  if (chars.length !== 10) return '';
+  /* Làm tròn tới một chữ số thập phân của đơn vị NGHÌN đồng */
+  const k = Math.round(Math.abs(v) / 100) / 10;
+  /* toFixed(1) rồi bỏ đuôi ".0": 125.0 phải ra "125", không phải "125.0" */
+  const text = (Math.round(k * 10) % 10 === 0) ? String(Math.round(k)) : k.toFixed(1);
+  const body = [...text].map((c) => (c === '.' ? '.' : chars[Number(c)] ?? c)).join('');
+  return v < 0 ? `-${body}` : body;
+}

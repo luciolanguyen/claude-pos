@@ -16,6 +16,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Search, Plus, Minus, Trash2, PackagePlus, Undo2, ClipboardList, ShoppingCart,
+  Star, PackageX, ClipboardCheck,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { money, n, qty as fq, matchMode } from '../lib/format';
@@ -29,6 +30,28 @@ import { CategorySelect, categoryBranch } from './CategoryTree';
  * `btn` cho nút mở hộp — cùng một màu thì nhìn nút là biết sẽ mở hộp nào.
  */
 export const DOC_THEMES = {
+  /* Cấu hình danh sách hàng ghim: không phải phiếu xuất nhập, không có số
+     lượng và không có tiền (tài liệu 17, mục 1.2) */
+  featured: {
+    icon: Star, label: 'Danh sách hàng ghim đầu lưới', flow: 'Chọn món đẩy lên đầu lưới bán hàng',
+    btn: '!bg-amber-500 !border-amber-500 !text-white hover:!bg-amber-600',
+    head: 'bg-amber-50 border-amber-200 text-amber-900',
+    chip: 'bg-amber-500 text-white',
+  },
+  /* Phiếu báo hết hàng: hai ô số — tồn kho nhân viên báo và số dự tính mua */
+  requisition: {
+    icon: PackageX, label: 'Phiếu báo hết hàng', flow: 'Ghi món cạn hàng, đề xuất mua thêm',
+    btn: '!bg-rose-600 !border-rose-600 !text-white hover:!bg-rose-700',
+    head: 'bg-rose-50 border-rose-200 text-rose-900',
+    chip: 'bg-rose-600 text-white',
+  },
+  /* Phiếu kiểm kê: gõ số đếm được ngay trong hộp */
+  stock_take: {
+    icon: ClipboardCheck, label: 'Phiếu kiểm kê kho', flow: 'Đếm hàng thật trong kho',
+    btn: '!bg-slate-700 !border-slate-700 !text-white hover:!bg-slate-800',
+    head: 'bg-slate-100 border-slate-300 text-slate-900',
+    chip: 'bg-slate-700 text-white',
+  },
   purchase: {
     icon: PackagePlus, label: 'Phiếu nhập hàng NCC', flow: 'Hàng đi vào kho',
     btn: '!bg-blue-600 !border-blue-600 !text-white hover:!bg-blue-700',
@@ -86,11 +109,18 @@ export function CartPickerButton({ kind, count = 0, onClick, size = 'sm', classN
  * @param amountOf  (line) — tiền một dòng, tính đúng theo luật của phiếu đó
  * @param priceOf   (product) — giá đổ sẵn khi thêm, để hiện ở cột giá bên trái
  * @param priceLabel nhãn cột giá: "Giá nhập", "Giá bán"...
+ * @param noQty   giỏ chỉ liệt kê tên món, không có ô số lượng và không có tiền
+ *                — dùng cho danh sách hàng ghim (tài liệu 17, mục 1.2)
+ * @param fields  thay ô số lượng bằng nhiều ô số có nhãn riêng, ví dụ phiếu
+ *                báo hết hàng cần cả "tồn kho báo" lẫn "dự tính mua"
+ *                (tài liệu 17, mục 1.1 và 1.3):
+ *                [{ key, label, min, placeholder }]
  */
 export default function CartPickerModal({
   open, onClose, kind = 'purchase', products, busy = false,
   lines = [], onAdd, onPatch, onRemove, amountOf, priceOf, priceLabel = 'Đơn giá',
   editPrice = true, title, subtitle, onCreateRequest, footerNote,
+  noQty = false, fields = null, showPrice = true, rightCol = null,
 }) {
   const { meta } = useApp();
   const [q, setQ] = useState('');
@@ -122,7 +152,9 @@ export default function CartPickerModal({
     return m;
   }, [lines]);
 
-  const total = lines.reduce((a, l) => a + (amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0))), 0);
+  const total = showPrice && !noQty
+    ? lines.reduce((a, l) => a + (amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0))), 0)
+    : 0;
 
   /* Quét mã vạch: khớp đúng mã, hoặc lọc còn đúng một món, thì cho vào giỏ luôn */
   const onScanKey = (e) => {
@@ -143,7 +175,9 @@ export default function CartPickerModal({
       size="xl"
       footer={<>
         <span className="mr-auto text-[13px]">
-          {footerNote || 'Tổng tiền hàng'}: <b className="tabular">{money(total)}</b>
+          {showPrice && !noQty
+            ? <>{footerNote || 'Tổng tiền hàng'}: <b className="tabular">{money(total)}</b></>
+            : <>{footerNote || 'Đã chọn'}: <b>{n(lines.length)} món</b></>}
         </span>
         {onCreateRequest && (
           <Button icon={Plus} onClick={() => onCreateRequest(q)}>Thêm hàng mới</Button>
@@ -196,7 +230,7 @@ export default function CartPickerModal({
                   <tr>
                     <th>Tên hàng</th>
                     <th className="text-right">Tồn kho</th>
-                    <th className="text-right">{priceLabel}</th>
+                    {showPrice && <th className="text-right">{priceLabel}</th>}
                     <th style={{ width: 96 }} />
                   </tr>
                 </thead>
@@ -215,7 +249,9 @@ export default function CartPickerModal({
                         <td className={`num ${p.track_stock && p.stock <= 0 ? 'text-danger' : 'text-muted-ink'}`}>
                           {p.track_stock ? `${fq(p.stock)} ${p.base_unit}` : 'Dịch vụ'}
                         </td>
-                        <td className="num">{money(priceOf ? priceOf(p) : p.cost_price)}</td>
+                        {showPrice && (
+                          <td className="num">{money(priceOf ? priceOf(p) : p.cost_price)}</td>
+                        )}
                         <td className="text-right">
                           <Button size="sm" variant={c ? 'primary' : 'soft'} icon={Plus}
                             onClick={() => onAdd(p, 1)}
@@ -252,34 +288,64 @@ export default function CartPickerModal({
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-semibold leading-snug">{l.name}</div>
                       <div className="text-2xs text-muted-ink">
-                        {l.unit_name || l.base_unit}
-                        {Number(l.factor) > 1 && ` (=${fq(l.factor)} ${l.base_unit})`}
-                        {l.pack_spec && ` · ${l.pack_spec}`}
+                        {noQty
+                          ? <span className="font-mono">{l.sku}</span>
+                          : <>
+                            {l.unit_name || l.base_unit}
+                            {Number(l.factor) > 1 && ` (=${fq(l.factor)} ${l.base_unit})`}
+                            {l.pack_spec && ` · ${l.pack_spec}`}
+                          </>}
                       </div>
                     </div>
                     <IconButton icon={Trash2} size={14} label={`Bỏ ${l.name} khỏi phiếu`}
                       className="!text-danger hover:!bg-red-50" onClick={() => onRemove(l.key)} />
                   </div>
-                  <div className="flex items-center gap-1 mt-1">
-                    <IconButton icon={Minus} size={14} variant="outline" label={`Bớt 1 ${l.name}`}
-                      disabled={Number(l.qty) <= 1}
-                      onClick={() => onPatch(l.key, { qty: Math.max(1, Number(l.qty) - 1) })} />
-                    <QtyInput value={l.qty} min={1} className="!w-16"
-                      onChange={(v) => onPatch(l.key, { qty: Math.max(1, Number(v) || 1) })}
-                      aria-label={`Số lượng ${l.name}`} />
-                    <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name}`}
-                      onClick={() => onPatch(l.key, { qty: Number(l.qty) + 1 })} />
-                    {editPrice ? (
-                      <MoneyInput size="sm" value={l.price} className="!w-28 ml-auto"
-                        onChange={(v) => onPatch(l.key, { price: v, priceEdited: true })}
-                        aria-label={`${priceLabel} ${l.name}`} />
-                    ) : (
-                      <span className="ml-auto tabular text-[13px]">{money(l.price)}</span>
-                    )}
-                  </div>
-                  <div className="text-right text-[13px] font-semibold tabular mt-0.5">
-                    {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
-                  </div>
+                  {/* Ba kiểu dòng: chỉ liệt kê (hàng ghim), nhiều ô số có nhãn
+                      (phiếu báo hết hàng, kiểm kê), hoặc số lượng + tiền như
+                      phiếu nhập xuất thường (tài liệu 17, mục 1) */}
+                  {noQty ? null : fields ? (
+                    <div className="grid gap-1.5 mt-1" style={{
+                      gridTemplateColumns: `repeat(${fields.length}, minmax(0, 1fr))`,
+                    }}>
+                      {fields.map((f) => (
+                        <label key={f.key} className="block">
+                          <span className="block text-2xs text-muted-ink leading-tight">{f.label}</span>
+                          <QtyInput
+                            value={l[f.key] ?? ''}
+                            min={f.min ?? 0}
+                            placeholder={f.placeholder}
+                            className="!w-full"
+                            onChange={(v) => onPatch(l.key, { [f.key]: v })}
+                            aria-label={`${f.label} của ${l.name}`}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1 mt-1">
+                        <IconButton icon={Minus} size={14} variant="outline" label={`Bớt 1 ${l.name}`}
+                          disabled={Number(l.qty) <= 1}
+                          onClick={() => onPatch(l.key, { qty: Math.max(1, Number(l.qty) - 1) })} />
+                        <QtyInput value={l.qty} min={1} className="!w-16"
+                          onChange={(v) => onPatch(l.key, { qty: Math.max(1, Number(v) || 1) })}
+                          aria-label={`Số lượng ${l.name}`} />
+                        <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name}`}
+                          onClick={() => onPatch(l.key, { qty: Number(l.qty) + 1 })} />
+                        {editPrice ? (
+                          <MoneyInput size="sm" value={l.price} className="!w-28 ml-auto"
+                            onChange={(v) => onPatch(l.key, { price: v, priceEdited: true })}
+                            aria-label={`${priceLabel} ${l.name}`} />
+                        ) : (
+                          <span className="ml-auto tabular text-[13px]">{money(l.price)}</span>
+                        )}
+                      </div>
+                      <div className="text-right text-[13px] font-semibold tabular mt-0.5">
+                        {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
+                      </div>
+                    </>
+                  )}
+                  {rightCol?.(l)}
                 </li>
               ))}
             </ul>

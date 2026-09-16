@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchMode,
+  all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchWhere,
   addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
@@ -22,12 +22,13 @@ r.get('/sales', (req, res) => {
   if (q.trim()) {
     /* Tìm song song ở khách chủ VÀ người mua hộ (tài liệu 03): khách gọi
        hỏi "hôm trước con tôi ra mua" thì phải ra được hoá đơn đó. */
-    where.push(`(s.code LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.phone2 LIKE ?
-                 OR c.phone3 LIKE ? OR s.buyer_name LIKE ? OR s.buyer_phone LIKE ?)`);
-    /* Tìm chính xác thì khớp trọn cả ô — dán đúng số hoá đơn hay số điện
-       thoại thì khỏi ra thêm chục dòng gần giống (tài liệu 13, mục 2.1) */
-    const like = searchMode(match) === 'exact' ? q.trim() : `%${q.trim()}%`;
-    params.push(like, like, like, like, like, like, like);
+    /* Tìm chính xác thì khớp trọn cả ô; tìm có chứa thì không bắt đúng thứ
+       tự từ (tài liệu 13 mục 2.1, tài liệu 16 mục 3) */
+    const c = searchWhere(
+      ['s.code', 'c.name', 'c.phone', 'c.phone2', 'c.phone3', 's.buyer_name', 's.buyer_phone'],
+      q, match);
+    where.push(c.sql);
+    params.push(...c.params);
   }
   if (customer_id) { where.push('s.customer_id = ?'); params.push(customer_id); }
   if (from) { where.push('date(s.ts) >= date(?)'); params.push(from); }
@@ -89,6 +90,14 @@ r.get('/sales/:id', (req, res) => {
     SELECT si.*, p.sku, p.base_unit, p.barcode
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?`, [s.id]);
+  /* Hàng mua hộ vãng lai: in ra cho khách thì phẳng như hàng của tiệm,
+     nhưng màn hình quản lý vẫn phải đọc được lấy của ai (tài liệu 24) */
+  s.consign_items = all(`
+    SELECT ci.*, (ci.amount - ci.commission) AS payable, st.code AS settlement_code
+    FROM sale_consign_items ci
+    LEFT JOIN consign_settlements st ON st.id = ci.settlement_id
+    WHERE ci.sale_id = ? ORDER BY ci.id`, [s.id]);
+
   /* Giá khách THỰC TRẢ và số còn trả được của từng dòng — để hộp đổi trả
      tính tiền hoàn ngay trên màn hình, khớp đúng số máy chủ sẽ ghi */
   const returned = returnedByLine(s.id, s.items);
@@ -129,7 +138,11 @@ function badRequest(message, code) {
  */
 export function createSale(b) {
   const items = Array.isArray(b.items) ? b.items.filter((i) => Number(i.qty) > 0) : [];
-  if (!items.length) throw badRequest('Hoá đơn phải có ít nhất 1 mặt hàng');
+  /* Khách hỏi món tiệm không có sẵn thì cả hoá đơn có thể CHỈ gồm hàng mua
+     hộ vãng lai (tài liệu 24, phần 5.1) — không được chặn. */
+  const hasConsign = (Array.isArray(b.consign_items) ? b.consign_items : [])
+    .some((c) => String(c?.name || '').trim() && Number(c?.qty) > 0);
+  if (!items.length && !hasConsign) throw badRequest('Hoá đơn phải có ít nhất 1 mặt hàng');
 
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!warehouseId) throw badRequest('Chưa thiết lập kho');
@@ -167,6 +180,50 @@ export function createSale(b) {
    *   null       tiệm tắt đăng nhập — một máy dùng chung, coi như toàn quyền
    *   {role}     người đang đăng nhập
    * ------------------------------------------------------------------ */
+  /* ---------------- Hàng mua hộ vãng lai (tài liệu 24, phần 5.1) -------
+     Không trừ kho, không sinh mã hàng. Có chọn chủ hàng thì phần tiền còn
+     lại sau hoa hồng là NỢ CHỦ HÀNG, chờ đối soát; không chọn ai thì tiệm
+     tự bốc ngoài, trả đứt tại chỗ, giá bốc chính là giá vốn của dòng. */
+  const consign = (Array.isArray(b.consign_items) ? b.consign_items : [])
+    .map((c) => {
+      const name = String(c?.name || '').trim();
+      if (!name) return null;
+      const qty = Number(c.qty) || 0;
+      if (qty <= 0) return null;
+      const price = Math.max(0, Math.round(Number(c.price) || 0));
+      const amount = Math.round(qty * price);
+      const partnerId = Number(c.partner_id) || null;
+      const ctype = c.commission_type === 'percent' ? 'percent' : 'amount';
+      const cvalue = Math.max(0, Number(c.commission_value) || 0);
+      /* Hoa hồng chỉ có nghĩa khi hàng của người khác. Tự bốc ngoài thì
+         tiệm ăn chênh lệch chứ không "trích hoa hồng của chính mình". */
+      const commission = partnerId
+        ? Math.min(amount, ctype === 'percent'
+          ? Math.round(amount * cvalue / 100) : Math.round(cvalue))
+        : 0;
+      return {
+        partner_id: partnerId,
+        name,
+        unit_name: String(c.unit_name || '').trim() || null,
+        qty,
+        price,
+        cost: partnerId ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
+        commission_type: ctype,
+        commission_value: cvalue,
+        commission,
+        amount,
+        note: String(c.note || '').trim() || null,
+      };
+    })
+    .filter(Boolean);
+
+  for (const c of consign) {
+    if (!c.partner_id) continue;
+    const row = get('SELECT id, name FROM consign_partners WHERE id = ?', [c.partner_id]);
+    if (!row) throw badRequest(`Không tìm thấy chủ hàng của món "${c.name}".`, 'CONSIGN_PARTNER');
+    c.partner_name = row.name;
+  }
+
   const policy = posPolicy();
   const actor = b._actor;
   const fromRoute = actor !== undefined;
@@ -186,7 +243,10 @@ export function createSale(b) {
       : Math.round(Number(it.discount) || 0);
     return gross - Math.min(disc, gross);
   };
-  const sub0 = items.reduce((a, it) => a + lineTotal(it), 0);
+  /* Hàng mua hộ cũng là tiền khách phải trả: phải cộng vào ước tính, không
+     thì phép soát hạn mức nợ tính thiếu. */
+  const consign0 = consign.reduce((a, c) => a + c.amount, 0);
+  const sub0 = items.reduce((a, it) => a + lineTotal(it), 0) + consign0;
   const orderDisc0 = b.discount_type === 'percent'
     ? Math.round(sub0 * (Number(b.discount_percent) || 0) / 100)
     : Math.round(Number(b.discount) || 0);
@@ -277,6 +337,15 @@ export function createSale(b) {
         if (b.is_vat_invoice) vatAmount += Math.round(amount * (Number(it.vat_rate) || 0) / 100);
         cogs += Math.round(qty * (Number(it.factor) || 1) * it._unitCost);
       }
+      /* Hàng mua hộ: cộng tiền vào tạm tính, cộng giá vốn cho đúng lãi.
+           - có chủ hàng: giá vốn là phần phải trả lại chủ (đã trừ hoa hồng);
+           - tự bốc ngoài: giá vốn là tiền bỏ ra bốc hàng.
+         Không tính thuế GTGT trên dòng mua hộ: hàng không có hoá đơn đầu vào. */
+      for (const c of consign) {
+        subtotal += c.amount;
+        cogs += c.partner_id ? (c.amount - c.commission) : Math.round(c.qty * c.cost);
+      }
+
       // Giảm giá toàn hoá đơn: theo % của tạm tính, hoặc số tiền cố định
       const discountType = b.discount_type === 'percent' ? 'percent' : 'amount';
       const discountPercent = discountType === 'percent' ? (Number(b.discount_percent) || 0) : 0;
@@ -374,6 +443,16 @@ export function createSale(b) {
           approvedBy, approvedBy ? approvalNotes.join('; ') : null]);
       const saleId = Number(info.lastInsertRowid);
 
+      for (const c of consign) {
+        run(`INSERT INTO sale_consign_items(sale_id, partner_id, partner_name, name, unit_name,
+                                            qty, price, cost, commission_type, commission_value,
+                                            commission, amount, note)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [saleId, c.partner_id, c.partner_name || null, c.name, c.unit_name,
+            c.qty, c.price, c.cost, c.commission_type, c.commission_value,
+            c.commission, c.amount, c.note]);
+      }
+
       if (voucherUse > 0) {
         redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });
       }
@@ -388,7 +467,10 @@ export function createSale(b) {
           : null;
 
         /* Giá niêm yết lúc bán — để soát lại mức giảm thật so với bảng giá */
-        const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id);
+        /* Đủ số lượng ăn nấc sỉ thì giá niêm yết của dòng chính là giá nấc
+           (tài liệu 22) — chốt luôn vào hoá đơn để sau này sửa bảng nấc
+           cũng không làm hoá đơn cũ hiện ra mức giảm ảo. */
+        const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id, it.qty);
         run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
@@ -1061,7 +1143,7 @@ r.get('/price-history', (req, res) => {
 /** Giá gần nhất của TẤT CẢ mặt hàng cho một khách — gọi 1 lần khi chọn khách. */
 r.get('/price-history/:customerId/all', (req, res) => {
   const rows = all(`
-    SELECT si.product_id, si.unit_name, si.price, s.ts, s.code
+    SELECT si.product_id, si.unit_name, si.qty, si.price, s.ts, s.code
     FROM sale_items si
     JOIN sales s ON s.id = si.sale_id
     WHERE s.customer_id = ? AND s.status = 'done'
