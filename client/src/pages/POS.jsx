@@ -8,7 +8,7 @@ import {
   Maximize2, Wallet, Camera,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useFetch, useLocal, useSearchMode } from '../lib/store';
+import { useApp, useFetch, useLocal, useSearchMode, useDebounced } from '../lib/store';
 import {
   money, n, qty as fq, match, matchMode, matchCustomer, customerPhones,
   datetime, date, smartTime, tierRows, tierIndexFor, tierPriceFor,
@@ -1913,6 +1913,23 @@ export default function POS() {
               value={tab.buyer}
               onChange={(b) => patchTab({ buyer: b })}
               onCreated={reloadCustomers}
+              aside={consignOn && (
+                /* Nút món mua hộ thu nhỏ thành dòng chữ (plan 31, 1.2a) — trước là
+                   một thanh tím to lúc nào cũng chiếm chỗ trong giỏ hàng */
+                <button
+                  type="button"
+                  onClick={() => setConsignOpen(true)}
+                  className="inline-flex items-center gap-1 text-[13px] font-semibold text-violet-700
+                             hover:text-violet-900 hover:underline cursor-pointer min-h-[28px] rounded
+                             focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+                  title="Khách hỏi món tiệm không có sẵn: bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác gửi"
+                >
+                  <Plus size={14} aria-hidden="true" /> Món mua hộ
+                  {(tab.consign || []).length > 0 && (
+                    <span className="tabular text-2xs rounded bg-violet-100 px-1">{n(tab.consign.length)}</span>
+                  )}
+                </button>
+              )}
             />
             {/* Nhắc đòi nợ ngay lúc còn gặp mặt khách, không đợi tới lúc thanh toán */}
             <CustomerDebtBanner customer={customer} onCollect={() => setDebtOpen(true)} />
@@ -1939,7 +1956,9 @@ export default function POS() {
           {/* Các dòng hàng */}
           <div className="flex-1 overflow-y-auto min-h-0">
             {/* Hàng mua hộ vãng lai — nằm trên cùng cho dễ soát (tài liệu 24) */}
-            {consignOn && (tab.consign || []).length > 0 && (
+            {/* Có dòng mua hộ là hiện, kể cả khi tiệm đã tắt tính năng — không để
+                món bị tính tiền mà người đứng quầy không nhìn thấy */}
+            {(tab.consign || []).length > 0 && (
               <ul className="divide-y divide-line bg-violet-50/40">
                 {tab.consign.map((c) => (
                   <ConsignLine
@@ -1951,20 +1970,6 @@ export default function POS() {
                   />
                 ))}
               </ul>
-            )}
-            {consignOn && (
-              <button
-                type="button"
-                onClick={() => setConsignOpen(true)}
-                className="w-full flex items-center justify-center gap-1.5 py-2 text-2xs font-semibold
-                           text-violet-800 bg-violet-50 border-b border-violet-200
-                           hover:bg-violet-100 cursor-pointer transition-colors duration-100"
-                title="Khách hỏi món tiệm không có sẵn: bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác gửi"
-              >
-                <Handshake size={13} aria-hidden="true" />
-                Món mua hộ vãng lai
-                <Plus size={13} aria-hidden="true" />
-              </button>
             )}
             {tab.cart.length === 0 && (tab.consign || []).length === 0 ? (
               <Empty
@@ -2230,6 +2235,7 @@ export default function POS() {
       {/* Thêm một món mua hộ vãng lai vào giỏ (tài liệu 24, phần 5.1) */}
       <ConsignItemModal
         open={consignOpen}
+        customer={customer}
         partners={partners || []}
         onClose={() => setConsignOpen(false)}
         onPartnerAdded={reloadPartners}
@@ -2540,7 +2546,7 @@ function ConsignLine({ c, partners, onChange, onRemove }) {
  * Chọn đích danh chủ hàng = hàng người ta gửi, tiệm giữ hoa hồng, phần còn
  * lại treo chờ đối soát.
  * ==================================================================== */
-function ConsignItemModal({ open, partners, onClose, onSave, onPartnerAdded }) {
+function ConsignItemModal({ open, customer, partners, onClose, onSave, onPartnerAdded }) {
   const { toast } = useApp();
   const EMPTY = {
     name: '', unit_name: '', qty: 1, price: 0, cost: 0,
@@ -2551,7 +2557,52 @@ function ConsignItemModal({ open, partners, onClose, onSave, onPartnerAdded }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  useEffect(() => { if (open) { setF(EMPTY); setNewPartner(''); setErr(''); } }, [open]);
+  useEffect(() => { if (open) { setF(EMPTY); setNewPartner(''); setErr(''); setPickedNote(''); setHidden(false); } }, [open]);
+
+  /* ---- Ghi nhớ món mua hộ (plan 31, hạng mục 4f) ----
+     Gõ vài chữ là ra món khách này từng nhờ mua và món hay bán của tiệm;
+     chọn là điền sẵn đơn vị, giá bán, chủ hàng, hoa hồng như lần trước. */
+  const [nameFocus, setNameFocus] = useState(false);
+  const [hidden, setHidden] = useState(false);       // vừa chọn xong thì cất danh sách đi
+  const [hi, setHi] = useState(-1);
+  const [pickedNote, setPickedNote] = useState('');
+  const dq = useDebounced(f.name, 200);
+  const { data: sug } = useFetch(
+    () => api.consignSuggest({ customer_id: customer?.id || '', q: dq }),
+    [dq, customer?.id, open], { skip: !open });
+  const sugList = useMemo(() => [
+    ...(sug?.customer || []).map((x) => ({ ...x, group: 'customer' })),
+    ...(sug?.common || []).map((x) => ({ ...x, group: 'common' })),
+  ], [sug]);
+  const showSug = open && nameFocus && !hidden && sugList.length > 0;
+  useEffect(() => { setHi(-1); }, [sugList]);
+
+  const pick = (x) => {
+    const partnerOk = !!x.partner_id && partners.some((p) => p.id === x.partner_id);
+    setF((cur) => ({
+      ...cur,
+      name: x.name,
+      unit_name: x.unit_name || '',
+      price: Math.round(Number(x.price) || 0),
+      partner_id: partnerOk ? x.partner_id : null,
+      commission_type: partnerOk ? (x.commission_type || 'percent') : cur.commission_type,
+      commission_value: partnerOk ? (x.commission_value ?? cur.commission_value) : cur.commission_value,
+      /* Giá bốc chỉ có khi người đứng quầy được xem giá vốn — máy chủ cắt trường
+         "cost" với người khác, lúc đó để trống cho tự điền */
+      cost: !x.partner_id && x.cost !== undefined ? Math.round(Number(x.cost) || 0) : 0,
+    }));
+    setPickedNote(x.partner_id && !partnerOk
+      ? `Lần trước lấy hàng của ${x.partner_name || 'một chủ hàng'} — chủ hàng này đã ngừng, chọn lại chủ hàng bên dưới.`
+      : '');
+    setHidden(true);
+  };
+
+  const onNameKey = (e) => {
+    if (!showSug) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((i) => Math.min(sugList.length - 1, i + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((i) => Math.max(-1, i - 1)); }
+    else if (e.key === 'Enter' && hi >= 0) { e.preventDefault(); pick(sugList[hi]); }
+  };
 
   const amount = Math.round((Number(f.qty) || 0) * (Number(f.price) || 0));
   const commission = consignCommission(f, amount);
@@ -2600,13 +2651,54 @@ function ConsignItemModal({ open, partners, onClose, onSave, onPartnerAdded }) {
     >
       <div className="space-y-3">
         {err && <ErrorBox error={err} />}
+        {pickedNote && (
+          <p className="text-2xs text-amber-900 bg-amber-50 border border-warn/30 rounded px-2 py-1.5">{pickedNote}</p>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-4">
           <Field label="Tên món" required className="sm:col-span-3" htmlFor="cs-name">
-            <Input id="cs-name" value={f.name} autoFocus
-              onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))}
-              placeholder="Mô tơ bơm nước 1HP" />
+            <Input id="cs-name" value={f.name} autoFocus autoComplete="off"
+              onChange={(e) => { setF((x) => ({ ...x, name: e.target.value })); setHidden(false); setPickedNote(''); }}
+              onFocus={() => setNameFocus(true)}
+              /* Trễ một nhịp để cú bấm vào gợi ý kịp ăn trước khi danh sách đóng */
+              onBlur={() => setTimeout(() => setNameFocus(false), 150)}
+              onKeyDown={onNameKey}
+              role="combobox"
+              aria-expanded={showSug}
+              aria-controls="cs-suggest"
+              placeholder="Gõ tên món — có gợi ý món từng mua hộ" />
           </Field>
+          {showSug && (
+            <ul id="cs-suggest" role="listbox" aria-label="Gợi ý món mua hộ"
+              className="sm:col-span-4 -mt-1.5 max-h-60 overflow-y-auto rounded border border-violet-200 bg-card shadow-pop divide-y divide-line">
+              {sugList.map((x, i) => (
+                <li key={`${x.group}:${x.name}`} role="option" aria-selected={i === hi}>
+                  {(i === 0 || sugList[i - 1].group !== x.group) && (
+                    <div className="px-2.5 pt-1.5 pb-0.5 text-2xs font-bold uppercase text-violet-800 bg-violet-50/70">
+                      {x.group === 'customer' ? `${customer?.name || 'Khách này'} từng nhờ mua` : 'Món mua hộ hay bán'}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => pick(x)}
+                    className={`w-full text-left px-2.5 py-1.5 flex items-center gap-2 cursor-pointer
+                                ${i === hi ? 'bg-accent-soft/60' : 'hover:bg-muted/60'}`}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-semibold truncate">{x.name}</span>
+                      <span className="block text-2xs text-muted-ink truncate">
+                        {x.unit_name ? `${x.unit_name} · ` : ''}
+                        {x.partner_id ? `của ${x.partner_name || 'chủ hàng'}${x.commission_value ? ` · hoa hồng ${n(x.commission_value)}${x.commission_type === 'percent' ? '%' : 'đ'}` : ''}` : 'tiệm tự bốc'}
+                        {` · ${n(x.times)} lần · gần nhất ${date(x.last_ts)}`}
+                      </span>
+                    </span>
+                    <span className="tabular text-[13px] font-semibold shrink-0">{money(x.price)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <Field label="Đơn vị" htmlFor="cs-unit">
             <Input id="cs-unit" value={f.unit_name}
               onChange={(e) => setF((x) => ({ ...x, unit_name: e.target.value }))}

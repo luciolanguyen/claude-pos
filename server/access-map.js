@@ -122,6 +122,10 @@ export const ACCESS_RULES = [
   ['*',    /^\/consign-settlements/,       'cash.manage'],
   ['GET',  /^\/consign-items$/,            'cash.manage'],
   ['GET',  /^\/consign-summary$/,          'cash.manage'],
+  /* Phiếu đối chiếu công nợ lộ hoa hồng và số nợ chủ hàng — việc của sổ quỹ */
+  ['GET',  /^\/consign-statement$/,        'cash.manage'],
+  /* Gợi ý món mua hộ dùng ngay tại quầy lúc thêm món */
+  ['GET',  /^\/consign-suggest$/,          'sale.pos'],
   ['*',    /^\/supplier-debts/,           'purchase.manage'],
 
   /* --- Tiền và số liệu --- */

@@ -182,6 +182,9 @@ export const api = {
   consignSettlements: (params) => request('GET', '/consign-settlements' + qs(params)),
   consignSettlement: (id) => request('GET', `/consign-settlements/${id}`),
   settleConsign: (body) => request('POST', '/consign-settlements', body),
+  payConsignSettlement: (id, body) => request('POST', `/consign-settlements/${id}/pay`, body),
+  consignStatement: (params) => request('GET', '/consign-statement' + qs(params)),
+  consignSuggest: (params) => request('GET', '/consign-suggest' + qs(params)),
 
   /* --- Lọc hàng từng mua của một mối, ma trận giá đa NCC (tài liệu 24, 5.2) --- */
   supplierBoughtProducts: (id, params) =>

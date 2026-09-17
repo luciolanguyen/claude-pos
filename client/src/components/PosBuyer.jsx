@@ -24,7 +24,11 @@ import { Button, IconButton } from './ui';
  * @param customers danh mục khách đã tải sẵn trên màn hình bán hàng
  * @param value     { id?, name, phone } hoặc null
  */
-export default function ProxyBuyer({ customer, customers, value, onChange, onCreated }) {
+/**
+ * @param aside  phần tử gắn cạnh nút "+ Người mua hộ" — màn hình bán hàng đặt
+ *               nút "+ Món mua hộ" ở đây cho gọn (plan 31, hạng mục 1.2a)
+ */
+export default function ProxyBuyer({ customer, customers, value, onChange, onCreated, aside = null }) {
   const { toast } = useApp();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -107,6 +111,7 @@ export default function ProxyBuyer({ customer, customers, value, onChange, onCre
   if (!open) {
     if (value) {
       return (
+        <>
         <div className="mt-1.5 flex items-center gap-1.5 rounded border border-violet-200 bg-violet-50 px-2 py-0.5 text-[13px]">
           <Users size={13} className="text-violet-700 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-violet-950">
@@ -116,18 +121,23 @@ export default function ProxyBuyer({ customer, customers, value, onChange, onCre
           <IconButton icon={Pencil} size={13} label="Đổi người mua hộ" onClick={() => setOpen(true)} />
           <IconButton icon={X} size={13} label="Bỏ người mua hộ" onClick={() => onChange(null)} />
         </div>
+        {aside && <div className="mt-0.5">{aside}</div>}
+        </>
       );
     }
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="mt-1 inline-flex items-center gap-1 text-[13px] font-semibold text-violet-700
-                   hover:text-violet-900 hover:underline cursor-pointer min-h-[28px] rounded
-                   focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
-      >
-        <Plus size={14} aria-hidden="true" /> Người mua hộ
-      </button>
+      <div className="mt-1 flex flex-wrap items-center gap-x-4">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1 text-[13px] font-semibold text-violet-700
+                     hover:text-violet-900 hover:underline cursor-pointer min-h-[28px] rounded
+                     focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+        >
+          <Plus size={14} aria-hidden="true" /> Người mua hộ
+        </button>
+        {aside}
+      </div>
     );
   }
 
@@ -226,6 +236,7 @@ export default function ProxyBuyer({ customer, customers, value, onChange, onCre
           </div>
         </div>
       )}
+      {aside && <div className="pt-1 border-t border-violet-200">{aside}</div>}
     </div>
   );
 }

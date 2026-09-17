@@ -577,6 +577,19 @@ r.post('/sales/:id/cancel', (req, res) => {
   const s = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
   if (!s) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   if (s.status === 'cancelled') return res.status(400).json({ error: 'Hoá đơn này đã bị huỷ' });
+  /* Món mua hộ đã chốt đối soát (có khi đã trả tiền chủ hàng) mà huỷ hoá đơn
+     thì tiệm hoàn tiền khách xong vẫn mất tiền đã trả chủ hàng — chặn lại.
+     Chưa chốt thì huỷ được: dòng mua hộ tự rời danh sách chờ đối soát. */
+  const settled = get(`SELECT COUNT(*) AS n, GROUP_CONCAT(DISTINCT st.code) AS codes
+                       FROM sale_consign_items ci JOIN consign_settlements st ON st.id = ci.settlement_id
+                       WHERE ci.sale_id = ?`, [s.id]);
+  if (settled.n > 0) {
+    return res.status(400).json({
+      error: `Hoá đơn có ${settled.n} món mua hộ đã chốt đối soát với chủ hàng (${settled.codes}) nên không huỷ được. `
+        + 'Khách trả lại hàng thì lập phiếu trả hàng, còn khoản đã trả chủ hàng thì thoả thuận riêng.',
+      code: 'CONSIGN_SETTLED',
+    });
+  }
 
   tx(() => {
     const items = all('SELECT * FROM sale_items WHERE sale_id = ?', [s.id]);
