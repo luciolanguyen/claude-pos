@@ -74,6 +74,13 @@ export const ACCESS_RULES = [
      gọi món đó là gì, nhưng khai thì phải người quản danh mục khách. */
   ['GET',  /^\/customers\/\d+\/product-notes$/, 'sale.pos'],
   ['*',    /^\/product-notes/,            'customer.manage'],
+  /* Sửa công nợ và chốt sổ (plan 31, 6b / 6c): đặt TRƯỚC luật /customers,
+     /suppliers chung — để sau thì luật rộng nuốt mất, ai quản khách cũng sửa
+     được nợ. Xem sổ và lịch sử sửa thì vẫn theo quyền khách / mua hàng. */
+  ['POST', /^\/(customers|suppliers)\/\d+\/debt-(adjustments|closings)$/, 'debt.adjust'],
+  ['DELETE', /^\/(customers|suppliers)\/\d+\/debt-closings\/\d+$/, 'debt.adjust'],
+  ['*',    /^\/debt-closings/,             'debt.adjust'],
+  ['GET',  /^\/suppliers\/\d+\/debt-/,       'purchase.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
   /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá

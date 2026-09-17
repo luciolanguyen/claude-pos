@@ -270,6 +270,23 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_ins
            UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
          END`);
 
+/* Bảo hành (plan 31, đợt 6): món thuộc phiếu tiếp nhận gom nào (3a), và
+   khách báo hư bộ phận nào khi mặt hàng bảo hành riêng từng bộ phận (3e) */
+addColumns('warranty_tickets', { batch_id: 'INTEGER', component_name: 'TEXT' });
+db.exec('CREATE INDEX IF NOT EXISTS idx_wt_batch ON warranty_tickets(batch_id)');
+
+/* Phân bổ VAT vào giá nhập (plan 31, 5.1d). Chỉ phiếu nhập MỚI có tích mới
+   tính khác — phiếu cũ mặc định 0 / after_vat, đúng như cách đã tính xưa nay,
+   không phiếu nào bị tính lại. Mỗi dòng ghi luôn thuế, phần chiết khấu và giá
+   vốn đã đi vào kho, để mở lại phiếu còn đối chiếu được. NCC nhớ lựa chọn lần
+   trước để lần sau nhập của mối đó tự tích sẵn. */
+addColumns('purchases', {
+  vat_in_cost: 'INTEGER NOT NULL DEFAULT 0',
+  discount_mode: "TEXT NOT NULL DEFAULT 'after_vat'",   // after_vat | before_vat
+});
+addColumns('purchase_items', { line_vat: 'INTEGER', discount_share: 'INTEGER', cost_unit: 'INTEGER' });
+addColumns('suppliers', { vat_in_cost: 'INTEGER NOT NULL DEFAULT 0', vat_discount_mode: 'TEXT' });
+
 /* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
 addColumns('sale_order_deposits', { payer_name: 'TEXT' });
 addColumns('sale_order_deliveries', { mode: "TEXT NOT NULL DEFAULT 'pickup'" });
@@ -775,6 +792,33 @@ export function nextCode(table, prefix) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bảo hành theo từng bộ phận (plan 31, hạng mục 3e)                   */
+/* ------------------------------------------------------------------ */
+
+/** Làm sạch danh sách bộ phận gửi lên: bỏ dòng trống, thời hạn phải > 0. */
+export function normWarrantyParts(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((x) => ({
+      name: String(x?.name ?? '').trim(),
+      duration: Math.round(Number(x?.duration) || 0),
+      unit: x?.unit === 'day' ? 'day' : 'month',
+    }))
+    .filter((x) => x.name && x.duration > 0)
+    .slice(0, 12);
+}
+
+/** Số tháng bảo hành chung đủ phủ bộ phận lâu nhất (7 ngày vẫn tính 1 tháng). */
+export function monthsCovering(parts) {
+  return parts.reduce((m, p) => Math.max(m, p.unit === 'day' ? Math.ceil(p.duration / 30) : p.duration), 0);
+}
+
+/** Hạn bảo hành của một bộ phận, tính từ ngày bán. */
+export function partUntil(fromTs, duration, unit) {
+  return get(`SELECT date(COALESCE(?, datetime('now','localtime')), '+' || ? || ?) AS d`,
+    [fromTs || null, Math.max(0, Math.round(Number(duration) || 0)), unit === 'day' ? ' days' : ' months']).d;
+}
+
+/* ------------------------------------------------------------------ */
 /* Kho: ghi biến động tồn + cập nhật tồn hiện tại                      */
 /* ------------------------------------------------------------------ */
 
@@ -1031,7 +1075,13 @@ export function customerDebt(customerId) {
      WHERE partner_type = 'customer' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [customerId]
   ).d;
-  return c.opening_debt + s - r - paid;
+  return c.opening_debt + s - r - paid + debtAdjustTotal('customer', customerId);
+}
+
+/** Tổng các phiếu điều chỉnh công nợ (plan 31, 6c) — âm là giảm nợ. */
+export function debtAdjustTotal(type, partnerId) {
+  return get(`SELECT COALESCE(SUM(amount), 0) AS d FROM debt_adjustments
+              WHERE partner_type = ? AND partner_id = ?`, [type, partnerId]).d;
 }
 
 /**
@@ -1063,7 +1113,7 @@ export function supplierDebt(supplierId) {
      WHERE partner_type = 'supplier' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [supplierId]
   ).d;
-  return s.opening_debt + p - r - paid;
+  return s.opening_debt + p - r - paid + debtAdjustTotal('supplier', supplierId);
 }
 
 /* ------------------------------------------------------------------ */

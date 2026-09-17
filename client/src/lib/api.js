@@ -120,6 +120,7 @@ export const api = {
   /* --- Bảo hành --- */
   warranty: (params) => request('GET', '/warranty' + qs(params)),
   warrantyTicket: (id) => request('GET', `/warranty/${id}`),
+  warrantyBatch: (id) => request('GET', `/warranty-batches/${id}`),
   warrantyMeta: () => request('GET', '/warranty/meta'),
   warrantySummary: () => request('GET', '/warranty-summary'),
   warrantyLookup: (q) => request('GET', '/warranty-lookup' + qs({ q })),

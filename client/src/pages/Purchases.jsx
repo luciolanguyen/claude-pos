@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
@@ -18,6 +18,7 @@ import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
 import { PurchaseReturnForm } from './Returns';
+import { purchaseMath } from '../lib/purchaseMath';
 
 export default function Purchases() {
   const { toast, meta, user } = useApp();
@@ -292,6 +293,9 @@ export default function Purchases() {
                     <th className="text-right">CK %</th>
                     <th className="text-right">Giá sau CK</th>
                     <th className="text-right">Thành tiền</th>
+                    {detail.items.some((it) => it.cost_unit != null) && (
+                      <th className="text-right" title="Giá vốn đã đưa vào kho theo đơn vị cơ bản">Giá vốn / ĐVCB</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -319,6 +323,14 @@ export default function Purchases() {
                       </td>
                       <td className="num font-semibold">{money(it.price)}</td>
                       <td className="num font-semibold">{money(it.amount)}</td>
+                      {detail.items.some((x) => x.cost_unit != null) && (
+                        <td className="num">
+                          {it.cost_unit != null ? <>{money(it.cost_unit)}<span className="text-2xs text-muted-ink">/{it.base_unit}</span></> : '—'}
+                          {it.line_vat > 0 && detail.vat_in_cost === 1 && (
+                            <div className="text-2xs text-muted-ink">gồm thuế {money(it.line_vat)}</div>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -388,6 +400,13 @@ export default function Purchases() {
                 <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
                 {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
                 {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
+                {(detail.vat_in_cost === 1 || (detail.discount > 0 && detail.discount_mode === 'before_vat')) && (
+                  <div className="text-2xs text-muted-ink text-right">
+                    {[detail.vat_in_cost === 1 ? 'VAT tính vào giá vốn' : null,
+                      detail.discount > 0 ? (detail.discount_mode === 'before_vat' ? 'NCC chiết khấu trước VAT' : 'NCC chiết khấu sau VAT') : null]
+                      .filter(Boolean).join(' · ')}
+                  </div>
+                )}
                 {detail.other_cost > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chi phí khác</span><span className="tabular font-mono">{money(detail.other_cost)}</span></div>}
                 <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
                   <span>Tổng cộng</span><span className="tabular font-mono">{money(detail.total)}</span>
@@ -697,6 +716,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   const [discount, setDiscount] = useState(0);
   const [otherCost, setOtherCost] = useState(0);
   const [applyVat, setApplyVat] = useState(true);
+  /* Phân bổ VAT vào giá nhập (plan 31, 5.1d): tích trên từng phiếu, NCC nhớ lần trước */
+  const [vatInCost, setVatInCost] = useState(false);
+  const [discountMode, setDiscountMode] = useState('after_vat');
+  const lastSupplierRef = useRef(undefined);
   const [paid, setPaid] = useState(0);
   const [accountId, setAccountId] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
@@ -735,6 +758,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     setCustomLines(p?.custom_lines || []);
     setDiscount(p?.discount || 0);
     setOtherCost(p?.other_cost || 0);
+    setVatInCost(!!p?.vat_in_cost);
+    setDiscountMode(p?.discount_mode === 'before_vat' ? 'before_vat' : 'after_vat');
+    /* Phiếu tạm mở lại giữ đúng lựa chọn đã lưu — không để lựa chọn nhớ theo NCC đè lên */
+    lastSupplierRef.current = p?.supplier_id ?? null;
     setPaid(p?.paid || 0);
     setInvoiceNo(p?.invoice_no || '');
     setDueDate(p?.due_date || '');
@@ -742,6 +769,15 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     setWarehouseId(p?.warehouse_id || defaultWarehouse);
     setAccountId(p?.account_id || meta.accounts?.[0]?.id || '');
   }, [open, draft, defaultWarehouse, meta.accounts]);
+
+  /* Đổi NCC -> tích sẵn "VAT vào giá vốn" và kiểu chiết khấu như lần nhập trước của mối đó */
+  useEffect(() => {
+    if (!suppliers || lastSupplierRef.current === supplierId) return;
+    lastSupplierRef.current = supplierId;
+    const s = suppliers.find((x) => x.id === supplierId);
+    setVatInCost(s?.vat_in_cost === 1);
+    setDiscountMode(s?.vat_discount_mode === 'before_vat' ? 'before_vat' : 'after_vat');
+  }, [supplierId, suppliers]);
 
   /* Chọn NCC -> tự tính hạn thanh toán theo số ngày công nợ đã khai */
   useEffect(() => {
@@ -839,20 +875,17 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
    */
   const netPrice = (l) => Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
 
+  /* Một công thức với máy chủ (lib/purchaseMath) — số xem trước ở đây đúng bằng số được lưu */
   const totals = useMemo(() => {
-    let subtotal = 0, vat = 0, saved = 0;
-    for (const l of lines) {
-      const net = Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
-      saved += Math.round(l.qty * (l.price - net));
-      const amt = Math.round(l.qty * net - (l.discount || 0));
-      subtotal += amt;
-      if (applyVat) vat += Math.round(amt * (l.vat_rate || 0) / 100);
-    }
-    /* Hàng giao sai tính vào tiền phiếu và công nợ NCC — không thuế, không vào kho */
-    const custom = customLines.reduce((a, c) => a + Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)), 0);
-    subtotal += custom;
-    return { subtotal, vat, saved, custom, total: subtotal - discount + vat + otherCost };
-  }, [lines, customLines, discount, otherCost, applyVat]);
+    const saved = lines.reduce((a, l) => a + Math.round(l.qty * (l.price - netPrice(l))), 0);
+    const m = purchaseMath(
+      { discount, other_cost: otherCost, vat_in_cost: applyVat && vatInCost, discount_mode: discountMode },
+      lines.map((l) => ({ qty: l.qty, factor: l.factor, price: netPrice(l), discount: l.discount || 0, vat_rate: applyVat ? l.vat_rate : 0 })),
+      customLines.map((c) => ({ qty: c.qty, price: c.price })));
+    return { subtotal: m.subtotal, vat: m.vatAmount, saved, custom: m.customTotal, total: m.total, lines: m.lines, vatInCost: m.vatInCost };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines, customLines, discount, otherCost, applyVat, vatInCost, discountMode]);
+  const costPreview = (i) => totals.lines?.[i]?.unitCost;
 
   useEffect(() => { setPaid(totals.total); }, [totals.total]);
 
@@ -870,6 +903,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         warehouse_id: warehouseId,
         user_id: user?.id,
         discount, other_cost: otherCost, paid,
+        vat_in_cost: applyVat && vatInCost, discount_mode: discountMode,
         account_id: accountId,
         supplier_invoice: invoiceNo || null,
         due_date: dueDate || null,
@@ -936,6 +970,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                 supplier_id: supplierId, warehouse_id: warehouseId, lines, custom_lines: customLines,
                 discount, other_cost: otherCost, paid, account_id: accountId,
                 invoice_no: invoiceNo, due_date: dueDate, note,
+                vat_in_cost: vatInCost, discount_mode: discountMode,
               },
             })}
           />
@@ -1025,6 +1060,11 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                     <th style={{ width: 130 }} className="text-right">Giá sau CK</th>
                     <th className="text-right">Quy đổi</th>
                     <th className="text-right">Thành tiền</th>
+                    {totals.vatInCost && (
+                      <th className="text-right" title="Giá vốn sẽ vào kho: gồm thuế, đã trừ phần chiết khấu NCC, cộng phần chi phí khác">
+                        Giá vốn / ĐVCB
+                      </th>
+                    )}
                     {/* Ghi đè giá vốn (tài liệu 13, mục 1.2): tích ở đầu cột là
                         tích cả phiếu, hoặc tích lẻ từng dòng bên dưới */}
                     <th style={{ width: 92 }} className="text-center">
@@ -1051,7 +1091,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l) => (
+                  {lines.map((l, li) => (
                     <tr key={l.key}>
                       <td>
                         <div className="font-semibold flex items-center gap-1.5">
@@ -1122,6 +1162,15 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                           : '—'}
                       </td>
                       <td className="num font-semibold">{money(Math.round(l.qty * netPrice(l)))}</td>
+                      {totals.vatInCost && (
+                        <td className="num">
+                          <b className="text-violet-800">{money(costPreview(li))}</b>
+                          <span className="text-2xs text-muted-ink">/{l.base_unit}</span>
+                          {totals.lines[li]?.vat > 0 && (
+                            <div className="text-2xs text-muted-ink">thuế {money(totals.lines[li].vat)}</div>
+                          )}
+                        </td>
+                      )}
                       <td className="text-center">
                         <input
                           type="checkbox"
@@ -1130,8 +1179,8 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                           onChange={(e) => updateLine(l.key, { overwrite_cost: e.target.checked })}
                           aria-label={`Ghi đè giá vốn của ${l.name} bằng giá nhập lần này`}
                           title={l.current_cost === undefined
-                            ? `Tích để đổi giá vốn thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`
-                            : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
+                            ? `Tích để đổi giá vốn thành ${money(costPreview(li) ?? Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`
+                            : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(costPreview(li) ?? Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
                         />
                       </td>
                       <td className="whitespace-nowrap">
@@ -1273,6 +1322,35 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                     <span className="text-muted-ink">Thuế GTGT</span>
                     <span className="tabular font-mono">{money(totals.vat)}</span>
                   </div>
+                )}
+
+                {/* Phân bổ VAT vào giá nhập (plan 31, 5.1d) */}
+                {applyVat && discount > 0 && (
+                  <div className="flex items-center justify-between gap-2 text-[13px]">
+                    <span className="text-muted-ink">NCC chiết khấu</span>
+                    <div role="radiogroup" aria-label="NCC chiết khấu trước hay sau thuế" className="inline-flex rounded border border-line overflow-hidden">
+                      {[['after_vat', 'Sau VAT'], ['before_vat', 'Trước VAT']].map(([k, lb]) => (
+                        <button key={k} type="button" role="radio" aria-checked={discountMode === k} onClick={() => setDiscountMode(k)}
+                          className={`px-2.5 h-7 text-2xs font-semibold cursor-pointer transition-colors duration-100
+                                      ${discountMode === k ? 'bg-accent text-white' : 'bg-card text-muted-ink hover:bg-muted'}`}>
+                          {lb}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {applyVat && (
+                  <label className="flex items-start justify-between gap-2 text-[13px] cursor-pointer">
+                    <span>
+                      <span className="text-muted-ink">Tính VAT vào giá vốn</span>
+                      <span className="block text-2xs text-muted-ink">
+                        Giá vốn gồm thuế, trừ phần chiết khấu NCC — cho hộ kinh doanh không khấu trừ thuế.
+                        {vatInCost ? ' Xem cột "Giá vốn / ĐVCB".' : ''}
+                      </span>
+                    </span>
+                    <input type="checkbox" className="w-4 h-4 mt-0.5 accent-emerald-700 cursor-pointer"
+                      checked={vatInCost} onChange={(e) => setVatInCost(e.target.checked)} />
+                  </label>
                 )}
 
                 <div className="flex items-baseline justify-between pt-2 border-t border-line">

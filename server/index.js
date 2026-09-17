@@ -20,6 +20,7 @@ import requisitions from './routes/requisitions.js';
 import drafts from './routes/drafts.js';
 import posExtras from './routes/pos-extras.js';
 import consign from './routes/consign.js';
+import debts from './routes/debts.js';
 import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
@@ -118,7 +119,9 @@ const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'm
   'commission', 'payable', 'consign_commission',
   /* Ngày cập nhật giá vốn / ngày nhập gần nhất (plan 31, 1.4b) đi kèm con số, chủ tiệm chốt
      chỉ người xem được giá vốn mới thấy */
-  'cost_updated_at', 'last_purchase_at'];
+  'cost_updated_at', 'last_purchase_at',
+  /* Giá vốn từng dòng phiếu nhập đã vào kho (plan 31, 5.1d) */
+  'cost_unit'];
 
 /* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
    chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */
@@ -144,7 +147,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
+app.use('/api', debts, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));

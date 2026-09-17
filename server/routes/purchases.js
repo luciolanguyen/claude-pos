@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { purchaseMath } from '../../client/src/lib/purchaseMath.js';
 import {
   all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost, overwriteCost,
   addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams, resolveUnitId,
@@ -150,36 +151,35 @@ r.post('/purchases', (req, res) => {
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!warehouseId) return res.status(400).json({ error: 'Chưa thiết lập kho' });
 
+  /* Tiền và giá vốn từng dòng: một công thức dùng chung với màn hình xem trước (plan 31, 5.1d) */
+  const math = purchaseMath(b, items, custom);
+  if (math.vatInCost && math.lines.some((l) => l.unitCost < 0)) {
+    return res.status(400).json({ error: 'Chiết khấu NCC lớn hơn tiền hàng — giá vốn ra số âm. Xem lại số chiết khấu.', code: 'DISCOUNT_TOO_HIGH' });
+  }
+
   try {
     const result = tx(() => {
-      let stockSubtotal = 0;
-      let vatAmount = 0;
-      for (const it of items) {
-        const qty = Number(it.qty);
-        const price = Math.round(Number(it.price) || 0);
-        const disc = Math.round(Number(it.discount) || 0);
-        const amount = Math.round(qty * price - disc);
-        it._amount = amount;
-        stockSubtotal += amount;
-        vatAmount += Math.round(amount * (Number(it.vat_rate) || 0) / 100);
-      }
+      items.forEach((it, i) => { it._amount = math.lines[i].amount; it._m = math.lines[i]; });
       for (const c of custom) c.amount = Math.round(c.qty * c.price);
-      const customTotal = custom.reduce((a, c) => a + c.amount, 0);
-      const subtotal = stockSubtotal + customTotal;
-      const discount = Math.round(Number(b.discount) || 0);
-      const otherCost = Math.round(Number(b.other_cost) || 0);
-      const total = subtotal - discount + vatAmount + otherCost;
+      const { customTotal, subtotal, discount, vatAmount, total } = math;
       const paid = Math.min(Math.round(Number(b.paid) || 0), total);
       const code = b.code?.trim() || nextCode('purchases', 'PN');
 
       const info = run(`
         INSERT INTO purchases(code, ts, supplier_id, warehouse_id, user_id, subtotal, discount,
-                              vat_amount, other_cost, total, paid, status, supplier_invoice, due_date, note)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?)`,
+                              vat_amount, other_cost, total, paid, status, supplier_invoice, due_date, note,
+                              vat_in_cost, discount_mode)
+        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)`,
         [code, b.ts || null, b.supplier_id || null, warehouseId, b.user_id || null,
-          subtotal, discount, vatAmount, otherCost, total, paid,
-          b.supplier_invoice || null, b.due_date || null, b.note || null]);
+          subtotal, discount, vatAmount, math.otherCost, total, paid,
+          b.supplier_invoice || null, b.due_date || null, b.note || null,
+          math.vatInCost ? 1 : 0, math.discountMode]);
       const purchaseId = Number(info.lastInsertRowid);
+      /* Nhớ lựa chọn cho lần nhập sau của mối này */
+      if (b.supplier_id && b.vat_in_cost !== undefined) {
+        run('UPDATE suppliers SET vat_in_cost = ?, vat_discount_mode = ? WHERE id = ?',
+          [math.vatInCost ? 1 : 0, math.discountMode, b.supplier_id]);
+      }
 
       /* Chi phí khác chỉ phân bổ vào hàng thật sự vào kho — hàng giao sai
          không nằm trong kho thì không có giá vốn để gánh phần chi phí đó */
@@ -187,8 +187,7 @@ r.post('/purchases', (req, res) => {
         const qty = Number(it.qty);
         const factor = Number(it.factor) || 1;
         const qtyBase = qty * factor;
-        const share = stockSubtotal > 0 ? (it._amount / stockSubtotal) * otherCost : 0;
-        const unitCostBase = qtyBase > 0 ? Math.round((it._amount + share) / qtyBase) : 0;
+        const unitCostBase = it._m.unitCost;
 
         /* price là giá SAU chiết khấu — chính nó đi vào giá vốn.
            list_price giữ giá mối báo, để mở lại phiếu còn đối chiếu được. */
@@ -199,15 +198,15 @@ r.post('/purchases', (req, res) => {
 
         run(`INSERT INTO purchase_items(purchase_id, product_id, unit_id, unit_name, factor, qty, price,
                                         discount, vat_rate, amount, list_price, discount_percent,
-                                        overwrite_cost)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                        overwrite_cost, line_vat, discount_share, cost_unit)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [purchaseId, it.product_id, resolveUnitId(it.product_id, it.unit_id, it.unit_name),
             it.unit_name, factor, qty,
             Math.round(Number(it.price) || 0), Math.round(Number(it.discount) || 0),
             Number(it.vat_rate) || 0, it._amount,
             Math.round(Number(it.list_price) || Number(it.price) || 0),
             Number(it.discount_percent) || 0,
-            overwrite ? 1 : 0]);
+            overwrite ? 1 : 0, it._m.vat, it._m.discountShare, unitCostBase]);
 
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: qtyBase,

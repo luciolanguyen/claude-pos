@@ -20,12 +20,13 @@ import {
 import { ProductPicker } from './ProductPicker';
 import { CategorySelect } from './CategoryTree';
 import { ProductImageManager } from './ProductImages';
+import { WarrantyPartsEditor } from './WarrantyParts';
 
 const EMPTY = {
   sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
   cost_price: '', vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
-  warranty_months: 0, warranty_note: '',
+  warranty_months: 0, warranty_note: '', warranty_parts: [],
   description: '', pack_spec: '', purchase_note: '',
   opening_qty: 0, opening_warehouse_id: '',
   cost_method: '',        // rỗng = theo thiết lập chung của tiệm
@@ -767,8 +768,17 @@ export function ProductForm({ open, product, onClose, onSaved }) {
             </Field>
             <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành khi bán" htmlFor="pf-wn">
               <Input id="pf-wn" value={form.warranty_note || ''} onChange={set('warranty_note')}
-                disabled={!(Number(form.warranty_months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
+                disabled={!(Number(form.warranty_months) > 0) && !(form.warranty_parts?.length > 0)}
+                placeholder="VD: không bảo hành cháy nổ do điện áp" />
             </Field>
+            {/* Bảo hành riêng từng bộ phận (plan 31, 3e). Chỉ gửi lên khi form
+                có sẵn danh sách — mở từ bản ghi đầy đủ của máy chủ */}
+            {Array.isArray(form.warranty_parts) && (
+              <div className="sm:col-span-2">
+                <WarrantyPartsEditor value={form.warranty_parts}
+                  onChange={(list) => setForm((f) => ({ ...f, warranty_parts: list }))} />
+              </div>
+            )}
 
             {!product && (
               <>

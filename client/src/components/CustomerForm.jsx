@@ -181,8 +181,13 @@ export default function CustomerForm({ open, onClose, onSaved, customer }) {
             </Select>
           </Field>
 
-          <Field label="Nợ cũ đầu kỳ" hint="Số tiền khách đang nợ trước khi dùng phần mềm" htmlFor="cf-debt">
-            <MoneyInput id="cf-debt" value={form.opening_debt} onChange={(v) => setForm((f) => ({ ...f, opening_debt: v }))} />
+          <Field label="Nợ cũ đầu kỳ"
+            hint={customer
+              ? 'Không sửa ở đây được nữa — vào tab Công nợ → Điều chỉnh công nợ (cần PIN, lưu lại lý do)'
+              : 'Số tiền khách đang nợ trước khi dùng phần mềm. Khai nợ cũ cần chủ cửa hàng hoặc quản lý.'}
+            htmlFor="cf-debt">
+            <MoneyInput id="cf-debt" value={form.opening_debt} disabled={!!customer}
+              onChange={(v) => setForm((f) => ({ ...f, opening_debt: v }))} />
           </Field>
 
           <Field label="Hạn mức nợ tối đa" hint="0 = không giới hạn. Vượt hạn mức phải có PIN quản lý mới bán nợ." htmlFor="cf-limit">
@@ -456,8 +461,13 @@ export function SupplierForm({ open, onClose, onSaved, supplier }) {
           <Input id="sf-addr" value={form.address || ''} onChange={set('address')} />
         </Field>
 
-        <Field label="Nợ cũ đầu kỳ" hint="Số tiền mình đang nợ NCC trước khi dùng phần mềm" htmlFor="sf-debt">
-          <MoneyInput id="sf-debt" value={form.opening_debt} onChange={(v) => setForm((f) => ({ ...f, opening_debt: v }))} />
+        <Field label="Nợ cũ đầu kỳ"
+          hint={supplier
+            ? 'Không sửa ở đây được nữa — vào tab Công nợ → Điều chỉnh công nợ (cần PIN, lưu lại lý do)'
+            : 'Số tiền mình đang nợ NCC trước khi dùng phần mềm. Khai nợ cũ cần chủ cửa hàng hoặc quản lý.'}
+          htmlFor="sf-debt">
+          <MoneyInput id="sf-debt" value={form.opening_debt} disabled={!!supplier}
+            onChange={(v) => setForm((f) => ({ ...f, opening_debt: v }))} />
         </Field>
 
         <Field label="Email" htmlFor="sf-email">

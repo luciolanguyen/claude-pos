@@ -16,7 +16,7 @@
    Nhờ vậy cộng hết phần còn nợ của từng hoá đơn luôn ra đúng bằng tổng
    nợ — hai con số không bao giờ vênh nhau.
    ==================================================================== */
-import { all, get, run, saleOwedSql, returnCreditSql } from './db.js';
+import { all, get, run, saleOwedSql, returnCreditSql, debtAdjustTotal } from './db.js';
 
 const days = (ts) => {
   const t = new Date(String(ts).replace(' ', 'T'));
@@ -56,7 +56,11 @@ export function debtBreakdown(customerId) {
 
   /* Tiền chưa gán vào hoá đơn nào: phiếu thu cũ, phần thu dư, cấn trừ trả hàng */
   let pool = payments - allocatedTotal + returnCredit;
-  let openingLeft = c.opening_debt;
+  /* Điều chỉnh công nợ (plan 31, 6c): tăng nợ thì coi như nợ cũ không nằm ở
+     hoá đơn nào, gộp vào nợ đầu kỳ; giảm nợ thì như một khoản đã trả chung */
+  const adjust = debtAdjustTotal('customer', customerId);
+  let openingLeft = c.opening_debt + (adjust > 0 ? adjust : 0);
+  if (adjust < 0) pool += -adjust;
   if (openingLeft < 0) { pool += -openingLeft; openingLeft = 0; }   // khách trả trước từ đầu
 
   const take = (need) => {
@@ -216,6 +220,16 @@ export function customerLedger(customerId, limit = 200) {
       amount: r.total - r.refunded, sale_code: r.sale_code,
       status: 'Trả hàng cấn trừ vào nợ',
     });
+  }
+
+  for (const a of all(`
+    SELECT a.id, a.code, a.ts, a.amount, a.debt_before, a.debt_after, a.reason,
+           u.full_name AS user_name, ap.full_name AS approved_by_name
+    FROM debt_adjustments a
+    LEFT JOIN users u ON u.id = a.user_id
+    LEFT JOIN users ap ON ap.id = a.approved_by
+    WHERE a.partner_type = 'customer' AND a.partner_id = ?`, [customerId])) {
+    rows.push({ kind: 'adjustment', ...a, status: 'Điều chỉnh công nợ' });
   }
 
   rows.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : b.id - a.id));

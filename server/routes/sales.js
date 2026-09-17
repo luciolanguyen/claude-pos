@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchWhere,
-  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
+  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams, partUntil } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
   maxDebtDaysFor,
@@ -116,6 +116,8 @@ r.get('/sales/:id', (req, res) => {
   const returned = returnedByLine(s.id, s.items);
   const policy = posPolicy();
   for (const it of s.items) {
+    it.warranty_parts = all(`SELECT name, duration, unit, until FROM sale_item_warranty_parts
+                             WHERE sale_item_id = ? ORDER BY id`, [it.id]);
     it.net_unit_price = netUnitPrice(s, it);
     it.returned_qty = returned.get(it.id) || 0;
     it.returnable_qty = Math.max(0, it.qty - it.returned_qty);
@@ -484,7 +486,7 @@ export function createSale(b) {
            (tài liệu 22) — chốt luôn vào hoá đơn để sau này sửa bảng nấc
            cũng không làm hoá đơn cũ hiện ra mức giảm ảo. */
         const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id, it.qty);
-        run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
+        const itemInfo = run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
                                     warranty_months, warranty_until, serial, list_price, warranty_note)
@@ -500,6 +502,18 @@ export function createSale(b) {
             listPrice ?? Math.round(Number(it.price) || 0),
             /* Điều kiện bảo hành in lên phiếu bảo hành — chỉ khi dòng có bảo hành */
             wm > 0 ? (String(it.warranty_note ?? '').trim() || null) : null]);
+        /* Bảo hành riêng từng bộ phận (plan 31, 3e): chốt hạn từng bộ phận vào
+           hoá đơn ngay lúc bán. Thu ngân huỷ bảo hành của dòng (0 tháng) thì
+           không chốt bộ phận nào. */
+        if (wm > 0) {
+          const saleItemId = Number(itemInfo.lastInsertRowid);
+          for (const wp of all(`SELECT name, duration, unit FROM product_warranty_parts
+                                WHERE product_id = ? ORDER BY sort_order, id`, [it.product_id])) {
+            run(`INSERT INTO sale_item_warranty_parts(sale_item_id, name, duration, unit, until)
+                 VALUES(?, ?, ?, ?, ?)`,
+              [saleItemId, wp.name, wp.duration, wp.unit, partUntil(b.ts, wp.duration, wp.unit)]);
+          }
+        }
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,

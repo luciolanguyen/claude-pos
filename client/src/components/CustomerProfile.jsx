@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Phone, MapPin, Receipt, HandCoins, AlertTriangle, Save, Package, Building2, Mail, Cake,
-  Clock, Users, Info, Tag, Wallet, KeyRound, FileText,
+  Clock, Users, Info, Tag, Wallet, KeyRound, FileText, PencilLine,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -18,6 +18,7 @@ import { DebtCollectModal } from './PosDebt';
 import { PinApprovalModal, canSelfApprove } from './PosApproval';
 import { WarrantyFlag, WarrantyHistoryModal } from './WarrantyHistory';
 import { customerTypeOf } from './CustomerForm';
+import { DebtStatementButton, DebtAdjustModal } from './DebtTools';
 
 /* ====================================================================
    HỒ SƠ KHÁCH HÀNG THỐNG NHẤT (tài liệu 08)
@@ -500,7 +501,8 @@ const Alert = ({ children }) => (
 );
 
 function DebtTab({ c, ledger, onCollect, onSaved }) {
-  const { user, access, toast } = useApp();
+  const { user, access, toast, can } = useApp();
+  const [adjusting, setAdjusting] = useState(false);
   const [limit, setLimit] = useState(c.debt_limit || 0);
   const [days, setDays] = useState(c.max_debt_days ?? '');
   const [saving, setSaving] = useState(false);
@@ -542,7 +544,7 @@ function DebtTab({ c, ledger, onCollect, onSaved }) {
 
   const invoices = (ledger?.invoices || []).filter((i) => i.remaining > 0);
   const receipts = (ledger?.rows || [])
-    .filter((r) => ['receipt', 'refund', 'return_offset'].includes(r.kind))
+    .filter((r) => ['receipt', 'refund', 'return_offset', 'adjustment'].includes(r.kind))
     .slice(0, 15);
   const tone = c.over_limit || c.overdue_count > 0
     ? 'border-danger/30 bg-red-50'
@@ -565,6 +567,14 @@ function DebtTab({ c, ledger, onCollect, onSaved }) {
           <Button variant="primary" size="lg" icon={HandCoins} onClick={onCollect} disabled={!(c.debt > 0)}>
             Thu nợ
           </Button>
+        </div>
+
+        {/* Sổ công nợ theo kỳ, ngày chốt, in; sửa công nợ có PIN (plan 31, nhóm 6) */}
+        <div className="flex flex-wrap gap-2">
+          <DebtStatementButton type="customer" partner={c} onChanged={onSaved} />
+          {can('debt.adjust') && (
+            <Button icon={PencilLine} onClick={() => setAdjusting(true)}>Điều chỉnh công nợ</Button>
+          )}
         </div>
 
         {c.over_limit && (
@@ -630,12 +640,21 @@ function DebtTab({ c, ledger, onCollect, onSaved }) {
                     <tr key={`${r.kind}${r.id}`}>
                       <td className="font-mono">{r.code}</td>
                       <td className="text-muted-ink whitespace-nowrap">{datetime(r.ts)}</td>
-                      <td>{r.kind === 'return_offset' ? 'Trả hàng cấn trừ' : r.method || '—'}</td>
-                      <td className={`num font-semibold ${r.kind === 'refund' ? 'text-danger' : 'text-emerald-700'}`}>
-                        {r.kind === 'refund' ? '-' : '+'}{money(r.amount ?? r.total)}
-                      </td>
+                      <td>{r.kind === 'return_offset' ? 'Trả hàng cấn trừ'
+                        : r.kind === 'adjustment' ? 'Điều chỉnh công nợ' : r.method || '—'}</td>
+                      {r.kind === 'adjustment' ? (
+                        <td className={`num font-semibold ${r.amount > 0 ? 'text-warn' : 'text-emerald-700'}`}>
+                          {r.amount > 0 ? 'nợ +' : 'nợ −'}{money(Math.abs(r.amount))}
+                        </td>
+                      ) : (
+                        <td className={`num font-semibold ${r.kind === 'refund' ? 'text-danger' : 'text-emerald-700'}`}>
+                          {r.kind === 'refund' ? '-' : '+'}{money(r.amount ?? r.total)}
+                        </td>
+                      )}
                       <td className="text-muted-ink text-2xs">
-                        {r.applied_to?.length ? r.applied_to.map((a) => `${a.code}: ${money(a.amount)}`).join(' · ') : '—'}
+                        {r.kind === 'adjustment'
+                          ? `${money(r.debt_before)} → ${money(r.debt_after)} · ${r.reason}`
+                          : r.applied_to?.length ? r.applied_to.map((a) => `${a.code}: ${money(a.amount)}`).join(' · ') : '—'}
                       </td>
                     </tr>
                   ))}
@@ -685,6 +704,11 @@ function DebtTab({ c, ledger, onCollect, onSaved }) {
           </p>
         </form>
       </aside>
+
+      {adjusting && (
+        <DebtAdjustModal type="customer" partner={c} onClose={() => setAdjusting(false)}
+          onDone={() => { setAdjusting(false); onSaved?.(); }} />
+      )}
 
       <PinApprovalModal
         open={!!needPin}

@@ -5,7 +5,8 @@ import { Router } from 'express';
 import {
   all, get, run, tx, moveStock, costOf, costMethodOf, pageParams,
   categoryTree, categoryTreeIds, categoryFilter,
-  searchWhere, searchMode, orderBy, unitTiers, PRODUCT_DIR } from '../db.js';
+  searchWhere, searchMode, orderBy, unitTiers, PRODUCT_DIR,
+  normWarrantyParts, monthsCovering } from '../db.js';
 import { validateImport, writeImport, importMeta } from '../import-products.js';
 
 const r = Router();
@@ -299,7 +300,26 @@ function hydrate(p) {
     ORDER BY pu.ts DESC, pi.id DESC LIMIT 1`, [p.id]);
   p.last_purchase_price = lastIn?.price ?? null;
   p.last_purchase_at = lastIn?.ts ?? null;
+  p.warranty_parts = all(`SELECT id, name, duration, unit FROM product_warranty_parts
+                          WHERE product_id = ? ORDER BY sort_order, id`, [p.id]);
   return p;
+}
+
+/**
+ * Bảo hành riêng từng bộ phận (plan 31, 3e). Không gửi thì giữ nguyên.
+ * Có bộ phận thì thời hạn bảo hành chung tự nâng cho đủ phủ bộ phận lâu
+ * nhất — màn hình bán hàng dựa vào số tháng chung để biết dòng có bảo hành.
+ */
+function saveWarrantyParts(pid, list) {
+  if (list === undefined) return;
+  const parts = normWarrantyParts(list);
+  run('DELETE FROM product_warranty_parts WHERE product_id = ?', [pid]);
+  parts.forEach((x, i) => run(
+    'INSERT INTO product_warranty_parts(product_id, name, duration, unit, sort_order) VALUES(?, ?, ?, ?, ?)',
+    [pid, x.name, x.duration, x.unit, i]));
+  if (parts.length) {
+    run('UPDATE products SET warranty_months = MAX(warranty_months, ?) WHERE id = ?', [monthsCovering(parts), pid]);
+  }
 }
 
 /* ==================================================================== *
@@ -1084,6 +1104,7 @@ r.post('/products', (req, res) => {
       const pid = Number(info.lastInsertRowid);
       saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái', b.pack_spec);
       saveDefaultUnits(pid, b, b.units);
+      saveWarrantyParts(pid, b.warranty_parts);
       for (const src of (Array.isArray(b.images) ? b.images : []).slice(0, MAX_IMAGES)) {
         const file = saveImageFile(src, pid);
         if (file) run('INSERT INTO product_images(product_id, file, is_main, sort_order) VALUES(?, ?, 0, 0)', [pid, file]);
@@ -1139,6 +1160,7 @@ r.put('/products/:id', (req, res) => {
           b.purchase_note === undefined ? 0 : 1, String(b.purchase_note ?? '').trim() || null,
           id]);
       saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái', b.pack_spec);
+      saveWarrantyParts(Number(id), b.warranty_parts);
       if (b.sell_unit_id !== undefined || b.buy_unit_id !== undefined
         || b.sell_unit_index !== undefined || b.buy_unit_index !== undefined) {
         saveDefaultUnits(Number(id), b, b.units);

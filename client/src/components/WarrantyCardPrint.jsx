@@ -11,6 +11,22 @@ import { useState, useEffect } from 'react';
 import { Printer, ShieldCheck } from 'lucide-react';
 import { qty as fq, date } from '../lib/format';
 import { Button, Modal } from './ui';
+import { partDuration } from './WarrantyParts';
+
+/* Hạn từng bộ phận của một món (plan 31, 3e) — in ngay dưới tên sản phẩm */
+function PartRows({ it, size = 10 }) {
+  if (!it.warranty_parts?.length) return null;
+  return (
+    <div style={{ fontSize: size, marginTop: 2 }}>
+      {it.warranty_parts.map((p, i) => (
+        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+          <span>· {p.name} ({partDuration(p)})</span>
+          <b>đến {date(p.until)}</b>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export const WARRANTY_CARD_MODES = [
   { key: 'combined', label: 'Gộp 1 tờ', hint: 'Mọi món bảo hành trên một phiếu' },
@@ -96,6 +112,7 @@ export default function WarrantyCardPrint({
               <td>
                 <div style={{ fontWeight: 700 }}>{it.name_snapshot}</div>
                 {it.serial && <div>Serial: {it.serial}</div>}
+                <PartRows it={it} />
                 {it.warranty_note && <div style={{ fontStyle: 'italic' }}>Điều kiện: {it.warranty_note}</div>}
               </td>
               <td style={{ textAlign: 'right' }}>{fq(it.qty)}</td>
@@ -129,6 +146,9 @@ export default function WarrantyCardPrint({
               <tr><td style={{ padding: '3px 0' }}>Số serial</td><td style={{ fontFamily: 'monospace' }}>{it.serial || '................................'}</td></tr>
               <tr><td style={{ padding: '3px 0' }}>Thời hạn bảo hành</td><td style={{ fontWeight: 700 }}>{it.warranty_months} tháng</td></tr>
               <tr><td style={{ padding: '3px 0' }}>Bảo hành đến ngày</td><td style={{ fontWeight: 800 }}>{it.warranty_until ? date(it.warranty_until) : '—'}</td></tr>
+              {it.warranty_parts?.length > 0 && (
+                <tr><td style={{ padding: '3px 0', verticalAlign: 'top' }}>Từng bộ phận</td><td><PartRows it={it} size={12} /></td></tr>
+              )}
               {it.warranty_note && (
                 <tr><td style={{ padding: '3px 0', verticalAlign: 'top' }}>Điều kiện</td><td>{it.warranty_note}</td></tr>
               )}
@@ -202,6 +222,13 @@ export default function WarrantyCardPrint({
           {it.warranty_until ? date(it.warranty_until) : '—'}
         </div>
       </div>
+      {it.warranty_parts?.length > 0 && (
+        <>
+          <div className="dashed" />
+          <div style={{ fontWeight: 700, fontSize: 10 }}>BẢO HÀNH TỪNG BỘ PHẬN</div>
+          <PartRows it={it} size={11} />
+        </>
+      )}
       {it.warranty_note && (
         <>
           <div className="dashed" />
@@ -245,6 +272,9 @@ export default function WarrantyCardPrint({
               </tr>
               {it.serial && (
                 <tr><td colSpan={2}>Serial: {it.serial}</td></tr>
+              )}
+              {it.warranty_parts?.length > 0 && (
+                <tr><td colSpan={2}><PartRows it={it} /></td></tr>
               )}
               <tr>
                 <td>Đến ngày</td>

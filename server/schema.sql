@@ -943,3 +943,78 @@ CREATE TABLE IF NOT EXISTS sale_consign_items (
 );
 CREATE INDEX IF NOT EXISTS idx_sci_sale ON sale_consign_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sci_partner ON sale_consign_items(partner_id, settlement_id);
+
+-- ================= Plan 31 dot 6: bao hanh =================
+-- Phieu tiep nhan gom nhieu mon (hang muc 3a). Moi mon van la mot dong
+-- warranty_tickets rieng: tu di luong kiem tra / gui hang / sua / tra khach
+-- va tinh tien rieng. Phieu gom chi de in chung mot bien nhan va biet khi nao
+-- khach da lay du. Phieu tiep nhan mot mon (va moi phieu cu) khong co phieu gom.
+CREATE TABLE IF NOT EXISTS warranty_batches (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  code           TEXT NOT NULL UNIQUE,
+  ts             TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id    INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name  TEXT,
+  customer_phone TEXT,
+  received_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note           TEXT
+);
+
+-- Bao hanh rieng tung bo phan cua mot mat hang (hang muc 3e):
+-- "May khoan: Pin 7 ngay, Than may 6 thang, Cu sac 3 thang"
+CREATE TABLE IF NOT EXISTS product_warranty_parts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  duration   INTEGER NOT NULL,
+  unit       TEXT NOT NULL DEFAULT 'month',   -- day | month
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pwp_product ON product_warranty_parts(product_id);
+
+-- Chot vao hoa don luc ban: sua khai bao mat hang ve sau khong doi han cua
+-- hang da ban
+CREATE TABLE IF NOT EXISTS sale_item_warranty_parts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  duration     INTEGER NOT NULL,
+  unit         TEXT NOT NULL DEFAULT 'month',
+  until        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_siwp_item ON sale_item_warranty_parts(sale_item_id);
+
+-- ================= Plan 31 dot 7: cong no =================
+-- Dieu chinh cong no (hang muc 6c): khong sua chung tu cu, khong sua thang o
+-- "No dau ky" nua. Moi lan sua la mot phieu rieng: tu bao nhieu sang bao nhieu,
+-- ly do, ai lap, ai go PIN duyet.
+CREATE TABLE IF NOT EXISTS debt_adjustments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  partner_type TEXT NOT NULL,              -- customer | supplier
+  partner_id   INTEGER NOT NULL,
+  partner_name TEXT,
+  debt_before  INTEGER NOT NULL,
+  debt_after   INTEGER NOT NULL,
+  amount       INTEGER NOT NULL,           -- debt_after - debt_before
+  reason       TEXT NOT NULL,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  approved_by  INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_da_partner ON debt_adjustments(partner_type, partner_id);
+
+-- Moc chot cong no (hang muc 6b): chi la lop hien thi. Chung tu goc giu
+-- nguyen; xoa dong moc la moi thu ve nhu cu.
+CREATE TABLE IF NOT EXISTS debt_closings (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  partner_type   TEXT NOT NULL,
+  partner_id     INTEGER NOT NULL,
+  close_date     TEXT NOT NULL,            -- YYYY-MM-DD
+  amount         INTEGER NOT NULL,         -- tong no den het ngay chot, luc bam chot
+  debt_at_action INTEGER NOT NULL,         -- cong no hien tai luc bam chot
+  ts             TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note           TEXT,
+  UNIQUE(partner_type, partner_id, close_date)
+);

@@ -13,7 +13,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ShieldCheck, Plus, Eye, Search, Clock, AlertTriangle, Truck, Wrench,
   PackageCheck, Printer, XCircle, Trash2, RefreshCw, CheckCircle2, ArrowRight,
-  ShoppingCart, Minus, Save, Info, ArrowLeftRight, PackagePlus, User,
+  ShoppingCart, Minus, Save, Info, ArrowLeftRight, PackagePlus, User, Tag, Layers,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
@@ -23,10 +23,12 @@ import {
   Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Tabs, Pager, ErrorBox,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
-import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
+import { OpenDraftsButton } from '../components/DraftButtons';
 import PhotoPicker, { PhotoGallery } from '../components/PhotoPicker';
 import WarrantyReturnPrint from '../components/WarrantyReturnPrint';
-import { ProductPicker } from '../components/ProductPicker';
+import WarrantyPrint from '../components/WarrantyPrint';
+import WarrantyTicketForm from '../components/WarrantyTicketForm';
+import { WarrantyPartsList } from '../components/WarrantyParts';
 import { CategorySelect } from '../components/CategoryTree';
 import { PinApprovalModal } from '../components/PosApproval';
 import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
@@ -141,10 +143,29 @@ function Tickets() {
 
   const [creating, setCreating] = useState(false);
   const [detailId, setDetailId] = useState(null);
-  const [printing, setPrinting] = useState(null);          // biên nhận lúc nhận máy
+  const [printing, setPrinting] = useState(null);          // biên nhận / tem lúc nhận máy
   const [returnPrint, setReturnPrint] = useState(null);    // phiếu trả hàng lúc trả máy
 
   const refresh = () => { reload(); reloadSummary(); };
+
+  /**
+   * Mở hộp in biên nhận / tem (plan 31, 3a–3d). Món thuộc phiếu gom thì biên
+   * nhận in chung cả phiếu; tem thì chỉ đề sẵn cho đúng món đang bấm.
+   */
+  const openPrint = async (ticketOrId, mode = 'receipt', { batchId = null } = {}) => {
+    try {
+      const t = typeof ticketOrId === 'object' ? ticketOrId : await api.warrantyTicket(ticketOrId);
+      const bid = batchId || t?.batch_id;
+      if (bid) {
+        const b = await api.warrantyBatch(bid);
+        setPrinting({ tickets: b.tickets, batch: b, focusId: batchId ? null : t.id, mode });
+      } else {
+        setPrinting({ tickets: [t], batch: null, focusId: null, mode });
+      }
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -269,6 +290,16 @@ function Tickets() {
                             {t.code}
                           </button>
                           {t.in_warranty === 1 && <Badge tone="ok" className="ml-1">Còn BH</Badge>}
+                          {/* Món thuộc phiếu gom nhiều món: bấm là lọc ra cả phiếu */}
+                          {t.batch_code && (
+                            <button type="button" onClick={() => setQ(t.batch_code)}
+                              title={`Xem đủ ${t.batch_count} món của phiếu ${t.batch_code}`}
+                              className="mt-0.5 flex items-center gap-1 text-2xs text-violet-800 hover:underline cursor-pointer">
+                              <Layers size={11} aria-hidden="true" />
+                              <span className="font-mono">{t.batch_code}</span> · {t.batch_count} món
+                              {t.batch_open > 0 && t.batch_open < t.batch_count && ` · còn ${t.batch_open} chưa trả`}
+                            </button>
+                          )}
                         </td>
                         <td><TypeBadge type={t.ticket_type} /></td>
                         <td className="text-muted-ink whitespace-nowrap">
@@ -288,6 +319,7 @@ function Tickets() {
                         <td>
                           <div className="font-semibold truncate max-w-[190px]">{t.product_name}</div>
                           {t.serial && <div className="text-2xs text-muted-ink font-mono">SN: {t.serial}</div>}
+                          {t.component_name && <div className="text-2xs text-violet-800">Bộ phận: {t.component_name}</div>}
                         </td>
                         <td className="text-muted-ink truncate max-w-[190px]">{t.issue || '—'}</td>
                         <td>
@@ -302,8 +334,10 @@ function Tickets() {
                           <div className="flex items-center justify-end gap-0.5">
                             <IconButton icon={Eye} label={`Xem phiếu ${t.code}`} size={14}
                               onClick={() => setDetailId(t.id)} />
-                            <IconButton icon={Printer} label={`In biên nhận ${t.code}`} size={14}
-                              onClick={async () => setPrinting(await api.warrantyTicket(t.id))} />
+                            <IconButton icon={Printer} label={`In biên nhận ${t.batch_code || t.code}`} size={14}
+                              onClick={() => openPrint(t.id, 'receipt')} />
+                            <IconButton icon={Tag} label={`In tem dán máy ${t.code}`} size={14}
+                              onClick={() => openPrint(t.id, 'tag')} />
                           </div>
                         </td>
                       </tr>
@@ -316,338 +350,38 @@ function Tickets() {
             </div>
           )}
 
-      <TicketForm
+      <WarrantyTicketForm
         open={!!creating}
         draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
         onSaved={async (res) => {
           setCreating(false);
           refresh();
-          toast(`Đã lập phiếu ${res.ticket_type === 'repair' ? 'sửa chữa' : 'bảo hành'} ${res.code}`, 'ok');
-          setPrinting(await api.warrantyTicket(res.id));
+          toast(res.batch_code
+            ? `Đã lập phiếu tiếp nhận ${res.batch_code} gồm ${res.tickets.length} món`
+            : `Đã lập phiếu ${res.ticket_type === 'repair' ? 'sửa chữa' : 'bảo hành'} ${res.code}`, 'ok');
+          await openPrint(res.id, 'receipt', { batchId: res.batch_id });
         }}
       />
 
       {detailId && (
         <TicketDetail
+          key={detailId}
           id={detailId}
           onClose={() => setDetailId(null)}
           onChanged={refresh}
-          onPrint={setPrinting}
+          onOpen={setDetailId}
+          onPrint={(t, mode) => openPrint(t, mode)}
           onPrintReturn={setReturnPrint}
         />
       )}
 
-      {printing && <ReceiptPrint ticket={printing} store={store} onClose={() => setPrinting(null)} />}
+      {printing && (
+        <WarrantyPrint tickets={printing.tickets} batch={printing.batch} focusId={printing.focusId}
+          mode={printing.mode} onClose={() => setPrinting(null)} />
+      )}
       {returnPrint && <WarrantyReturnPrint ticket={returnPrint} store={store} onClose={() => setReturnPrint(null)} />}
     </div>
-  );
-}
-
-/* ==================================================================== */
-/* Lập phiếu tiếp nhận                                                   */
-/* ==================================================================== */
-
-const EMPTY = {
-  ticket_type: 'warranty', technician_id: null,
-  customer_id: null, customer_name: '', customer_phone: '',
-  sale_id: null, product_id: null, product_name: '', serial: '', qty: 1,
-  issue: '', condition_note: '', accessories: '',
-  in_warranty: false, warranty_until: '', promised_at: '', note: '',
-};
-
-function TicketForm({ open, onClose, onSaved, draft = null }) {
-  const { user, toast } = useApp();
-  const [form, setForm] = useState(EMPTY);
-  const [photos, setPhotos] = useState([]);
-  const [lookupQ, setLookupQ] = useState('');
-  const [found, setFound] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [draftId, setDraftId] = useState(null);
-
-  /* Một chỗ nạp duy nhất: mở phiếu tạm thì đổ nội dung cũ đè lên phiếu trắng */
-  useEffect(() => {
-    if (!open) return;
-    setDraftId(draft?.id || null);
-    setForm({ ...EMPTY, promised_at: isoDate(new Date(Date.now() + 5 * 86400000)), ...(draft?.payload?.form || {}) });
-    setPhotos([]); setLookupQ(''); setFound(null); setErr('');
-  }, [open, draft]);
-
-  const { data: customers } = useFetch(() => api.customers({ active: 1 }), [], { skip: !open });
-  const { data: products } = useFetch(() => api.posProducts(), [], { skip: !open });
-  const { data: users } = useFetch(() => api.users(), [], { skip: !open });
-  const staff = (Array.isArray(users) ? users : []).filter((u) => u.active);
-
-  /* Tra hoá đơn cũ để lấy sẵn hàng, khách và hạn bảo hành */
-  const doLookup = async () => {
-    if (!lookupQ.trim()) return;
-    try {
-      const rows = await api.warrantyLookup(lookupQ.trim());
-      setFound(rows);
-      if (!rows.length) toast('Không tìm thấy hàng đã bán khớp thông tin này', 'warn');
-    } catch (e) {
-      toast(e.message, 'bad');
-    }
-  };
-
-  const pickSold = (row) => {
-    const inW = row.in_warranty === 1;
-    setForm((f) => ({
-      ...f,
-      ticket_type: inW ? 'warranty' : 'repair',
-      customer_id: row.customer_id || null,
-      customer_name: row.customer_id ? '' : row.customer_name,
-      customer_phone: row.customer_phone || '',
-      sale_id: row.sale_id,
-      product_id: row.product_id,
-      product_name: row.product_name,
-      serial: row.serial || '',
-      in_warranty: inW,
-      warranty_until: row.warranty_until || '',
-    }));
-    setFound(null);
-    toast(inW
-      ? `Còn bảo hành, hết hạn ${date(row.warranty_until)} — lập phiếu Bảo hành`
-      : 'Hàng đã hết hạn bảo hành — chuyển sang Sửa chữa dịch vụ', inW ? 'ok' : 'warn', 5000);
-  };
-
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e }));
-
-  const save = async () => {
-    if (!form.product_name.trim()) { setErr('Bắt buộc ghi tên hàng khách mang tới.'); return; }
-    if (!form.customer_id && !form.customer_name.trim() && !form.customer_phone.trim()) {
-      setErr('Ghi ít nhất tên hoặc số điện thoại của khách để còn gọi khi sửa xong.');
-      return;
-    }
-    setBusy(true);
-    setErr('');
-    try {
-      const res = await api.post('/warranty', {
-        ...form, qty: Number(form.qty) || 1,
-        in_warranty: form.ticket_type === 'warranty' && form.in_warranty ? 1 : 0,
-        received_by: user?.id,
-        photos,
-      });
-      if (draftId) { try { await api.del(`/doc-drafts/${draftId}`); } catch { /* nháp mất rồi */ } }
-      onSaved?.(res);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <Modal
-        open={open}
-        onClose={onClose}
-        title="Tiếp nhận máy bảo hành / sửa chữa"
-        subtitle="Lập phiếu và in biên nhận cho khách giữ"
-        size="xl"
-        footer={<>
-          {/* Phiếu tạm KHÔNG mang theo ảnh: ảnh base64 vài megabyte nhét vào
-              một ô văn bản chỉ làm phình cơ sở dữ liệu. */}
-          <SaveDraftButton
-            className="mr-auto"
-            disabled={!form.product_name?.trim()}
-            onSaved={(d) => setDraftId(d.id)}
-            build={() => ({
-              kind: 'warranty',
-              id: draftId,
-              title: `${TYPES[form.ticket_type]?.label || 'Bảo hành'} ${form.product_name || ''}`.trim(),
-              partner_name: form.customer_name || null,
-              item_count: 1,
-              payload: { form },
-            })}
-          />
-          <Button onClick={onClose}>Huỷ</Button>
-          <Button variant="primary" icon={Printer} onClick={save} loading={busy}>
-            Lưu &amp; in biên nhận
-          </Button>
-        </>}
-      >
-        <div className="space-y-4">
-          <div role="radiogroup" aria-label="Loại phiếu" className="grid gap-1.5 sm:grid-cols-2">
-            {Object.entries(TYPES).map(([k, v]) => {
-              const Icon = v.icon;
-              const on = form.ticket_type === k;
-              return (
-                <label key={k}
-                  className={`flex items-start gap-2 rounded-lg border p-2.5 cursor-pointer transition-colors duration-150
-                              focus-within:ring-2 focus-within:ring-accent/40
-                              ${on ? 'border-accent bg-accent-soft' : 'border-line hover:bg-muted'}`}>
-                  <input type="radio" name="wt-type" value={k} checked={on} className="sr-only"
-                    onChange={() => setForm((f) => ({ ...f, ticket_type: k, in_warranty: k === 'warranty' ? f.in_warranty : false }))} />
-                  <Icon size={18} className={on ? 'text-emerald-800 mt-0.5' : 'text-muted-ink mt-0.5'} aria-hidden="true" />
-                  <span>
-                    <span className="block text-[13px] font-bold">{v.label}</span>
-                    <span className="block text-2xs text-muted-ink">{v.hint}</span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-
-          {/* Tra hoá đơn cũ */}
-          <div className="card p-3 bg-accent-soft/30 border-accent/25">
-            <span className="label">Tra hàng đã bán (không bắt buộc)</span>
-            <p className="text-2xs text-muted-ink mb-2">
-              Nhập số điện thoại khách, mã hoá đơn hoặc số serial để lấy sẵn thông tin
-              và biết còn hạn bảo hành hay không.
-            </p>
-            <div className="flex gap-2">
-              <Input
-                value={lookupQ}
-                onChange={(e) => setLookupQ(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), doLookup())}
-                placeholder="0913111222 hoặc HD260908-0001 hoặc số serial"
-                aria-label="Tra hàng đã bán"
-              />
-              <Button icon={Search} onClick={doLookup} disabled={!lookupQ.trim()}>Tra</Button>
-            </div>
-
-            {found?.length > 0 && (
-              <div className="table-wrap mt-2 max-h-52 overflow-y-auto">
-                <table className="data">
-                  <thead>
-                    <tr><th>Hàng đã bán</th><th>Khách</th><th>Ngày mua</th><th>Bảo hành</th><th /></tr>
-                  </thead>
-                  <tbody>
-                    {found.map((row, i) => (
-                      <tr key={row.item_id ?? `x${row.exchanged_ticket_id}-${i}`} className="hoverable">
-                        <td>
-                          <div className="font-semibold">{row.product_name}</div>
-                          <div className="text-2xs text-muted-ink font-mono">
-                            {row.sale_code}{row.serial ? ` · SN ${row.serial}` : ''}
-                          </div>
-                          {row.exchanged_from_code && (
-                            <div className="text-2xs text-sky-800">Đổi mới từ sản phẩm cũ có mã BH: {row.exchanged_from_code}</div>
-                          )}
-                        </td>
-                        <td className="truncate max-w-[130px]">{row.customer_name}</td>
-                        <td className="text-muted-ink whitespace-nowrap">{row.sale_ts ? date(row.sale_ts) : '—'}</td>
-                        <td>
-                          {row.in_warranty === 1
-                            ? <Badge tone="ok">Còn {row.days_left} ngày</Badge>
-                            : row.warranty_until
-                              ? <Badge tone="bad">Hết hạn {date(row.warranty_until)}</Badge>
-                              : <span className="text-muted-ink text-2xs">Không khai BH</span>}
-                        </td>
-                        <td className="text-right">
-                          <Button size="sm" variant="soft" icon={ArrowRight} onClick={() => pickSold(row)}>Chọn</Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Khách hàng */}
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Khách hàng có hồ sơ">
-              <Combo
-                items={customers || []}
-                value={form.customer_id}
-                onChange={(cid) => setForm((f) => ({ ...f, customer_id: cid }))}
-                placeholder="Chọn khách quen..."
-                filter={(c, q2) => match(c.name, q2) || (c.phone || '').includes(q2)}
-                render={(c) => ({ label: c.name, sub: c.phone })}
-              />
-            </Field>
-            <Field label="Hoặc ghi tên khách" hint="Khách lẻ chưa có hồ sơ" htmlFor="wt-cname">
-              <Input id="wt-cname" value={form.customer_name} onChange={set('customer_name')}
-                disabled={!!form.customer_id} placeholder="Chú Tám" />
-            </Field>
-            <Field label="Số điện thoại" required htmlFor="wt-cphone">
-              <Input id="wt-cphone" value={form.customer_phone} onChange={set('customer_phone')}
-                inputMode="tel" placeholder="09xx xxx xxx" />
-            </Field>
-          </div>
-
-          {/* Hàng hoá */}
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Field label="Tên hàng khách mang tới" required className="sm:col-span-2" htmlFor="wt-pname">
-              <div className="flex gap-1.5">
-                <Input id="wt-pname" value={form.product_name} onChange={set('product_name')}
-                  placeholder="Máy bơm Panasonic 125W" />
-                <Button onClick={() => setPickerOpen(true)}>Chọn</Button>
-              </div>
-              <p className="hint">Hàng mua nơi khác thì cứ gõ tay, không cần có trong danh mục.</p>
-            </Field>
-            <Field label="Số serial / số máy" htmlFor="wt-serial">
-              <Input id="wt-serial" value={form.serial} onChange={set('serial')} />
-            </Field>
-            <Field label="Số lượng" htmlFor="wt-qty">
-              <QtyInput size="md" value={form.qty} onChange={(v) => setForm((f) => ({ ...f, qty: v }))} min={1} />
-            </Field>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Lỗi khách báo" required htmlFor="wt-issue">
-              <Textarea id="wt-issue" rows={2} value={form.issue} onChange={set('issue')}
-                placeholder="Bơm không lên nước, có tiếng kêu lạ" />
-            </Field>
-            <Field label="Tình trạng máy lúc nhận" hint="Ghi rõ trầy xước, móp, thiếu ốc — tránh tranh cãi lúc trả" htmlFor="wt-cond">
-              <Textarea id="wt-cond" rows={2} value={form.condition_note} onChange={set('condition_note')}
-                placeholder="Vỏ trầy nhẹ góc phải, đủ ốc, không móp" />
-            </Field>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Field label="Phụ kiện kèm theo" htmlFor="wt-acc">
-              <Input id="wt-acc" value={form.accessories} onChange={set('accessories')} placeholder="Dây điện, phích cắm, hộp" />
-            </Field>
-            <Field label="Kỹ thuật viên phụ trách" htmlFor="wt-tech">
-              <Select id="wt-tech" value={form.technician_id || ''}
-                onChange={(e) => setForm((f) => ({ ...f, technician_id: e.target.value ? Number(e.target.value) : null }))}>
-                <option value="">— Chưa phân công —</option>
-                {staff.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-              </Select>
-            </Field>
-            <Field label="Hạn bảo hành" hint="Để trống nếu không rõ" htmlFor="wt-until">
-              <Input id="wt-until" type="date" value={form.warranty_until} onChange={set('warranty_until')} />
-            </Field>
-            <Field label="Hẹn trả khách" htmlFor="wt-promise">
-              <Input id="wt-promise" type="date" value={form.promised_at} onChange={set('promised_at')} />
-            </Field>
-          </div>
-
-          {form.ticket_type === 'warranty' && (
-            <label className="flex items-center gap-2 text-[13px] cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
-                checked={form.in_warranty}
-                onChange={(e) => setForm((f) => ({ ...f, in_warranty: e.target.checked }))} />
-              Còn trong hạn bảo hành — thường sửa miễn phí cho khách
-            </label>
-          )}
-
-          <PhotoPicker photos={photos} onChange={setPhotos} max={8} label="Ảnh chụp lúc nhận hàng" />
-
-          <Field label="Ghi chú thêm" htmlFor="wt-note">
-            <Textarea id="wt-note" rows={2} value={form.note} onChange={set('note')} />
-          </Field>
-
-          {err && <ErrLine>{err}</ErrLine>}
-        </div>
-      </Modal>
-
-      <ProductPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        products={products || []}
-        withQty={false}
-        onPick={(p) => {
-          setForm((f) => ({ ...f, product_id: p.id, product_name: p.name }));
-          setPickerOpen(false);
-        }}
-        title="Chọn hàng trong danh mục"
-      />
-    </>
   );
 }
 
@@ -692,7 +426,7 @@ function sheetTotals(s) {
 /* Chi tiết phiếu                                                        */
 /* ==================================================================== */
 
-function TicketDetail({ id, onClose, onChanged, onPrint, onPrintReturn }) {
+function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }) {
   const { toast, user, can } = useApp();
   const { data: t, busy, reload } = useFetch(() => api.warrantyTicket(id), [id]);
   const { data: wmeta } = useFetch(() => api.warrantyMeta(), []);
@@ -824,7 +558,8 @@ function TicketDetail({ id, onClose, onChanged, onPrint, onPrintReturn }) {
             <Button variant="danger" icon={XCircle} onClick={() => setCancelling(true)}>Huỷ phiếu</Button>
           )}
           <div className="flex-1" />
-          <Button icon={Printer} onClick={() => { onPrint(t); onClose(); }}>In biên nhận</Button>
+          <Button icon={Printer} onClick={() => { onPrint(t, 'receipt'); onClose(); }}>In biên nhận</Button>
+          <Button icon={Tag} onClick={() => { onPrint(t, 'tag'); onClose(); }}>In tem</Button>
           {t.status === 'delivered' && (
             <Button icon={Printer} onClick={() => { onPrintReturn(t); onClose(); }}>In phiếu trả hàng</Button>
           )}
@@ -851,6 +586,38 @@ function TicketDetail({ id, onClose, onChanged, onPrint, onPrintReturn }) {
               )}
             </div>
 
+            {/* Các món cùng một lần tiếp nhận (plan 31, 3a) */}
+            {t.batch && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
+                <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+                  <Layers size={14} className="text-violet-800 self-center" aria-hidden="true" />
+                  <b>Phiếu tiếp nhận <span className="font-mono">{t.batch.code}</span></b>
+                  <span className="text-muted-ink">
+                    {t.batch.count} món · {t.batch.closed ? 'đã xong hết' : `còn ${t.batch.open_count} món chưa trả khách`}
+                  </span>
+                </div>
+                <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                  {t.batch.items.map((x, i) => {
+                    const cur = x.id === t.id;
+                    return (
+                      <li key={x.id}>
+                        <button type="button" disabled={cur} aria-current={cur ? 'true' : undefined}
+                          onClick={() => {
+                            if (dirty && !window.confirm('Bảng chi phí có thay đổi chưa lưu. Chuyển món mà không lưu?')) return;
+                            onOpen?.(x.id);
+                          }}
+                          className={`rounded border px-2 py-1 text-left text-2xs transition-colors duration-150
+                                      ${cur ? 'border-accent bg-accent-soft cursor-default' : 'border-line bg-card hover:bg-muted cursor-pointer'}`}>
+                          <span className="block font-semibold text-[13px]">{i + 1}. {x.product_name}</span>
+                          <span className="flex items-center gap-1 mt-0.5"><span className="font-mono">{x.code}</span> <StatusBadge s={x.status} /></span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
             {/* Tóm tắt */}
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="card p-2.5 text-[13px]">
@@ -871,6 +638,7 @@ function TicketDetail({ id, onClose, onChanged, onPrint, onPrintReturn }) {
                 <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Hàng hoá</div>
                 <div className="font-semibold">{t.product_name}</div>
                 {t.serial && <div className="font-mono text-2xs">SN: {t.serial}</div>}
+                {t.component_name && <div className="text-violet-800">Bộ phận báo hư: <b>{t.component_name}</b></div>}
                 <div className="text-muted-ink">Số lượng: {fq(t.qty)}</div>
                 <div className="mt-1">
                   {t.in_warranty === 1
@@ -1951,6 +1719,7 @@ function Lookup() {
                             ? `${row.warranty_months} tháng — tới ${date(row.warranty_until)}`
                             : row.warranty_until ? `tới ${date(row.warranty_until)}` : '—'}
                           {row.warranty_note && <div className="text-2xs">Điều kiện: {row.warranty_note}</div>}
+                          <WarrantyPartsList parts={row.warranty_parts} className="mt-1" />
                         </td>
                         <td>
                           {row.in_warranty === 1
@@ -1968,112 +1737,5 @@ function Lookup() {
 
       <WarrantyHistoryModal open={!!history} onClose={() => setHistory(null)} query={history?.query} subtitle={history?.subtitle} />
     </div>
-  );
-}
-
-/* ==================================================================== */
-/* In biên nhận cho khách giữ                                            */
-/* ==================================================================== */
-
-function ReceiptPrint({ ticket, store, onClose }) {
-  const { settings } = useApp();
-  const keepDays = Number(settings?.warranty?.keep_days) || 30;
-  const repair = ticket.ticket_type === 'repair';
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.();
-      if ((e.ctrlKey || e.metaKey) && e.key === 'p') { e.preventDefault(); window.print(); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const body = (
-    <div className="print-a5 text-black bg-white">
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 14 }}>{store.name}</div>
-          {store.address && <div style={{ fontSize: 10 }}>{store.address}</div>}
-          {store.phone && <div style={{ fontSize: 10 }}>ĐT: {store.phone}</div>}
-        </div>
-        <div style={{ textAlign: 'right', fontSize: 10 }}>
-          <div>Số phiếu: <b>{ticket.code}</b></div>
-          <div>Ngày {date(ticket.ts)}</div>
-        </div>
-      </div>
-
-      <div style={{ textAlign: 'center', margin: '12px 0 3px' }}>
-        <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 1 }}>
-          {repair ? 'BIÊN NHẬN HÀNG SỬA CHỮA' : 'BIÊN NHẬN HÀNG BẢO HÀNH'}
-        </div>
-        <div style={{ fontSize: 10, fontStyle: 'italic' }}>Quý khách vui lòng giữ phiếu này để nhận lại hàng</div>
-      </div>
-
-      <table style={{ fontSize: 11, width: '100%', marginTop: 10 }}>
-        <tbody>
-          <tr><td style={{ width: '28%', paddingBottom: 3 }}>Khách hàng:</td>
-            <td style={{ fontWeight: 600 }}>{ticket.customer_display || '—'}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Điện thoại:</td><td>{ticket.phone_display || '—'}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Tên hàng:</td><td style={{ fontWeight: 600 }}>{ticket.product_name}</td></tr>
-          {ticket.serial && <tr><td style={{ paddingBottom: 3 }}>Số serial:</td><td>{ticket.serial}</td></tr>}
-          <tr><td style={{ paddingBottom: 3 }}>Số lượng:</td><td>{fq(ticket.qty)}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Lỗi khách báo:</td><td>{ticket.issue || '—'}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Tình trạng khi nhận:</td><td>{ticket.condition_note || '—'}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Phụ kiện kèm theo:</td><td>{ticket.accessories || 'Không'}</td></tr>
-          <tr><td style={{ paddingBottom: 3 }}>Loại phiếu:</td>
-            <td>{repair
-              ? 'Sửa chữa dịch vụ — có tính phí'
-              : ticket.in_warranty === 1
-                ? `Bảo hành — còn hạn${ticket.warranty_until ? ` tới ${date(ticket.warranty_until)}` : ''}`
-                : 'Bảo hành'}</td></tr>
-          {ticket.technician_name && <tr><td style={{ paddingBottom: 3 }}>Kỹ thuật viên:</td><td>{ticket.technician_name}</td></tr>}
-          <tr><td>Hẹn trả khách:</td>
-            <td style={{ fontWeight: 700 }}>{ticket.promised_at ? date(ticket.promised_at) : 'Sẽ báo sau'}</td></tr>
-        </tbody>
-      </table>
-
-      <div style={{ fontSize: 10, marginTop: 10, border: '1px solid #000', padding: '5px 7px', lineHeight: 1.5 }}>
-        <b>Lưu ý</b>
-        <div>1. Quý khách vui lòng mang theo phiếu này khi tới nhận hàng.</div>
-        <div>2. Cửa hàng chỉ nhận đúng phụ kiện đã ghi ở trên.</div>
-        <div>3. {repair ? 'Cửa hàng báo giá linh kiện, tiền công trước khi sửa.' : 'Hàng hết hạn hoặc không đủ điều kiện bảo hành sẽ báo giá trước khi sửa.'}</div>
-        <div>4. Quá {keepDays} ngày kể từ ngày hẹn mà không tới nhận, cửa hàng không giữ hàng nữa.</div>
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 22 }}>
-        <div style={{ textAlign: 'center', flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 11 }}>KHÁCH HÀNG</div>
-          <div style={{ fontSize: 9, fontStyle: 'italic' }}>(Ký, ghi rõ họ tên)</div>
-          <div style={{ height: 40 }} />
-        </div>
-        <div style={{ textAlign: 'center', flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 11 }}>NGƯỜI NHẬN HÀNG</div>
-          <div style={{ fontSize: 9, fontStyle: 'italic' }}>(Ký, ghi rõ họ tên)</div>
-          <div style={{ height: 26 }} />
-          <div style={{ fontSize: 10 }}>{ticket.received_by_name}</div>
-        </div>
-      </div>
-    </div>
-  );
-
-  return (
-    <>
-      <Modal
-        open
-        onClose={onClose}
-        title={`Biên nhận ${ticket.code}`}
-        subtitle="In hai bản: khách giữ một, tiệm giữ một"
-        size="lg"
-        footer={<>
-          <Button onClick={onClose}>Đóng</Button>
-          <Button variant="primary" icon={Printer} onClick={() => window.print()}>In biên nhận</Button>
-        </>}
-      >
-        <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[55vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
-        </div>
-      </Modal>
-      <div className="print-area size-a5">{body}</div>
-    </>
   );
 }

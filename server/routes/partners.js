@@ -17,6 +17,33 @@ import {
 import { planAllocation, writeAllocation, debtBreakdown } from '../debt.js';
 import { maxDebtDaysFor, posPolicy, isApproverRole, peekApproval, consumeApproval } from '../policy.js';
 import { customerBuyers, proxyStats } from '../customers.js';
+import { permsOf } from '../permissions.js';
+
+/**
+ * Nợ đầu kỳ là con số công nợ (plan 31, 6c).
+ *
+ * Sửa hồ sơ: không gửi thì giữ nguyên — trước đây thiếu ô này là nợ đầu kỳ
+ * bị ghi về 0 âm thầm. Gửi số khác thì từ chối: sửa nợ phải qua "Điều chỉnh
+ * công nợ" (PIN, lý do, lưu vết).
+ * Lập hồ sơ mới kèm nợ cũ: chỉ người có quyền sửa công nợ.
+ */
+function openingDebtFor(req, cur) {
+  const b = req.body || {};
+  const given = !(b.opening_debt === undefined || b.opening_debt === null || b.opening_debt === '');
+  const v = given ? Math.round(Number(b.opening_debt) || 0) : (cur?.opening_debt || 0);
+  if (cur) {
+    if (v !== (cur.opening_debt || 0)) {
+      throw Object.assign(new Error('Nợ đầu kỳ không sửa thẳng ở hồ sơ được nữa. Dùng "Điều chỉnh công nợ" — có mã PIN và lưu lại ai sửa, lý do.'),
+        { status: 400, code: 'USE_DEBT_ADJUST' });
+    }
+    return v;
+  }
+  if (v !== 0 && req.user && !permsOf(req.user.role).includes('debt.adjust')) {
+    throw Object.assign(new Error('Lập hồ sơ kèm nợ cũ cần chủ cửa hàng hoặc quản lý. Để nợ đầu kỳ 0 rồi nhờ chủ / quản lý điều chỉnh công nợ.'),
+      { status: 403, code: 'NO_PERM', need: 'debt.adjust' });
+  }
+  return v;
+}
 
 const r = Router();
 
@@ -236,6 +263,8 @@ r.post('/suppliers', (req, res) => {
   if (!b.name?.trim()) return res.status(400).json({ error: 'Thiếu tên nhà cung cấp' });
   const bad = contactError(b);
   if (bad) return res.status(400).json({ error: bad, code: 'BAD_BANK_ACCOUNT' });
+  let openingDebt;
+  try { openingDebt = openingDebtFor(req, null); } catch (e) { return gateError(res, e); }
   const code = b.code?.trim() || genCode('suppliers', 'NCC');
   if (get('SELECT id FROM suppliers WHERE code = ?', [code])) {
     return res.status(400).json({ error: `Mã "${code}" đã tồn tại` });
@@ -247,7 +276,7 @@ r.post('/suppliers', (req, res) => {
       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [code, b.name.trim(), b.contact_name || null, b.phone || null, b.email || null,
         b.address || null, b.tax_code || null, b.bank_account || null,
-        Math.round(Number(b.opening_debt) || 0), Number(b.term_days) || 0, b.note || null]);
+        openingDebt, Number(b.term_days) || 0, b.note || null]);
     const newId = Number(info.lastInsertRowid);
     /* Màn hình cũ chỉ gửi một ô phone: coi đó là số đầu tiên */
     saveContacts(newId, {
@@ -265,13 +294,15 @@ r.put('/suppliers/:id', (req, res) => {
   if (!cur) return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
   const bad = contactError(b);
   if (bad) return res.status(400).json({ error: bad, code: 'BAD_BANK_ACCOUNT' });
+  let openingDebt;
+  try { openingDebt = openingDebtFor(req, cur); } catch (e) { return gateError(res, e); }
   tx(() => {
     run(`UPDATE suppliers SET name = ?, contact_name = ?, phone = ?, email = ?, address = ?,
            tax_code = ?, bank_account = ?, opening_debt = ?, term_days = ?, note = ?, active = ?
          WHERE id = ?`,
       [b.name ?? cur.name, b.contact_name || null, b.phone ?? cur.phone ?? null, b.email || null,
         b.address || null, b.tax_code || null, b.bank_account ?? cur.bank_account ?? null,
-        Math.round(Number(b.opening_debt) || 0), Number(b.term_days) || 0, b.note || null,
+        openingDebt, Number(b.term_days) || 0, b.note || null,
         b.active === 0 ? 0 : 1, cur.id]);
     saveContacts(cur.id, b);
   });
@@ -423,6 +454,7 @@ function creditGate(req, cur, limit, days) {
 }
 const gateError = (res, e) => res.status(e.status || 400).json({
   error: e.message, code: e.code, needs_approval: e.needs_approval === true,
+  ...(e.need ? { need: e.need } : {}),
 });
 
 /** Chi tiết công nợ để lọc và hiện cảnh báo: bao nhiêu hoá đơn nợ, nợ lâu nhất bao lâu, quá hạn chưa. */
@@ -546,7 +578,11 @@ r.post('/customers', (req, res) => {
   const limit = Math.max(0, Math.round(Number(b.debt_limit) || 0));
   const days = normDays(b.max_debt_days);
   let token;
-  try { token = creditGate(req, null, limit, days); } catch (e) { return gateError(res, e); }
+  let openingDebt;
+  try {
+    openingDebt = openingDebtFor(req, null);
+    token = creditGate(req, null, limit, days);
+  } catch (e) { return gateError(res, e); }
   const info = run(`
     INSERT INTO customers(code, name, phone, phone2, phone3, email, address, tax_code, company_name,
                           price_list_id, opening_debt, debt_limit, birthday, note, active,
@@ -555,7 +591,7 @@ r.post('/customers', (req, res) => {
     [code, b.name.trim(), phones.phone, phones.phone2, phones.phone3,
       b.email || null, b.address || null,
       b.tax_code || null, b.company_name || null, b.price_list_id || null,
-      Math.round(Number(b.opening_debt) || 0), limit,
+      openingDebt, limit,
       b.birthday || null, b.note || null, normType(b.customer_type), days]);
   if (token) consumeApproval(token);
   res.json(get('SELECT * FROM customers WHERE id = ?', [Number(info.lastInsertRowid)]));
@@ -573,14 +609,18 @@ r.put('/customers/:id', (req, res) => {
   const badPhone = phoneError(phones, cur.id);
   if (badPhone) return res.status(400).json({ error: badPhone, code: 'PHONE_TAKEN' });
   let token;
-  try { token = creditGate(req, cur, limit, days); } catch (e) { return gateError(res, e); }
+  let openingDebt;
+  try {
+    openingDebt = openingDebtFor(req, cur);
+    token = creditGate(req, cur, limit, days);
+  } catch (e) { return gateError(res, e); }
   run(`UPDATE customers SET name = ?, phone = ?, phone2 = ?, phone3 = ?, email = ?, address = ?, tax_code = ?,
          company_name = ?, price_list_id = ?, opening_debt = ?, debt_limit = ?,
          birthday = ?, note = ?, active = ?, customer_type = ?, max_debt_days = ?
        WHERE id = ?`,
     [b.name ?? cur.name, phones.phone, phones.phone2, phones.phone3,
       b.email || null, b.address || null, b.tax_code || null,
-      b.company_name || null, b.price_list_id || null, Math.round(Number(b.opening_debt) || 0),
+      b.company_name || null, b.price_list_id || null, openingDebt,
       limit, b.birthday || null, b.note || null,
       b.active === 0 ? 0 : 1, type, days, cur.id]);
   if (token) consumeApproval(token);

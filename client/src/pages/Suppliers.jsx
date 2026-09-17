@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   Truck, Plus, Pencil, Trash2, Wallet, FileText, ArrowLeft, Download, Landmark, Undo2, Phone,
-  CreditCard, AlertTriangle, Copy, Printer, Banknote, MapPin, Mail, Info, Clock, User,
+  CreditCard, AlertTriangle, Copy, Printer, Banknote, MapPin, Mail, Info, Clock, User, PencilLine, Sigma,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
@@ -14,6 +14,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { SupplierForm } from '../components/CustomerForm';
+import { DebtStatementButton, DebtAdjustModal, DebtSummaryModal } from '../components/DebtTools';
 import CashVoucherPrint from '../components/CashVoucherPrint';
 import { ProductPicker } from '../components/ProductPicker';
 
@@ -28,6 +29,8 @@ const FILTERS = [
 
 export default function Suppliers() {
   const { toast } = useApp();
+  const navTo = useNavigate();
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   const filter = FILTERS.some((f) => f.key === params.get('filter')) ? params.get('filter') : '';
   const setFilter = (v) => {
@@ -96,6 +99,7 @@ export default function Suppliers() {
         title="Nhà cung cấp"
         subtitle={totals ? `${n(totals.count)} nhà cung cấp · ${n(totals.debtors)} đang nợ · tổng nợ ${money(totals.debt)}` : ''}
         actions={<>
+          <Button icon={Sigma} onClick={() => setSummaryOpen(true)}>Tổng hợp công nợ</Button>
           <PermGate perm="data.export">
             <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
           </PermGate>
@@ -218,6 +222,11 @@ export default function Suppliers() {
               </div>
             )}
       </Page>
+
+      {summaryOpen && (
+        <DebtSummaryModal type="supplier" onClose={() => setSummaryOpen(false)}
+          onOpen={(r) => navTo(`/suppliers/${r.id}?tab=debt`)} />
+      )}
 
       <SupplierForm
         open={!!editing}
@@ -513,7 +522,7 @@ export function SupplierDetail() {
           />
           {tab === 'info' && <SupplierInfoTab s={s} />}
           {tab === 'history' && <SupplierHistoryTab s={s} />}
-          {tab === 'debt' && <SupplierDebtTab s={s} onPay={() => setPaying(true)} />}
+          {tab === 'debt' && <SupplierDebtTab s={s} onPay={() => setPaying(true)} onChanged={reload} />}
           {tab === 'quotes' && <SupplierQuotesTab s={s} />}
         </div>
       </Page>
@@ -815,7 +824,9 @@ function SupplierHistoryTab({ s }) {
   );
 }
 
-function SupplierDebtTab({ s, onPay }) {
+function SupplierDebtTab({ s, onPay, onChanged }) {
+  const { can } = useApp();
+  const [adjusting, setAdjusting] = useState(false);
   return (
     <div className="p-3 space-y-3">
       <div className={`rounded-lg border p-3 flex flex-wrap items-center gap-3
@@ -832,6 +843,18 @@ function SupplierDebtTab({ s, onPay }) {
         </div>
         <Button variant="primary" size="lg" icon={Wallet} onClick={onPay} disabled={!(s.debt > 0)}>Trả Nợ NCC</Button>
       </div>
+
+      {/* Sổ công nợ theo kỳ, ngày chốt, in; sửa công nợ có PIN (plan 31, nhóm 6) */}
+      <div className="flex flex-wrap gap-2">
+        <DebtStatementButton type="supplier" partner={s} onChanged={onChanged} />
+        {can('debt.adjust') && (
+          <Button icon={PencilLine} onClick={() => setAdjusting(true)}>Điều chỉnh công nợ</Button>
+        )}
+      </div>
+      {adjusting && (
+        <DebtAdjustModal type="supplier" partner={s} onClose={() => setAdjusting(false)}
+          onDone={() => { setAdjusting(false); onChanged?.(); }} />
+      )}
 
       {s.overdue_amount > 0 && (
         <div role="status" className="rounded-lg border border-danger/30 bg-red-50 p-2.5 text-[13px] text-red-900 flex gap-2">

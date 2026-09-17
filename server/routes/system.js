@@ -137,6 +137,10 @@ const TABLES = [
   'product_price_tiers',
   /* Đợt 18 */
   'customer_product_notes', 'consign_partners', 'consign_settlements', 'sale_consign_items',
+  /* Plan 31 đợt 6 — phiếu tiếp nhận gom nhiều món, bảo hành theo bộ phận */
+  'warranty_batches', 'product_warranty_parts', 'sale_item_warranty_parts',
+  /* Plan 31 đợt 7 — điều chỉnh công nợ, mốc chốt công nợ */
+  'debt_adjustments', 'debt_closings',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -199,10 +203,13 @@ r.post('/clear-transactions', (req, res) => {
   tx(() => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
-    for (const t of ['voucher_uses', 'vouchers', 'debt_allocations',
+    for (const t of ['voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
       /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
          (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
       'sale_consign_items', 'consign_settlements',
+      /* Hạn bảo hành từng bộ phận chốt theo hoá đơn — chứng từ. Khai báo bộ
+         phận trên mặt hàng (product_warranty_parts) là danh mục, giữ lại. */
+      'sale_item_warranty_parts',
       'sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_custom_items', 'purchase_custom_items',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
@@ -212,7 +219,7 @@ r.post('/clear-transactions', (req, res) => {
          DANH MỤC (khai mối nào bán món nào) nên giữ lại, như định mức. */
       'requisition_item_suppliers', 'requisition_items', 'requisitions',
       'warranty_custom_parts', 'warranty_fees',
-      'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
+      'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets', 'warranty_batches',
       'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
       run(`DELETE FROM ${t}`);
@@ -242,25 +249,27 @@ r.post('/reset-all', (req, res) => {
 
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
-    'voucher_uses', 'vouchers', 'debt_allocations',
+    'voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
     'activity_log', 'draft_sales', 'doc_drafts',
     /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
     'requisition_item_suppliers', 'requisition_items', 'requisitions',
     'product_suppliers',
     'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
     'warranty_custom_parts', 'warranty_fees',
-    'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
+    'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets', 'warranty_batches',
     'production_items', 'productions', 'product_boms',
     'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
     /* Hàng mua hộ vãng lai: dòng hàng -> đợt đối soát -> chủ hàng */
     'sale_consign_items', 'consign_settlements', 'consign_partners',
     'customer_product_notes',
+    'sale_item_warranty_parts',
     'sale_return_items', 'sale_returns', 'sale_items', 'sales',
     'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
     'pos_featured', 'pos_featured_sets', 'product_images',
-    'stock_moves', 'stock', 'product_price_tiers', 'product_prices', 'product_units', 'products',
+    'stock_moves', 'stock', 'product_warranty_parts',
+    'product_price_tiers', 'product_prices', 'product_units', 'products',
     'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
   ];
