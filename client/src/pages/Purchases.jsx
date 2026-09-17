@@ -436,6 +436,8 @@ export default function Purchases() {
           barcode: it.barcode,
           base_unit: it.base_unit,
           defaultCount: Math.max(1, Math.round(Number(it.qty) || 1)),
+          /* Đơn vị và số lượng vừa nhập: nhập 2 Hộp thì hỏi in 2 tem hộp hay 24 tem lẻ (plan 30, §8.2) */
+          unit_id: it.unit_id, unit_name: it.unit_name, factor: it.factor, qty: it.qty,
         }))}
       />
 

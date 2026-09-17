@@ -29,6 +29,7 @@ import { themeOf } from '../components/CartPickerModal';
 import { CategorySelect } from '../components/CategoryTree';
 import { EMPTY_DELIVERY, deliveryBody } from '../components/PosDeliveryForm';
 
+import { barcodeEquals, barcodeIncludes } from '../lib/codeMatch';
 const STATUS = {
   open: { label: 'Chờ giao', tone: 'info', icon: Clock },
   partial: { label: 'Giao một phần', tone: 'warn', icon: PackageCheck },
@@ -619,7 +620,7 @@ function OrderProductPicker({
     if (q.trim()) {
       l = l.filter((p) => matchMode(p.name, q, mode) || matchMode(p.alias || '', q, mode)
         || matchMode(p.sku, q, mode)
-        || (mode === 'exact' ? (p.barcode || '') === q.trim() : (p.barcode || '').includes(q.trim())));
+        || (mode === 'exact' ? barcodeEquals(p, q) : barcodeIncludes(p, q)));
     }
     return l.slice(0, 300);
   }, [products, q, mode, cat]);

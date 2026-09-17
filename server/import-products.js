@@ -23,6 +23,7 @@
      có trong file thì GIỮ NGUYÊN dữ liệu đang có.
    ==================================================================== */
 import { all, get, run, vnFold, moveStock } from './db.js';
+import { setOwnerBarcode, nextSku } from './barcodes.js';
 
 const MAX_ROWS = 20000;
 const VAT_OK = [0, 5, 8, 10];
@@ -252,6 +253,7 @@ export function validateImport(rows, { mode = 'create' } = {}) {
     byName.get(k).push(x);
   }
   const byBarcode = new Map();
+  const retiredAuto = new Set(all("SELECT code FROM barcodes WHERE status = 'retired' AND source = 'auto'").map((x) => x.code));
   for (const x of products) if (x.barcode) byBarcode.set(x.barcode, x);
   for (const u of all(`SELECT u.barcode, p.id, p.name, p.sku FROM product_units u
                        JOIN products p ON p.id = u.product_id WHERE u.barcode IS NOT NULL AND u.barcode <> ''`)) {
@@ -362,6 +364,9 @@ export function validateImport(rows, { mode = 'create' } = {}) {
         if (holder && holder.id !== existing?.id) {
           fail(`Mã vạch "${barcode}" đang thuộc mặt hàng khác: ${holder.sku} · ${holder.name}`,
             'Kiểm tra lại mã vạch, hoặc sửa mặt hàng đang giữ mã đó trước.', { field: 'barcode' });
+        } else if (retiredAuto.has(barcode)) {
+          fail(`Mã vạch "${barcode}" là mã tự sinh của mặt hàng đã xoá`,
+            'Mã tự sinh không cấp lại cho hàng khác, kẻo tem cũ quét ra nhầm hàng. Bỏ trống ô này để phần mềm cấp mã mới.', { field: 'barcode' });
         }
       }
       if (/^\d+$/.test(barcode) && (barcode.length === 7 || barcode.length === 12
@@ -416,16 +421,8 @@ const setPrice = (productId, plId, unitId, price) => {
     [productId, plId, unitId, Math.round(price)]);
 };
 
-/** Mã tự cấp, né cả mã đã có lẫn mã ghi tay của các dòng khác trong file. */
-function newSku(reserved) {
-  let k = get('SELECT COUNT(*) AS n FROM products').n + 1;
-  const taken = (x) => reserved.has(x.toLowerCase())
-    || get('SELECT id FROM products WHERE sku = ? COLLATE NOCASE', [x]);
-  let sku = 'SP' + String(k).padStart(5, '0');
-  while (taken(sku)) sku = 'SP' + String(++k).padStart(5, '0');
-  reserved.add(sku.toLowerCase());
-  return sku;
-}
+/** Mã tự cấp theo bộ đếm chỉ tiến (plan 30, H3), né cả mã ghi tay của các dòng khác trong file. */
+const newSku = (reserved) => nextSku(reserved);
 
 /**
  * PHA 2 — ghi. Chỉ gọi khi pha 1 sạch lỗi, và gọi TRONG một tx() để hỏng
@@ -451,10 +448,13 @@ export function writeImport(plan, { warehouseId }) {
         INSERT INTO products(sku, barcode, name, alias, category_id, base_unit, cost_price,
                              vat_rate, min_stock, brand, location, track_stock, active)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
-      [it.sku || newSku(reserved), it.barcode || null, it.name, text(raw.alias) || null,
+      [it.sku || newSku(reserved), null, it.name, text(raw.alias) || null,
         it.categoryId ?? null, baseUnit || 'Cái', Math.round(nb.cost_price || 0),
         vat, nb.min_stock || 0, text(raw.brand) || null, text(raw.location) || null]).lastInsertRowid);
       run('INSERT INTO product_units(product_id, unit_name, factor, is_base) VALUES(?, ?, 1, 1)', [productId, baseUnit || 'Cái']);
+      /* Có mã trong file thì giữ nguyên; thiếu thì cấp mã 828… ngay trong giao
+         dịch của cả lô (plan 30, L8, L9) */
+      setOwnerBarcode('product', productId, it.barcode, { auto: true, source: 'import' });
       created += 1;
       createdIds.push(productId);
     } else {
@@ -464,7 +464,7 @@ export function writeImport(plan, { warehouseId }) {
       const sets = ['name = ?'];
       const vals = [it.name];
       const put = (col, val) => { sets.push(`${col} = ?`); vals.push(val); };
-      if (it.barcode) put('barcode', it.barcode);
+      if (it.barcode) setOwnerBarcode('product', productId, it.barcode, { source: 'import' });
       if (has(raw, 'alias')) put('alias', text(raw.alias));
       if (it.categoryId !== undefined) put('category_id', it.categoryId);
       if (nb.vat_rate !== undefined) put('vat_rate', nb.vat_rate);

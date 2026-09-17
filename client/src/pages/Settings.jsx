@@ -3,8 +3,9 @@ import {
   Store, Printer, Users as UsersIcon, Warehouse, Tag, Database, Save,
   Download, Upload, Plus, Pencil, Trash2, AlertTriangle, Check, Info, Truck,
   ShieldCheck, Star, ChevronUp, ChevronDown, KeyRound, Handshake, ClipboardList,
-  Smartphone, ExternalLink,
+  Smartphone, ExternalLink, ScanBarcode,
 } from 'lucide-react';
+import { barcodeSvg } from '../lib/barcode';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
 import {
@@ -56,6 +57,7 @@ const TABS = [
   { key: 'pos', label: 'Màn hình bán hàng' },
   { key: 'featured', label: 'Hàng ưu tiên đầu lưới' },
   { key: 'prices', label: 'Bảng giá' },
+  { key: 'barcode', label: 'Mã vạch' },
   { key: 'warehouses', label: 'Kho hàng' },
   { key: 'carriers', label: 'Vận chuyển' },
   { key: 'warranty', label: 'Bảo hành' },
@@ -81,6 +83,7 @@ export default function Settings() {
         {tab === 'pos' && <PosSettings />}
       {tab === 'featured' && <FeaturedSettings />}
         {tab === 'prices' && <PriceLists />}
+        {tab === 'barcode' && <BarcodeSettings />}
         {tab === 'warehouses' && <Warehouses />}
         {tab === 'carriers' && <Carriers />}
         {tab === 'warranty' && <WarrantySettings />}
@@ -1171,6 +1174,165 @@ function Warehouses() {
 }
 
 /* ==================================================================== */
+
+/* ==================================================================== */
+/* Mã vạch tự sinh (plan 30)                                             */
+/* ==================================================================== */
+
+function BarcodeSettings() {
+  const { toast, can } = useApp();
+  const { data: st, busy, error, reload } = useFetch(() => api.get('/barcode-settings'), []);
+  const [prefix, setPrefix] = useState('828');
+  const [width, setWidth] = useState(7);
+  const [saving, setSaving] = useState(false);
+  const [keep, setKeep] = useState({});
+  const [resolving, setResolving] = useState(null);
+  const mayEdit = can('settings.manage');
+
+  useEffect(() => { if (st) { setPrefix(st.prefix); setWidth(st.width); } }, [st]);
+
+  const total = String(prefix).length + Number(width);
+  const odd = total % 2 === 1;
+  const preview = `${prefix}${String(st?.next_value || 1).padStart(Number(width) || 7, '0')}`;
+  const dirty = st && (prefix !== st.prefix || Number(width) !== st.width);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put('/barcode-settings', { prefix, width: Number(width) });
+      toast('Đã lưu cấu hình mã vạch tự sinh', 'ok');
+      reload();
+    } catch (e) {
+      toast(e.message, 'bad', 7000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resolve = async (c, others) => {
+    const pick = keep[c.code];
+    if (!pick) { toast('Chọn giữ mã ở chỗ nào trước đã.', 'warn'); return; }
+    setResolving(`${c.code}:${others}`);
+    try {
+      const [owner_type, owner_id] = pick.split(':');
+      await api.post('/barcode-conflicts/resolve', { code: c.code, keep: { owner_type, owner_id: Number(owner_id) }, others });
+      toast(`Đã xử lý mã trùng ${c.code}`, 'ok');
+      reload();
+    } catch (e) {
+      toast(e.message, 'bad', 7000);
+    } finally {
+      setResolving(null);
+    }
+  };
+
+  if (busy && !st) return <Spinner />;
+  if (error) return <ErrorBox error={error} onRetry={reload} />;
+  if (!st) return null;
+  const svg = barcodeSvg(preview, { width: 1.4, height: 38, showText: true, fontSize: 10 });
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="card p-4 space-y-3">
+        <div>
+          <h2 className="font-bold text-sm flex items-center gap-1.5"><ScanBarcode size={15} aria-hidden="true" /> Mã vạch tự sinh</h2>
+          <p className="text-2xs text-muted-ink mt-0.5">
+            Tạo mặt hàng mà bỏ trống ô mã vạch thì phần mềm cấp mã theo dải này. Mã đã cấp không bao giờ đổi, và
+            không bao giờ cấp lại cho hàng khác kể cả khi hàng đã xoá. Hàng cũ giữ nguyên mã đang có; muốn cấp mã
+            cho một hàng cũ thì mở hàng đó → bấm <b>Cấp mã tự động</b>.
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3 items-end">
+          <Field label="Tiền tố" hint="1–6 chữ số" htmlFor="bc-prefix">
+            <Input id="bc-prefix" className="font-mono" inputMode="numeric" value={prefix} disabled={!mayEdit}
+              onChange={(e) => setPrefix(e.target.value.replace(/\D/g, '').slice(0, 6))} />
+          </Field>
+          <Field label="Số chữ số chạy" htmlFor="bc-width">
+            <Select id="bc-width" value={width} disabled={!mayEdit} onChange={(e) => setWidth(Number(e.target.value))}>
+              {[4, 5, 6, 7, 8, 9, 10].map((w) => <option key={w} value={w}>{w} chữ số</option>)}
+            </Select>
+          </Field>
+          <div className="text-[13px]">
+            <div className="text-2xs text-muted-ink">Tổng độ dài</div>
+            <b className="tabular">{total} ký tự</b>
+          </div>
+        </div>
+        {odd && (
+          <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-[13px] text-amber-900 flex gap-2">
+            <AlertTriangle size={15} className="shrink-0 mt-0.5" aria-hidden="true" />
+            <span>Mã dài <b>lẻ</b> ({total} ký tự) làm tem rộng thêm khoảng 40% — mã vạch chỉ nén được hai chữ số vào một vạch khi độ dài chẵn. Nên dùng độ dài chẵn, ví dụ 3 + 7 = 10.</span>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="bg-white border border-line rounded p-2" dangerouslySetInnerHTML={{ __html: svg || '' }} />
+          <div className="text-[13px] space-y-0.5">
+            <div>Mã kế tiếp: <b className="font-mono">{preview}</b></div>
+            <div className="text-muted-ink">Còn {n(Math.max(0, 10 ** (Number(width) || 7) - (st.next_value || 1)))} mã trong dải</div>
+          </div>
+        </div>
+        {mayEdit && (
+          <div className="flex justify-end">
+            <Button variant="primary" icon={Save} onClick={save} loading={saving} disabled={!dirty}>Lưu cấu hình</Button>
+          </div>
+        )}
+      </div>
+
+      <div className="card p-4 space-y-2">
+        <h2 className="font-bold text-sm">Kiểm tra sổ đăng ký mã vạch</h2>
+        <ul className="text-[13px] space-y-1">
+          <li className="flex items-center gap-1.5">
+            {st.invariants.i1_missing.length === 0 ? <Check size={14} className="text-emerald-700" aria-hidden="true" /> : <AlertTriangle size={14} className="text-warn" aria-hidden="true" />}
+            {st.invariants.i1_missing.length === 0
+              ? 'Mọi mã vạch trên hàng hoá đều đã ghi sổ'
+              : `${n(st.invariants.i1_missing.length)} mã chưa ghi sổ (thường là mã đang trùng, xem bên dưới)`}
+          </li>
+          <li className="flex items-center gap-1.5">
+            {st.invariants.i2_ok ? <Check size={14} className="text-emerald-700" aria-hidden="true" /> : <AlertTriangle size={14} className="text-danger" aria-hidden="true" />}
+            {st.invariants.i2_ok ? 'Bộ đếm luôn đi trước mã tự sinh lớn nhất' : 'Bộ đếm đang đứng sau một mã đã cấp — báo cho người lập phần mềm'}
+          </li>
+        </ul>
+      </div>
+
+      <div className="card p-4 space-y-3">
+        <div>
+          <h2 className="font-bold text-sm">Mã vạch đang trùng</h2>
+          <p className="text-2xs text-muted-ink mt-0.5">
+            Hai mặt hàng (hoặc đơn vị) cùng mang một mã từ dữ liệu cũ thì máy quét không biết ra món nào. Phần mềm
+            không tự chọn — người bán hàng mới biết món nào đúng. Chọn giữ mã ở một chỗ, chỗ còn lại cấp mã mới hoặc bỏ mã.
+          </p>
+        </div>
+        {st.conflicts.length === 0 ? (
+          <p className="text-[13px] text-emerald-800 flex items-center gap-1.5"><Check size={14} aria-hidden="true" /> Không có mã nào trùng.</p>
+        ) : st.conflicts.map((c) => (
+          <fieldset key={c.code} className="rounded-lg border border-danger/30 bg-red-50/40 p-3 space-y-2">
+            <legend className="px-1 font-mono font-bold text-[13px]">{c.code}</legend>
+            {c.holders.map((h) => {
+              const v = `${h.owner_type}:${h.owner_id}`;
+              return (
+                <label key={v} className="flex items-center gap-2 text-[13px] cursor-pointer">
+                  <input type="radio" name={`keep-${c.code}`} className="accent-emerald-700 cursor-pointer" disabled={!mayEdit}
+                    checked={keep[c.code] === v} onChange={() => setKeep((k) => ({ ...k, [c.code]: v }))} />
+                  Giữ mã ở <b>{h.label}</b>
+                </label>
+              );
+            })}
+            {mayEdit && (
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="primary" onClick={() => resolve(c, 'regenerate')}
+                  loading={resolving === `${c.code}:regenerate`} disabled={!keep[c.code]}>
+                  Giữ đã chọn · cấp mã mới cho chỗ còn lại
+                </Button>
+                <Button size="sm" onClick={() => resolve(c, 'clear')}
+                  loading={resolving === `${c.code}:clear`} disabled={!keep[c.code]}>
+                  Giữ đã chọn · bỏ mã chỗ còn lại
+                </Button>
+              </div>
+            )}
+          </fieldset>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function WarrantySettings() {
   const { settings, saveSettings, toast } = useApp();

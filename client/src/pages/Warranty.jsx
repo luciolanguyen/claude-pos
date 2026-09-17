@@ -33,6 +33,7 @@ import { CategorySelect } from '../components/CategoryTree';
 import { PinApprovalModal } from '../components/PosApproval';
 import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
 
+import { findByCode, barcodeEquals } from '../lib/codeMatch';
 /* Trạng thái theo đúng thứ tự việc thật, kèm màu để liếc là biết. */
 const STATUS = {
   received: { label: 'Mới nhận', tone: 'info', icon: PackageCheck },
@@ -1104,7 +1105,7 @@ function PartsCartModal({ parts, setParts, total, onClose }) {
     const k = q.trim();
     if (k) {
       l = l.filter((p) => matchMode(p.name, k, partMode) || matchMode(p.alias || '', k, partMode)
-        || matchMode(p.sku, k, partMode) || (p.barcode || '') === k);
+        || matchMode(p.sku, k, partMode) || barcodeEquals(p, k));
     }
     return l.slice(0, 200);
   }, [products, q, partMode, branch]);
@@ -1136,7 +1137,8 @@ function PartsCartModal({ parts, setParts, total, onClose }) {
   const onScanKey = (e) => {
     if (e.key !== 'Enter') return;
     const code = q.trim();
-    const exact = (products || []).find((p) => p.track_stock && code && (p.barcode === code || p.sku === code));
+    const found = findByCode(products, code)?.product;
+    const exact = found?.track_stock ? found : null;
     const hit = exact || (list.length === 1 ? list[0] : null);
     if (hit) { e.preventDefault(); add(hit); setQ(''); }
   };

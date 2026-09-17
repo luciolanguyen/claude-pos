@@ -1,19 +1,30 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Printer, Tag, Plus, Minus, Trash2, AlertTriangle } from 'lucide-react';
+import { Printer, Tag, Plus, Minus, Trash2, AlertTriangle, FileDown } from 'lucide-react';
 import {
   barcodeSvg, LABEL_SIZES, getLabelSize, fitModuleWidth, checkBarcode,
 } from '../lib/barcode';
+import { labelCodeOf } from '../lib/codeMatch';
 import { useApp, useFetch } from '../lib/store';
 import { api } from '../lib/api';
-import { money, n } from '../lib/format';
-import { Modal, Button, Select, Field, Input, Empty, Badge, IconButton } from './ui';
+import { money, n, qty as fq } from '../lib/format';
+import { Modal, Button, Select, Field, Empty, IconButton, Confirm } from './ui';
 
 /**
  * In tem mã vạch dán lên hàng hoá.
- * Mã vạch sinh tại chỗ bằng Code 128 nên không cần Internet.
+ * Mã vạch sinh tại chỗ bằng Code 128 / EAN-13 nên không cần Internet.
+ *
+ * Tem theo ĐƠN VỊ TÍNH (plan 30, H5): mỗi dòng chọn in tem đơn vị nào — mã
+ * riêng của đơn vị đó nếu có, không thì mã hàng, không thì mã hàng SKU; giá
+ * in theo đơn vị đó. Gọi từ phiếu nhập với dòng "2 Hộp (1 Hộp = 12 Cái)" thì
+ * hỏi in 2 tem hộp hay 24 tem lẻ, và luôn hỏi lại số tem trước khi in —
+ * in nhầm 240 tem thay vì 24 là hỏng cả cuộn giấy.
+ *
+ * products: [{ id, sku, name, barcode, base_unit,
+ *              defaultCount?, unit_id?, unit_name?, factor?, qty? }]
+ *   unit_id / factor / qty có khi gọi từ phiếu nhập: đơn vị và số lượng vừa nhập.
  */
 export default function PrintLabels({ open, onClose, products = [] }) {
-  const { store, settings, saveSettings, toast } = useApp();
+  const { store, settings, saveSettings, toast, can } = useApp();
   const saved = settings?.labels || {};
 
   const [sizeKey, setSizeKey] = useState(saved.size || '35x22');
@@ -26,6 +37,7 @@ export default function PrintLabels({ open, onClose, products = [] }) {
   });
   const [priceListId, setPriceListId] = useState(saved.price_list_id || null);
   const [items, setItems] = useState([]);
+  const [asking, setAsking] = useState(false);
   const { meta, defaultWarehouse } = useApp();
 
   // Danh sách hàng hoá không kèm giá bán, nên lấy thêm từ API bán hàng
@@ -37,13 +49,24 @@ export default function PrintLabels({ open, onClose, products = [] }) {
   useEffect(() => {
     if (!open) return;
     const byId = new Map((priced || []).map((p) => [p.id, p]));
-    setItems(products.map((p) => {
+    setItems(products.map((p, i) => {
       const full = byId.get(p.id);
+      const units = full?.units?.length ? full.units : [{ id: 0, unit_name: p.base_unit, factor: 1, prices: {} }];
+      const base = units.find((u) => u.factor === 1) || units[0];
+      const from = p.unit_id ? units.find((u) => u.id === p.unit_id)
+        : p.unit_name ? units.find((u) => u.unit_name === p.unit_name) : null;
+      const factor = Number(from?.factor ?? p.factor) || 1;
+      const qty = Number(p.qty) || 0;
+      /* Nhập đơn vị lớn (Hộp = 12 Cái): mặc định in tem lẻ dán từng cái bên trong */
+      const bulk = from && factor > 1 && qty > 0;
       return {
         ...p,
-        units: full?.units?.length ? full.units : [{ unit_name: p.base_unit, factor: 1, prices: {} }],
-        // Gọi từ phiếu nhập thì đề sẵn đúng số lượng vừa nhập về
-        count: p.defaultCount ?? 1,
+        key: `${p.id}-${i}`,
+        barcode: full?.barcode ?? p.barcode,
+        units,
+        bulk: bulk ? { unit: from, factor, qty } : null,
+        unitId: bulk ? base.id : (from?.id ?? base.id),
+        count: bulk ? Math.round(qty * factor) : (p.defaultCount ?? 1),
       };
     }));
   }, [open, products, priced]);
@@ -57,12 +80,9 @@ export default function PrintLabels({ open, onClose, products = [] }) {
   const size = getLabelSize(sizeKey);
   const totalLabels = items.reduce((a, x) => a + (Number(x.count) || 0), 0);
 
-  /* Mã vạch: ưu tiên mã vạch của hàng, không có thì dùng mã hàng */
-  const codeOf = (p) => (p.barcode?.trim() || p.sku || '').trim();
-  const priceOf = (p) => {
-    const base = p.units?.find((u) => u.factor === 1) || p.units?.[0];
-    return base?.prices?.[priceListId] ?? 0;
-  };
+  const unitOf = (p) => p.units?.find((u) => u.id === p.unitId) || p.units?.[0];
+  const codeOf = (p) => labelCodeOf(p, unitOf(p));
+  const priceOf = (p) => unitOf(p)?.prices?.[priceListId] ?? 0;
 
   const noCode = items.filter((p) => !codeOf(p));
 
@@ -94,8 +114,15 @@ export default function PrintLabels({ open, onClose, products = [] }) {
     return out;
   }, [items]);
 
-  const setCount = (id, v) =>
-    setItems((prev) => prev.map((x) => x.id === id ? { ...x, count: Math.max(0, Number(v) || 0) } : x));
+  const patchItem = (key, patch) => setItems((prev) => prev.map((x) => (x.key === key ? { ...x, ...patch } : x)));
+  const setCount = (key, v) => patchItem(key, { count: Math.max(0, Number(v) || 0) });
+
+  /** Dòng nhập đơn vị lớn: đổi giữa tem đơn vị lớn và tem lẻ, số tem đổi theo. */
+  const chooseBulk = (p, mode) => {
+    const base = p.units.find((u) => u.factor === 1) || p.units[0];
+    if (mode === 'unit') patchItem(p.key, { unitId: p.bulk.unit.id, count: Math.round(p.bulk.qty) });
+    else patchItem(p.key, { unitId: base.id, count: Math.round(p.bulk.qty * p.bulk.factor) });
+  };
 
   const saveDefaults = async () => {
     try {
@@ -112,6 +139,22 @@ export default function PrintLabels({ open, onClose, products = [] }) {
     }
   };
 
+  /* Bộ cột cho phần mềm in tem ngoài (plan 30, §8.3): mỗi dòng một đơn vị */
+  const exportCsv = () => {
+    const head = ['Mã vạch', 'Tên sản phẩm', 'Đơn vị tính', 'Giá bán', 'Số lượng tem'];
+    const rows = items.filter((p) => Number(p.count) > 0 && codeOf(p))
+      .map((p) => [codeOf(p), p.name, unitOf(p)?.unit_name || p.base_unit, priceOf(p), Number(p.count)]);
+    if (!rows.length) return;
+    const csv = String.fromCharCode(0xfeff) + [head, ...rows]
+      .map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tem-ma-vach-${rows.length}-dong.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (!open) return null;
 
   const Check = ({ k, label }) => (
@@ -126,6 +169,9 @@ export default function PrintLabels({ open, onClose, products = [] }) {
     </label>
   );
 
+  const breakdown = items.filter((p) => Number(p.count) > 0)
+    .map((p) => `${n(p.count)} tem ${p.name} (${unitOf(p)?.unit_name || p.base_unit})`);
+
   return (
     <>
       <Modal
@@ -137,8 +183,14 @@ export default function PrintLabels({ open, onClose, products = [] }) {
         footer={<>
           <Button onClick={onClose}>Đóng</Button>
           <Button onClick={saveDefaults}>Lưu làm mặc định</Button>
+          {can('data.export') && (
+            <Button icon={FileDown} onClick={exportCsv} disabled={!totalLabels}
+              title="Mã vạch · Tên sản phẩm · Đơn vị tính · Giá bán · Số lượng tem — cho phần mềm in tem riêng">
+              Xuất file in tem
+            </Button>
+          )}
           <div className="flex-1" />
-          <Button variant="primary" icon={Printer} onClick={() => window.print()} disabled={!totalLabels}>
+          <Button variant="primary" icon={Printer} onClick={() => setAsking(true)} disabled={!totalLabels}>
             In {n(totalLabels)} tem
           </Button>
         </>}
@@ -211,47 +263,79 @@ export default function PrintLabels({ open, onClose, products = [] }) {
           {items.length === 0 ? (
             <Empty icon={Tag} title="Chưa chọn hàng nào" message="Chọn hàng ở danh sách hàng hoá rồi bấm In tem." />
           ) : (
-            <div className="table-wrap max-h-56 overflow-y-auto">
+            <div className="table-wrap max-h-64 overflow-y-auto">
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Mã hàng</th><th>Tên hàng</th><th>Mã vạch</th>
+                    <th>Mã hàng</th><th>Tên hàng</th><th style={{ width: 130 }}>Tem đơn vị</th><th>Mã vạch</th>
                     <th className="text-right">Giá in</th>
                     <th style={{ width: 130 }} className="text-right">Số tem</th>
                     <th style={{ width: 40 }} />
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((p) => (
-                    <tr key={p.id} className={!codeOf(p) ? 'bg-red-50' : ''}>
-                      <td className="font-mono text-muted-ink">{p.sku}</td>
-                      <td className="font-semibold">{p.name}</td>
-                      <td className="font-mono text-2xs">
-                        {codeOf(p) || <span className="text-danger">chưa có</span>}
-                      </td>
-                      <td className="num">{money(priceOf(p))}</td>
-                      <td>
-                        <div className="flex items-center justify-end gap-1">
-                          <IconButton icon={Minus} label={`Bớt tem ${p.name}`} variant="outline" size={12}
-                            onClick={() => setCount(p.id, (p.count || 0) - 1)} />
-                          <input
-                            type="number" min="0"
-                            className="field field-sm num !w-14"
-                            value={p.count}
-                            aria-label={`Số tem của ${p.name}`}
-                            onChange={(e) => setCount(p.id, e.target.value)}
-                          />
-                          <IconButton icon={Plus} label={`Thêm tem ${p.name}`} variant="outline" size={12}
-                            onClick={() => setCount(p.id, (p.count || 0) + 1)} />
-                        </div>
-                      </td>
-                      <td>
-                        <IconButton icon={Trash2} label={`Bỏ ${p.name}`} size={14}
-                          className="!text-danger hover:!bg-red-50"
-                          onClick={() => setItems((prev) => prev.filter((x) => x.id !== p.id))} />
-                      </td>
-                    </tr>
-                  ))}
+                  {items.map((p) => {
+                    const unit = unitOf(p);
+                    const base = p.units.find((u) => u.factor === 1) || p.units[0];
+                    return (
+                      <tr key={p.key} className={!codeOf(p) ? 'bg-red-50' : ''}>
+                        <td className="font-mono text-muted-ink">{p.sku}</td>
+                        <td>
+                          <div className="font-semibold">{p.name}</div>
+                          {/* Nhập đơn vị lớn: in tem dán hộp hay tem lẻ dán từng cái (plan 30, §8.2) */}
+                          {p.bulk && (
+                            <div role="radiogroup" aria-label={`Kiểu tem cho ${p.name}`} className="mt-1 space-y-0.5 text-2xs">
+                              {[['base', `${n(Math.round(p.bulk.qty * p.bulk.factor))} tem lẻ — dán từng ${base.unit_name} (${fq(p.bulk.qty)} × ${fq(p.bulk.factor)})`],
+                                ['unit', `${n(Math.round(p.bulk.qty))} tem ${p.bulk.unit.unit_name} — dán lên ${p.bulk.unit.unit_name}`]].map(([k, lb]) => (
+                                <label key={k} className="flex items-center gap-1.5 cursor-pointer">
+                                  <input type="radio" name={`bulk-${p.key}`} className="accent-emerald-700 cursor-pointer"
+                                    checked={k === 'unit' ? unit?.id === p.bulk.unit.id : unit?.id !== p.bulk.unit.id}
+                                    onChange={() => chooseBulk(p, k)} />
+                                  {lb}
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {p.units.length > 1 ? (
+                            <Select size="sm" value={p.unitId} aria-label={`Đơn vị in tem của ${p.name}`}
+                              onChange={(e) => patchItem(p.key, { unitId: Number(e.target.value) })}>
+                              {p.units.map((u) => (
+                                <option key={u.id} value={u.id}>
+                                  {u.unit_name}{u.factor > 1 ? ` (${fq(u.factor)})` : ''}{u.barcode ? ' · có mã riêng' : ''}
+                                </option>
+                              ))}
+                            </Select>
+                          ) : <span className="text-muted-ink">{unit?.unit_name || p.base_unit}</span>}
+                        </td>
+                        <td className="font-mono text-2xs">
+                          {codeOf(p) || <span className="text-danger">chưa có</span>}
+                        </td>
+                        <td className="num">{money(priceOf(p))}</td>
+                        <td>
+                          <div className="flex items-center justify-end gap-1">
+                            <IconButton icon={Minus} label={`Bớt tem ${p.name}`} variant="outline" size={12}
+                              onClick={() => setCount(p.key, (p.count || 0) - 1)} />
+                            <input
+                              type="number" min="0"
+                              className="field field-sm num !w-14"
+                              value={p.count}
+                              aria-label={`Số tem của ${p.name}`}
+                              onChange={(e) => setCount(p.key, e.target.value)}
+                            />
+                            <IconButton icon={Plus} label={`Thêm tem ${p.name}`} variant="outline" size={12}
+                              onClick={() => setCount(p.key, (p.count || 0) + 1)} />
+                          </div>
+                        </td>
+                        <td>
+                          <IconButton icon={Trash2} label={`Bỏ ${p.name}`} size={14}
+                            className="!text-danger hover:!bg-red-50"
+                            onClick={() => setItems((prev) => prev.filter((x) => x.key !== p.key))} />
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -263,8 +347,8 @@ export default function PrintLabels({ open, onClose, products = [] }) {
             <div className="border border-line rounded-lg bg-slate-100 p-3 overflow-auto max-h-56">
               <div className="flex flex-wrap gap-1">
                 {labels.slice(0, 12).map((p, i) => (
-                  <LabelBox key={i} p={p} size={size} show={show} store={store}
-                    code={codeOf(p)} price={priceOf(p)} />
+                  <LabelBox key={i} p={p} unitName={unitOf(p)?.unit_name || p.base_unit} size={size} show={show}
+                    store={store} code={codeOf(p)} price={priceOf(p)} />
                 ))}
                 {labels.length > 12 && (
                   <div className="flex items-center text-[13px] text-muted-ink px-2">
@@ -277,11 +361,21 @@ export default function PrintLabels({ open, onClose, products = [] }) {
         </div>
       </Modal>
 
+      <Confirm
+        open={asking}
+        onClose={() => setAsking(false)}
+        danger={false}
+        title={`In ${n(totalLabels)} tem?`}
+        confirmText={`In ${n(totalLabels)} tem`}
+        message={`${breakdown.slice(0, 6).join(' · ')}${breakdown.length > 6 ? ` · và ${breakdown.length - 6} dòng nữa` : ''}. Soát lại số tem trước khi in — in nhầm là tốn cả cuộn giấy.`}
+        onConfirm={() => { setAsking(false); setTimeout(() => window.print(), 50); }}
+      />
+
       {/* Vùng in thật */}
       <div className="print-area print-labels">
         {labels.map((p, i) => (
-          <LabelBox key={i} p={p} size={size} show={show} store={store}
-            code={codeOf(p)} price={priceOf(p)} forPrint />
+          <LabelBox key={i} p={p} unitName={unitOf(p)?.unit_name || p.base_unit} size={size} show={show}
+            store={store} code={codeOf(p)} price={priceOf(p)} forPrint />
         ))}
       </div>
     </>
@@ -290,7 +384,7 @@ export default function PrintLabels({ open, onClose, products = [] }) {
 
 /* ------------------------------------------------------------------ */
 
-function LabelBox({ p, size, show, store, code, price, forPrint }) {
+function LabelBox({ p, unitName, size, show, store, code, price, forPrint }) {
   if (!code) return null;
 
   /* Bề rộng vạch tính THEO ĐỘ DÀI MÃ và chỗ trống thật trên tem.
@@ -351,7 +445,7 @@ function LabelBox({ p, size, show, store, code, price, forPrint }) {
           </span>
         )}
         {show.unit && (
-          <span style={{ fontSize: '6pt', whiteSpace: 'nowrap' }}>/{p.base_unit}</span>
+          <span style={{ fontSize: '6pt', whiteSpace: 'nowrap' }}>/{unitName}</span>
         )}
       </div>
       {show.sku && (

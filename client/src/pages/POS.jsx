@@ -50,6 +50,7 @@ import PosCameraScan from '../components/PosCameraScan';
 import PosDayInvoices from '../components/PosDayInvoices';
 import { isTouchDevice, primeAudio } from '../lib/cameraScan';
 
+import { findByCode, barcodeEquals, barcodeIncludes } from '../lib/codeMatch';
 /* Người có quyền xem giá vốn mới thấy giá vốn và giá nhập gần nhất khi bán.
    Máy chủ cũng gỡ hẳn các cột này khỏi dữ liệu trả cho người không có quyền. */
 const canSeeCost = (user, can) => !!can?.('cost.view') || user?.role === 'owner' || user?.role === 'manager';
@@ -928,9 +929,8 @@ export default function POS() {
         aliasHits.has(p.id)
         || matchMode(p.name, search, searchMode) || matchMode(p.alias || '', search, searchMode)
         || matchMode(p.sku, search, searchMode) || matchMode(p.brand || '', search, searchMode)
-        || (searchMode === 'exact'
-          ? (p.barcode || '') === search.trim()
-          : (p.barcode || '').includes(search.trim())));
+        /* Mã vạch của hàng và mã riêng của từng đơn vị tính (plan 30, H4) */
+        || (searchMode === 'exact' ? barcodeEquals(p, search) : barcodeIncludes(p, search)));
     }
 
     /* Thứ tự lưới, xếp theo mức ưu tiên giảm dần:
@@ -1007,10 +1007,9 @@ export default function POS() {
     return (Date.now() - t.startedAt) / term.length < 50;
   };
 
-  /** Món mang ĐÚNG mã này — mã vạch hoặc mã hàng, không tìm gần đúng. */
-  const findByCode = (term) => products?.find(
-    (p) => p.barcode === term || p.sku.toLowerCase() === term.toLowerCase(),
-  );
+  /** Món mang ĐÚNG mã này — mã vạch hàng, mã vạch đơn vị, hoặc mã hàng; không tìm gần đúng.
+      Quét tem dán cuộn / thùng thì vào giỏ đúng đơn vị đó, giá theo đơn vị đó (plan 30, BC-202). */
+  const codeHit = (term) => findByCode(products, term);
 
   /**
    * Camera điện thoại đọc được một mã. Cùng luật với máy quét cầm tay: khớp
@@ -1020,10 +1019,11 @@ export default function POS() {
    */
   const scanCode = (code) => {
     const term = String(code || '').trim();
-    const exact = term ? findByCode(term) : null;
+    const hit = term ? codeHit(term) : null;
+    const exact = hit?.product;
     if (!exact) return { kind: 'missing', code: term };
     if (exact.track_stock && exact.stock <= 0) return { kind: 'out', code: term, product: exact };
-    addToCart(exact);
+    addToCart(exact, hit.unit?.id);
     return { kind: 'added', code: term, product: exact };
   };
 
@@ -1032,11 +1032,12 @@ export default function POS() {
     const term = search.trim();
     if (!term) return;
     const scanned = looksScanned(term);
-    const exact = findByCode(term);
+    const hit = codeHit(term);
+    const exact = hit?.product;
     /* Quét mã vạch luôn khớp trọn, không phụ thuộc kiểu tìm đang chọn */
     if (exact) {
       if (exact.track_stock && exact.stock <= 0) toast(`"${exact.name}" đã hết hàng trong kho`, 'warn');
-      else addToCart(exact);
+      else addToCart(exact, hit.unit?.id);
       setSearch('');              // hết hàng cũng phải xoá, để quét tiếp được
       return;
     }

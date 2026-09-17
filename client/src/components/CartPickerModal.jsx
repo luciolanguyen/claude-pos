@@ -25,6 +25,7 @@ import {
 } from './ui';
 import { CategorySelect, categoryBranch } from './CategoryTree';
 
+import { findByCode, barcodeEquals } from '../lib/codeMatch';
 /**
  * Màu và biểu tượng theo loại phiếu. `ring` dùng cho khung hộp thoại,
  * `btn` cho nút mở hộp — cùng một màu thì nhìn nút là biết sẽ mở hộp nào.
@@ -154,7 +155,7 @@ export default function CartPickerModal({
     const k = q.trim();
     if (k) {
       l = l.filter((p) => matchMode(p.name, k, mode) || matchMode(p.alias || '', k, mode)
-        || matchMode(p.sku, k, mode) || (p.barcode || '') === k);
+        || matchMode(p.sku, k, mode) || barcodeEquals(p, k));
     }
     return l.slice(0, 200);
   }, [products, q, mode, branch]);
@@ -175,7 +176,7 @@ export default function CartPickerModal({
     if (e.key !== 'Enter') return;
     const code = q.trim();
     if (!code) return;
-    const exact = (products || []).find((p) => p.barcode === code || p.sku === code);
+    const exact = findByCode(products, code)?.product;
     const hit = exact || (list.length === 1 ? list[0] : null);
     if (hit) { e.preventDefault(); onAdd(hit, 1); setQ(''); }
   };

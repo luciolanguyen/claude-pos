@@ -8,6 +8,9 @@ import {
   searchWhere, searchMode, orderBy, unitTiers, PRODUCT_DIR,
   normWarrantyParts, monthsCovering } from '../db.js';
 import { validateImport, writeImport, importMeta } from '../import-products.js';
+import {
+  setOwnerBarcode, retireProductCodes, releaseBarcode, nextSku,
+} from '../barcodes.js';
 
 const r = Router();
 
@@ -359,11 +362,13 @@ r.get('/products', (req, res) => {
     if (c.sql) { where.push(c.sql); params.push(...c.params); }
   };
 
-  push(['p.name', 'p.alias', 'p.sku', 'p.barcode', 'p.brand'], q);
+  /* Mã vạch riêng của từng đơn vị tính (plan 30, H4): quét tem cuộn / thùng cũng ra hàng */
+  const UNIT_CODES = "COALESCE((SELECT GROUP_CONCAT(u.barcode, ' ') FROM product_units u WHERE u.product_id = p.id AND u.barcode IS NOT NULL), '')";
+  push(['p.name', 'p.alias', 'p.sku', 'p.barcode', 'p.brand', UNIT_CODES], q);
   /* Bộ lọc theo từng cột vẫn nhận được từ đường dẫn cũ và từ thanh công cụ */
   push(['p.name', 'p.alias'], name);
   push('p.sku', sku);
-  push('p.barcode', barcode);
+  push(['p.barcode', UNIT_CODES], barcode);
   if (brand.trim()) { where.push('p.brand = ?'); params.push(brand.trim()); }
   if (location.trim()) { where.push('p.location = ?'); params.push(location.trim()); }
   /* Lấy cả nhóm con cháu, không chỉ đúng nhóm được chọn */
@@ -832,7 +837,7 @@ function saveTiers(productId, unitId, tiers = []) {
   }
 }
 
-function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
+function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack, { userId = null } = {}) {
   const keepIds = [];
   let hasBase = false;
   for (const u of units) {
@@ -857,22 +862,30 @@ function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
     const buyMain = u.is_buy_main === 1 || u.is_buy_main === true ? 1 : 0;
     let unitId;
     if (existing) {
-      run(`UPDATE product_units SET unit_name = ?, factor = ?, is_base = ?, barcode = ?,
+      run(`UPDATE product_units SET unit_name = ?, factor = ?, is_base = ?,
              active = ?, ref_unit_id = ?, ref_qty = ?, pack_spec = ?,
              is_sell_main = ?, is_buy_main = ? WHERE id = ?`,
-        [name, factor, isBase ? 1 : 0, u.barcode || null,
+        [name, factor, isBase ? 1 : 0,
           u.active === 0 ? 0 : 1, refUnit, refQty, pack,
           sellMain, buyMain, existing.id]);
       unitId = existing.id;
     } else {
       unitId = Number(run(
-        `INSERT INTO product_units(product_id, unit_name, factor, is_base, barcode,
+        `INSERT INTO product_units(product_id, unit_name, factor, is_base,
                                    active, ref_unit_id, ref_qty, pack_spec,
                                    is_sell_main, is_buy_main)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [productId, name, factor, isBase ? 1 : 0, u.barcode || null,
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [productId, name, factor, isBase ? 1 : 0,
           u.active === 0 ? 0 : 1, refUnit, refQty, pack, sellMain, buyMain]
       ).lastInsertRowid);
+    }
+    /* Mã vạch riêng của đơn vị (plan 30, §4.6) — tuỳ chọn, không tự sinh trừ khi
+       người dùng bấm "Cấp mã". Màn hình cũ không gửi ô này thì giữ nguyên
+       (bản cũ ghi đè về trống mỗi lần lưu). */
+    if (u.barcode !== undefined || u.auto_barcode === true) {
+      const cur = get('SELECT barcode FROM product_units WHERE id = ?', [unitId])?.barcode ?? null;
+      setOwnerBarcode('product_unit', unitId, u.barcode === undefined ? cur : u.barcode,
+        { auto: u.auto_barcode === true, userId });
     }
     keepIds.push(unitId);
     u._id = unitId;
@@ -904,7 +917,12 @@ function saveUnitsAndPrices(productId, units = [], baseUnit, fallbackPack) {
     [productId, ...keepIds]);
   for (const d of dropped) {
     if (unitUsage(d.id) > 0) run('UPDATE product_units SET active = 0 WHERE id = ?', [d.id]);
-    else run('DELETE FROM product_units WHERE id = ?', [d.id]);
+    else {
+      /* Xoá hẳn đơn vị: mã vạch riêng của nó chuyển sang đã thu hồi, không cấp lại */
+      const code = get('SELECT barcode FROM product_units WHERE id = ?', [d.id])?.barcode;
+      if (code) releaseBarcode(code, { type: 'product_unit', id: d.id }, 'xoá đơn vị tính');
+      run('DELETE FROM product_units WHERE id = ?', [d.id]);
+    }
   }
 
   /* Quy cách của đơn vị cơ bản giữ luôn ở cột cũ products.pack_spec, để các
@@ -972,6 +990,7 @@ r.delete('/products/:id/units/:unitId', (req, res) => {
     if (used > 0) {
       run('UPDATE product_units SET active = 0 WHERE id = ?', [u.id]);
     } else {
+      if (u.barcode) releaseBarcode(u.barcode, { type: 'product_unit', id: u.id }, 'xoá đơn vị tính');
       run('DELETE FROM product_prices WHERE unit_id = ?', [u.id]);
       run('DELETE FROM product_units WHERE id = ?', [u.id]);
     }
@@ -1071,11 +1090,10 @@ r.post('/products', (req, res) => {
   if (!(Number(b.cost_price) >= 0)) {
     return res.status(400).json({ error: 'Giá vốn ban đầu không được là số âm', code: 'COST_REQUIRED' });
   }
+  /* Mã hàng tự đặt theo bộ đếm chỉ tiến (plan 30, H3) — bản cũ lấy COUNT(*)+1
+     nên xoá một mặt hàng là mã kế tiếp đâm vào mã đã có */
   let sku = b.sku?.trim();
-  if (!sku) {
-    const n = get('SELECT COUNT(*) AS n FROM products').n + 1;
-    sku = 'SP' + String(n).padStart(5, '0');
-  }
+  if (!sku) sku = nextSku();
   if (get('SELECT id FROM products WHERE sku = ?', [sku])) {
     return res.status(400).json({ error: `Mã hàng "${sku}" đã tồn tại` });
   }
@@ -1087,7 +1105,7 @@ r.post('/products', (req, res) => {
                              cost_method, cost_fixed, warranty_months, warranty_note,
                              description, pack_spec, purchase_note)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sku, b.barcode || null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
+        [sku, null, b.name.trim(), b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           Math.round(b.cost_price || 0), b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
@@ -1102,7 +1120,12 @@ r.post('/products', (req, res) => {
           /* Ưu đãi mặc định của mối, ví dụ "Mua 50 tặng 5" (tài liệu 18, vùng 1) */
           String(b.purchase_note ?? '').trim() || null]);
       const pid = Number(info.lastInsertRowid);
-      saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái', b.pack_spec);
+      /* Mã vạch (plan 30, L1–L3): gõ mã thì giữ nguyên, trùng thì báo lỗi và KHÔNG
+         tạo hàng; bỏ trống thì cấp mã 828… tự sinh */
+      setOwnerBarcode('product', pid, b.barcode, {
+        auto: b.auto_barcode !== false, userId: req.user?.id || Number(b.user_id) || null,
+      });
+      saveUnitsAndPrices(pid, b.units, b.base_unit || 'Cái', b.pack_spec, { userId: req.user?.id || null });
       saveDefaultUnits(pid, b, b.units);
       saveWarrantyParts(pid, b.warranty_parts);
       for (const src of (Array.isArray(b.images) ? b.images : []).slice(0, MAX_IMAGES)) {
@@ -1138,7 +1161,7 @@ r.put('/products/:id', (req, res) => {
   }
   try {
     tx(() => {
-      run(`UPDATE products SET barcode = ?, name = ?, alias = ?, category_id = ?, base_unit = ?,
+      run(`UPDATE products SET name = ?, alias = ?, category_id = ?, base_unit = ?,
              vat_rate = ?, track_stock = ?, min_stock = ?, max_stock = ?,
              brand = ?, location = ?, note = ?, active = ?, cost_method = ?,
              warranty_months = COALESCE(?, warranty_months),
@@ -1147,7 +1170,7 @@ r.put('/products/:id', (req, res) => {
              pack_spec = CASE WHEN ? = 1 THEN ? ELSE pack_spec END,
              purchase_note = CASE WHEN ? = 1 THEN ? ELSE purchase_note END
            WHERE id = ?`,
-        [b.barcode || null, b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
+        [b.name, b.alias?.trim() || null, b.category_id || null, b.base_unit || 'Cái',
           b.vat_rate ?? 8, b.track_stock === 0 ? 0 : 1,
           Number(b.min_stock) || 0, Number(b.max_stock) || 0,
           b.brand || null, b.location || null, b.note || null, b.active === 0 ? 0 : 1,
@@ -1159,7 +1182,15 @@ r.put('/products/:id', (req, res) => {
           b.pack_spec === undefined ? 0 : 1, String(b.pack_spec ?? '').trim() || null,
           b.purchase_note === undefined ? 0 : 1, String(b.purchase_note ?? '').trim() || null,
           id]);
-      saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái', b.pack_spec);
+      /* Mã vạch KHÔNG tự đổi khi sửa tên, giá, nhóm, đơn vị (plan 30, L4). Chỉ đổi
+         khi người dùng gửi mã khác, hoặc bấm cấp mã tự sinh cho hàng chưa có mã. */
+      if (b.barcode !== undefined || b.auto_barcode === true) {
+        const cur = get('SELECT barcode FROM products WHERE id = ?', [id])?.barcode ?? null;
+        setOwnerBarcode('product', Number(id), b.barcode === undefined ? cur : b.barcode, {
+          auto: b.auto_barcode === true, userId: req.user?.id || null,
+        });
+      }
+      saveUnitsAndPrices(Number(id), b.units, b.base_unit || 'Cái', b.pack_spec, { userId: req.user?.id || null });
       saveWarrantyParts(Number(id), b.warranty_parts);
       if (b.sell_unit_id !== undefined || b.buy_unit_id !== undefined
         || b.sell_unit_index !== undefined || b.buy_unit_index !== undefined) {
@@ -1181,8 +1212,40 @@ r.delete('/products/:id', (req, res) => {
     run('UPDATE products SET active = 0 WHERE id = ?', [id]);
     return res.json({ ok: true, deactivated: true, message: 'Sản phẩm đã phát sinh giao dịch nên được chuyển sang trạng thái Ngừng kinh doanh.' });
   }
-  run('DELETE FROM products WHERE id = ?', [id]);
+  tx(() => {
+    /* Mã vạch của hàng xoá hẳn chuyển sang đã thu hồi — mã tự sinh không bao giờ
+       được cấp lại cho hàng khác (plan 30, L6) */
+    retireProductCodes(Number(id));
+    run('DELETE FROM products WHERE id = ?', [id]);
+  });
   res.json({ ok: true, deactivated: false });
+});
+
+/** Cấp mã vạch tự sinh cho mặt hàng chưa có mã (hàng cũ, bấm tay từng món). */
+r.post('/products/:id/barcode/generate', (req, res) => {
+  const p = get('SELECT id, barcode FROM products WHERE id = ?', [Number(req.params.id)]);
+  if (!p) return res.status(404).json({ error: 'Không tìm thấy mặt hàng' });
+  if (p.barcode) return res.status(409).json({ error: `Mặt hàng đã có mã vạch ${p.barcode}.`, code: 'HAS_BARCODE' });
+  try {
+    const code = tx(() => setOwnerBarcode('product', p.id, null, { auto: true, userId: req.user?.id || null }));
+    res.json({ ok: true, barcode: code });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/** Cấp mã vạch riêng cho một đơn vị tính (plan 30, L7): tem dán cuộn, dán thùng. */
+r.post('/products/:id/units/:unitId/barcode/generate', (req, res) => {
+  const u = get('SELECT id, barcode, factor FROM product_units WHERE id = ? AND product_id = ?',
+    [Number(req.params.unitId), Number(req.params.id)]);
+  if (!u) return res.status(404).json({ error: 'Không tìm thấy đơn vị tính' });
+  if (u.barcode) return res.status(409).json({ error: `Đơn vị đã có mã vạch ${u.barcode}.`, code: 'HAS_BARCODE' });
+  try {
+    const code = tx(() => setOwnerBarcode('product_unit', u.id, null, { auto: true, userId: req.user?.id || null }));
+    res.json({ ok: true, barcode: code });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
 });
 
 /** Điều chỉnh giá vốn thủ công. */

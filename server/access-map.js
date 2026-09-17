@@ -94,6 +94,12 @@ export const ACCESS_RULES = [
      thì luật rộng nuốt mất, quyền mới không có tác dụng mà không ai biết.
      Một file nhập sai là hỏng cả danh mục, nặng hơn hẳn sửa một mặt hàng. */
   ['POST', /^\/products\/import$/,        'data.import'],
+  /* Mã vạch (plan 30, §10): tra mã theo quyền xem hàng; đổi tiền tố / số chữ số
+     và xử lý mã trùng đụng tới cả danh mục nên cần quyền thiết lập */
+  ['GET',  /^\/barcodes\/lookup$/,         'product.view'],
+  ['GET',  /^\/barcode-settings$/,          'product.manage'],
+  ['PUT',  /^\/barcode-settings$/,          'settings.manage'],
+  ['POST', /^\/barcode-conflicts\/resolve$/, 'settings.manage'],
   ['GET',  /^\/products\/import-meta$/,   'data.import'],
 
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải

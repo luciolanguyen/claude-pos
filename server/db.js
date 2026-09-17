@@ -270,6 +270,59 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_ins
            UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
          END`);
 
+/* ------------------------------------------------------------------ */
+/* Mã vạch tự sinh (plan 30, P1)                                        */
+/* ------------------------------------------------------------------ */
+/**
+ * Dựng sổ đăng ký mã vạch và hai bộ đếm. Chạy mỗi lần khởi động, và chạy lại
+ * sau khi khôi phục một file sao lưu cũ chưa có hai bảng này — thiếu bộ đếm
+ * là tạo hàng mới hỏng ngay.
+ */
+export function ensureBarcodeRegistry() {
+  /* Mã vạch có dấu cách thừa hai đầu thì máy quét không bao giờ khớp; ô trống
+     thì coi như không có mã */
+  db.exec(`UPDATE products SET barcode = NULLIF(TRIM(barcode), '') WHERE barcode IS NOT NULL AND barcode <> TRIM(barcode) OR barcode = ''`);
+  db.exec(`UPDATE product_units SET barcode = NULLIF(TRIM(barcode), '') WHERE barcode IS NOT NULL AND barcode <> TRIM(barcode) OR barcode = ''`);
+
+  /* Bộ đếm mã tự sinh: máy mới đếm từ 1. Dựng lại sau khi khôi phục một file sao
+     lưu thiếu bộ đếm thì phải nối tiếp SAU mã 828… lớn nhất đang có, kẻo cấp đè */
+  db.exec(`INSERT OR IGNORE INTO barcode_counter(name, next_value, prefix, width)
+           SELECT 'product', COALESCE(MAX(CAST(SUBSTR(code, 4) AS INTEGER)), 0) + 1, '828', 7
+           FROM (SELECT barcode AS code FROM products UNION ALL SELECT barcode FROM product_units
+                 UNION ALL SELECT code FROM barcodes)
+           WHERE code GLOB '828[0-9][0-9][0-9][0-9][0-9][0-9][0-9]'`);
+  /* Mã hàng SP… tự đặt: bắt đầu sau số lớn nhất đang có, từ đó chỉ tiến */
+  db.exec(`INSERT OR IGNORE INTO barcode_counter(name, next_value, prefix, width)
+           SELECT 'sku', COALESCE(MAX(CAST(SUBSTR(sku, 3) AS INTEGER)), 0) + 1, 'SP', 5
+           FROM products WHERE sku GLOB 'SP[0-9]*' AND SUBSTR(sku, 3) NOT GLOB '*[^0-9]*'`);
+
+  /* Nạp mọi mã đang có vào sổ đăng ký. Mã đang bị HAI chỗ cùng giữ thì KHÔNG
+     nạp và không tự chọn giữ cái nào — chủ tiệm xem danh sách ở Thiết lập rồi
+     quyết từng mã (plan 30, §11.1, chủ tiệm chốt). Chạy mỗi lần khởi động
+     nhưng INSERT OR IGNORE nên vô hại. */
+  const heldBy = `(SELECT COUNT(*) FROM products x WHERE x.barcode = c.code)
+                + (SELECT COUNT(*) FROM product_units y WHERE y.barcode = c.code)`;
+  db.exec(`INSERT OR IGNORE INTO barcodes(code, owner_type, owner_id, last_owner_id, source, note)
+           SELECT c.code, 'product', c.id, c.id, 'manual', 'nạp từ dữ liệu có sẵn'
+           FROM (SELECT barcode AS code, id FROM products WHERE barcode IS NOT NULL) c
+           WHERE ${heldBy} = 1`);
+  db.exec(`INSERT OR IGNORE INTO barcodes(code, owner_type, owner_id, last_owner_id, source, note)
+           SELECT c.code, 'product_unit', c.id, c.id, 'manual', 'nạp từ dữ liệu có sẵn'
+           FROM (SELECT barcode AS code, id FROM product_units WHERE barcode IS NOT NULL) c
+           WHERE ${heldBy} = 1`);
+
+  /* Chặn trùng ngay ở cơ sở dữ liệu — chỉ tạo được khi dữ liệu đã sạch trùng */
+  const dup = (table) => db.prepare(`SELECT COUNT(*) AS n FROM (SELECT barcode FROM ${table}
+                                     WHERE barcode IS NOT NULL GROUP BY barcode HAVING COUNT(*) > 1)`).get().n;
+  if (!dup('products')) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_products_barcode ON products(barcode) WHERE barcode IS NOT NULL');
+  }
+  if (!dup('product_units')) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_units_barcode ON product_units(barcode) WHERE barcode IS NOT NULL');
+  }
+}
+ensureBarcodeRegistry();
+
 /* Bảo hành (plan 31, đợt 6): món thuộc phiếu tiếp nhận gom nào (3a), và
    khách báo hư bộ phận nào khi mặt hàng bảo hành riêng từng bộ phận (3e) */
 addColumns('warranty_tickets', { batch_id: 'INTEGER', component_name: 'TEXT' });

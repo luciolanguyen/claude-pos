@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR } from '../db.js';
+import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR, ensureBarcodeRegistry } from '../db.js';
 
 const r = Router();
 
@@ -141,6 +141,9 @@ const TABLES = [
   'warranty_batches', 'product_warranty_parts', 'sale_item_warranty_parts',
   /* Plan 31 đợt 7 — điều chỉnh công nợ, mốc chốt công nợ */
   'debt_adjustments', 'debt_closings',
+  /* Plan 30 — bộ đếm và sổ đăng ký mã vạch. Là DANH MỤC: xoá dữ liệu giao dịch
+     KHÔNG được xoá hai bảng này, kẻo mã cũ bị cấp lại cho hàng mới */
+  'barcode_counter', 'barcodes',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -173,6 +176,8 @@ r.post('/restore', (req, res) => {
       }
     });
     db.exec('PRAGMA foreign_keys = ON');
+    /* File sao lưu từ trước plan 30 không có sổ mã vạch và bộ đếm: dựng lại */
+    ensureBarcodeRegistry();
     res.json({ ok: true, message: 'Khôi phục dữ liệu thành công. Hãy tải lại trang.' });
   } catch (e) {
     db.exec('PRAGMA foreign_keys = ON');
@@ -285,6 +290,9 @@ r.post('/reset-all', (req, res) => {
     tx(() => {
       db.exec('PRAGMA foreign_keys = OFF');
       for (const t of ORDER) run(`DELETE FROM ${t}`);
+      /* Về như máy mới: sổ mã vạch trống, hai bộ đếm đếm lại từ 1 */
+      run('DELETE FROM barcodes');
+      run('UPDATE barcode_counter SET next_value = 1');
       run("DELETE FROM sqlite_sequence WHERE name NOT IN ('users')");
       db.exec('PRAGMA foreign_keys = ON');
     });

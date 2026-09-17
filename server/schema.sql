@@ -1018,3 +1018,33 @@ CREATE TABLE IF NOT EXISTS debt_closings (
   note           TEXT,
   UNIQUE(partner_type, partner_id, close_date)
 );
+
+-- ================= Plan 30: ma vach tu sinh =================
+-- Bo dem chi tien, khong bao gio doc nguoc tu du lieu (plan 30, 5.1). Hai dong:
+--   product  ma vach tu sinh: tien to 828 + 7 chu so = 10 ky tu (do dai chan
+--            thi Code 128 nen duoc hai chu so vao mot ky hieu, tem hep nhat)
+--   sku      ma hang tu dat SP00001... — thay cho COUNT(*)+1 bi cap lai sau khi xoa
+CREATE TABLE IF NOT EXISTS barcode_counter (
+  name       TEXT PRIMARY KEY,
+  next_value INTEGER NOT NULL,
+  prefix     TEXT NOT NULL,
+  width      INTEGER NOT NULL
+);
+
+-- So dang ky ma vach (plan 30, 5.2): moi ma da tung cap nam o mot cho, code
+-- la khoa chinh nen trung ma bac qua hai bang products / product_units cung
+-- bi chan. Xoa hang thi dong chuyen 'retired' chu khong xoa — ma tu sinh da
+-- cap khong bao gio duoc cap lai. KHONG noi cascade tu products: cascade chinh
+-- la con duong tai su dung ma.
+CREATE TABLE IF NOT EXISTS barcodes (
+  code          TEXT PRIMARY KEY,
+  owner_type    TEXT NOT NULL,                 -- product | product_unit
+  owner_id      INTEGER,                       -- NULL khi da thu hoi
+  last_owner_id INTEGER,                       -- ai giu ma lan cuoi, de chinh hang do lay lai duoc
+  source        TEXT NOT NULL,                 -- auto | manual | import
+  status        TEXT NOT NULL DEFAULT 'active',-- active | retired
+  ts            TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_barcodes_owner ON barcodes(owner_type, owner_id);

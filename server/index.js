@@ -21,6 +21,7 @@ import drafts from './routes/drafts.js';
 import posExtras from './routes/pos-extras.js';
 import consign from './routes/consign.js';
 import debts from './routes/debts.js';
+import barcodes from './routes/barcodes.js';
 import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
@@ -147,7 +148,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', debts, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
+app.use('/api', debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));
