@@ -241,6 +241,10 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
           {sale.voucher_amount > 0 && (
             <tr><td>(trong đó trừ phiếu đổi hàng)</td><td style={{ textAlign: 'right' }}>{n(sale.voucher_amount)}</td></tr>
           )}
+          {sale.salary_amount > 0 && (
+            <tr><td>(trong đó trừ lương {sale.salary_employee_name || 'nhân viên'})</td>
+              <td style={{ textAlign: 'right' }}>{n(sale.salary_amount)}</td></tr>
+          )}
           {sale.change_given > 0 && (
             <tr><td>Tiền thối:</td><td style={{ textAlign: 'right' }}>{n(sale.change_given)}</td></tr>
           )}

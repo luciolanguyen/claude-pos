@@ -338,6 +338,12 @@ export default function Sales() {
                   </div>
                 )}
                 {detail.voucher_amount > 0 && <div>Trừ phiếu đổi hàng: {money(detail.voucher_amount)}</div>}
+                {detail.salary_amount > 0 && (
+                  <div>
+                    Trừ vào lương <b>{detail.salary_employee_name || 'nhân viên'}</b>: {money(detail.salary_amount)}
+                    {detail.salary_refunded > 0 ? ` (đã hoàn vào lương ${money(detail.salary_refunded)})` : ''}
+                  </div>
+                )}
                 {detail.approval_note && (
                   <div className="text-2xs text-muted-ink">Quản lý đã duyệt: {detail.approval_note}</div>
                 )}

@@ -1048,3 +1048,141 @@ CREATE TABLE IF NOT EXISTS barcodes (
   note          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_barcodes_owner ON barcodes(owner_type, owner_id);
+
+-- ================= Plan 28: luong nhan vien theo lich Am =================
+-- Nhan vien an luong la bang rieng, KHONG dung users: nguoi phu ban co the
+-- khong bao gio dang nhap, con tai khoan quan ly co the chinh la chu tiem.
+CREATE TABLE IF NOT EXISTS employees (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  code          TEXT NOT NULL UNIQUE,                 -- NV001
+  full_name     TEXT NOT NULL,
+  phone         TEXT,
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  start_date    TEXT NOT NULL,                        -- ngay Duong vao lam
+  start_lunar   TEXT NOT NULL,                        -- ngay Am vao lam, chot luc tao, khong tinh lai
+  cycle_day     INTEGER NOT NULL,                     -- ngay Am goi dau ky luong 1..30
+  track_from    TEXT NOT NULL,                        -- tinh luong tren phan mem tu ngay nay
+  monthly_wage  INTEGER NOT NULL DEFAULT 0,
+  work_from     TEXT NOT NULL DEFAULT '07:00',
+  work_to       TEXT NOT NULL DEFAULT '17:00',
+  pay_mode      TEXT NOT NULL DEFAULT 'monthly',      -- monthly | daily
+  active        INTEGER NOT NULL DEFAULT 1,
+  end_date      TEXT,                                 -- ngay nghi viec (lam het ngay nay)
+  note          TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- Phieu luong: moi lan tra luong (chot mot ky, chot gop nhieu ky, tra luong ngay).
+-- Luong thuc nhan am thi tra 0, phan am chuyen sang phieu sau (carry).
+CREATE TABLE IF NOT EXISTS payroll_settlements (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        TEXT NOT NULL UNIQUE,                   -- PL260917-0001
+  ts          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  kind        TEXT NOT NULL DEFAULT 'cycle',          -- cycle | daily
+  date_from   TEXT,
+  date_to     TEXT,
+  carry_in    INTEGER NOT NULL DEFAULT 0,             -- am = nhan vien con no tu phieu truoc
+  earned      INTEGER NOT NULL DEFAULT 0,             -- tong cac ky / cac ngay
+  pay_amount  INTEGER NOT NULL DEFAULT 0,
+  carry_out   INTEGER NOT NULL DEFAULT 0,             -- am = con no chuyen sang phieu sau
+  account_id  INTEGER REFERENCES cash_accounts(id) ON DELETE SET NULL,
+  cash_tx_id  INTEGER REFERENCES cash_transactions(id) ON DELETE SET NULL,
+  detail      TEXT,                                   -- JSON anh chup phieu luong luc chot
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_settle_emp ON payroll_settlements(employee_id, id);
+
+-- Ky luong goi dau. Moc Duong chot cung luc tao, khong tinh lai moi lan mo man
+-- hinh: sau nay sua ham doi lich thi ky da co (tien da tra) khong xe dich.
+CREATE TABLE IF NOT EXISTS payroll_cycles (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id   INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  label         TEXT NOT NULL,                        -- thang 4 nhuan nam 2020
+  lunar_month   INTEGER NOT NULL,
+  lunar_year    INTEGER NOT NULL,
+  lunar_leap    INTEGER NOT NULL DEFAULT 0,
+  lunar_from    TEXT NOT NULL,
+  lunar_to      TEXT NOT NULL,
+  date_from     TEXT NOT NULL,
+  date_to       TEXT NOT NULL,
+  days          INTEGER NOT NULL,                     -- 29 thang thieu | 30 thang du
+  monthly_wage  INTEGER NOT NULL,                     -- anh chup, sua ho so chi ap cho ky chua chot
+  hours_per_day REAL NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open',         -- open | closed
+  settlement_id INTEGER REFERENCES payroll_settlements(id) ON DELETE SET NULL,
+  work_days     INTEGER,                              -- anh chup luc chot
+  is_partial    INTEGER NOT NULL DEFAULT 0,
+  base_amount   INTEGER,
+  net_amount    INTEGER,
+  closed_at     TEXT,
+  closed_by     INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_cycle ON payroll_cycles(employee_id, date_from);
+
+-- So luong: moi bien dong la mot dong, so du la tong cua so — cung khuon mau
+-- stock + stock_moves. Khong co dong nao nghia la di lam du.
+CREATE TABLE IF NOT EXISTS payroll_entries (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts            TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  work_date     TEXT NOT NULL,                        -- ngay Duong phat sinh
+  employee_id   INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  cycle_id      INTEGER REFERENCES payroll_cycles(id) ON DELETE SET NULL,
+  settlement_id INTEGER REFERENCES payroll_settlements(id) ON DELETE SET NULL,
+  type          TEXT NOT NULL,
+  -- absent_day | absent_hour | closed_day | wage | advance | purchase | bonus | adjust
+  amount        INTEGER NOT NULL DEFAULT 0,           -- duong = nhan vien duoc nhan, am = tru
+  hours         REAL,
+  counted       INTEGER NOT NULL DEFAULT 1,           -- 0 = chu cho qua, van giu dau vet
+  merged        INTEGER NOT NULL DEFAULT 1,           -- thuong: 1 gop vao luong, 0 dua tien ngay
+  ref_type      TEXT,                                 -- sale | sale_return | closed_day | attendance
+  ref_id        INTEGER,
+  ref_code      TEXT,
+  cash_tx_id    INTEGER REFERENCES cash_transactions(id) ON DELETE SET NULL,
+  day_rate      INTEGER,
+  hour_rate     INTEGER,
+  reason        TEXT,
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_emp ON payroll_entries(employee_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_payroll_cycle ON payroll_entries(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_payroll_settle ON payroll_entries(settlement_id);
+-- Mot ngay chi bao nghi ca ngay mot lan (ke ca ngay tiem nghi), va tra luong ngay mot lan
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_absent_day
+  ON payroll_entries(employee_id, work_date) WHERE type IN ('absent_day', 'closed_day');
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_wage_day
+  ON payroll_entries(employee_id, work_date) WHERE type = 'wage';
+
+-- Anh chup phieu ung co chu ky — file nam trong data/payroll/
+CREATE TABLE IF NOT EXISTS payroll_photos (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id  INTEGER NOT NULL REFERENCES payroll_entries(id) ON DELETE CASCADE,
+  file      TEXT NOT NULL,
+  ts        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- Ngay tiem dong cua (Tet...): chu tiem chot (28-4) nhung ngay nay KHONG tinh luong
+CREATE TABLE IF NOT EXISTS payroll_closed_days (
+  date     TEXT PRIMARY KEY,
+  note     TEXT,
+  ts       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Thuong chuyen can theo nam Am lich (28-3): moi nhan vien moi nam mot quyet dinh
+CREATE TABLE IF NOT EXISTS payroll_awards (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  lunar_year   INTEGER NOT NULL,
+  absent_days  INTEGER NOT NULL,
+  threshold    INTEGER NOT NULL,
+  decision     TEXT NOT NULL,                         -- approve | reject
+  amount       INTEGER NOT NULL DEFAULT 0,
+  entry_id     INTEGER REFERENCES payroll_entries(id) ON DELETE SET NULL,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note         TEXT,
+  UNIQUE(employee_id, lunar_year)
+);

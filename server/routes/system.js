@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR, ensureBarcodeRegistry } from '../db.js';
+import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR, PAYROLL_DIR, ensureBarcodeRegistry } from '../db.js';
 
 const r = Router();
 
@@ -144,6 +144,10 @@ const TABLES = [
   /* Plan 30 — bộ đếm và sổ đăng ký mã vạch. Là DANH MỤC: xoá dữ liệu giao dịch
      KHÔNG được xoá hai bảng này, kẻo mã cũ bị cấp lại cho hàng mới */
   'barcode_counter', 'barcodes',
+  /* Plan 28 — lương nhân viên. Thứ tự: bảng cha trước bảng con, vì khôi phục
+     chèn theo thứ tự này còn xoá thì đi ngược lại */
+  'employees', 'payroll_settlements', 'payroll_cycles', 'payroll_entries', 'payroll_photos',
+  'payroll_closed_days', 'payroll_awards',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -209,6 +213,10 @@ r.post('/clear-transactions', (req, res) => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
     for (const t of ['voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+      /* Sổ lương, kỳ lương, phiếu lương là chứng từ (nối với phiếu chi quỹ bị xoá
+         bên dưới). Hồ sơ nhân viên là DANH MỤC nên giữ lại (plan 28, §4.5). */
+      'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
+      'payroll_closed_days',
       /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
          (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
       'sale_consign_items', 'consign_settlements',
@@ -230,7 +238,11 @@ r.post('/clear-transactions', (req, res) => {
       run(`DELETE FROM ${t}`);
     }
   });
-  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC và nhà xe được giữ nguyên.' });
+  /* Ảnh phiếu ứng có chữ ký nhân viên: dòng sổ đã xoá thì file cũng không được nằm lại */
+  try {
+    for (const name of fs.readdirSync(PAYROLL_DIR)) fs.unlinkSync(path.join(PAYROLL_DIR, name));
+  } catch { /* thư mục trống */ }
+  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC, nhà xe và hồ sơ nhân viên được giữ nguyên.' });
 });
 
 /* ==================================================================== *
@@ -255,6 +267,9 @@ r.post('/reset-all', (req, res) => {
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
     'voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+    /* Lương: thưởng năm, ảnh -> sổ lương -> kỳ -> phiếu lương -> nhân viên */
+    'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
+    'payroll_closed_days', 'employees',
     'activity_log', 'draft_sales', 'doc_drafts',
     /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
     'requisition_item_suppliers', 'requisition_items', 'requisitions',
@@ -302,7 +317,7 @@ r.post('/reset-all', (req, res) => {
   }
 
   /* Ảnh bảo hành và ảnh hàng hoá nằm ngoài cơ sở dữ liệu, phải xoá riêng */
-  for (const dir of [WARRANTY_DIR, PRODUCT_DIR]) {
+  for (const dir of [WARRANTY_DIR, PRODUCT_DIR, PAYROLL_DIR]) {
     try {
       for (const name of fs.readdirSync(dir)) {
         fs.unlinkSync(path.join(dir, name));

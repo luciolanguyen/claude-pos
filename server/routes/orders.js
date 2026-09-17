@@ -621,6 +621,9 @@ r.post('/orders/:id/deliver', (req, res) => {
         transfer_amount: b.payment_method === 'transfer' ? paidNow : 0,
         cash_account_id: b.account_id || null,
         transfer_account_id: b.account_id || null,
+        /* Nhân viên đặt hàng rồi nhận, trừ vào lương (plan 28, PAY-406) — createSale tự soát */
+        salary_amount: money(b.salary_amount),
+        salary_employee_id: b.salary_employee_id || null,
         ...ship,
         note: `Giao đơn đặt hàng ${o.code}${b.note ? ' — ' + b.note : ''}`,
       });

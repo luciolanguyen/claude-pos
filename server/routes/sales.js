@@ -8,6 +8,8 @@ import {
 } from '../policy.js';
 import { debtBreakdown, overdueInvoices } from '../debt.js';
 import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
+import { isLoginRequired } from '../guard.js';
+import { salaryEmployee, recordSalePurchase, reverseSalePurchase } from '../payroll.js';
 
 const r = Router();
 
@@ -91,9 +93,12 @@ r.get('/sales/:id', (req, res) => {
   const s = get(`
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
            c.code AS customer_code, c.tax_code AS customer_tax_code, c.company_name AS customer_company,
-           u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name
+           u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name,
+           emp.full_name AS salary_employee_name,
+           (SELECT COALESCE(SUM(x.salary_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS salary_refunded
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN employees emp ON emp.id = s.salary_employee_id
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN warehouses w ON w.id = s.warehouse_id
     LEFT JOIN price_lists pl ON pl.id = s.price_list_id
@@ -280,7 +285,20 @@ export function createSale(b) {
   const paid0 = Math.max(0, Math.round(Number(b.paid) || 0));
   const voucherAsked = String(b.voucher_code || '').trim()
     ? Math.max(0, Math.round(Number(b.voucher_amount) || 0)) : 0;
-  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked);
+
+  /* Mua hàng trừ vào lương nhân viên (plan 28, §6). BẮT BUỘC chọn nhân viên,
+     không lấy mặc định người đang đứng quầy — không thì thu ngân tự mua ghi
+     vào lương mình chỉ bằng hai lần bấm mà chẳng ai để ý (PAY-405). */
+  const salaryAsked = Math.max(0, Math.round(Number(b.salary_amount) || 0));
+  let salaryEmp = null;
+  if (salaryAsked > 0) {
+    if (!isLoginRequired()) {
+      throw badRequest('Tiệm đang tắt đăng nhập nên bảng lương đóng — không trừ vào lương được.', 'SALARY_NEEDS_LOGIN');
+    }
+    if (codMode) throw badRequest('Đơn giao thu hộ (COD) không trừ vào lương được.', 'SALARY_COD');
+    salaryEmp = salaryEmployee(b.salary_employee_id);
+  }
+  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked - salaryAsked);
 
   /* 1. Giảm giá quá hạn mức thu ngân tự quyết (tài liệu 06).
         So với BẢNG GIÁ, không so với ô giảm giá — sửa tay đơn giá xuống
@@ -389,7 +407,9 @@ export function createSale(b) {
           || Number.isNaN(Number(b.voucher_amount)) ? v.balance : Math.round(Number(b.voucher_amount));
         voucherUse = Math.max(0, Math.min(asked, v.balance, total - paidMoney));
       }
-      const paid = paidMoney + voucherUse;
+      /* Trừ lương trả vào phần còn thiếu sau tiền mặt và phiếu đổi hàng */
+      const salaryUse = salaryEmp ? Math.max(0, Math.min(salaryAsked, total - paidMoney - voucherUse)) : 0;
+      const paid = paidMoney + voucherUse + salaryUse;
       const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paidMoney);
       const code = b.code?.trim() || nextCode('sales', 'HD');
 
@@ -471,6 +491,15 @@ export function createSale(b) {
       if (voucherUse > 0) {
         redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });
       }
+      /* Không vào quỹ (không đồng nào vào két), không thành nợ khách: ghi một dòng
+         trừ vào sổ lương, cùng giao dịch với hoá đơn */
+      if (salaryUse > 0) {
+        run('UPDATE sales SET salary_amount = ?, salary_employee_id = ? WHERE id = ?', [salaryUse, salaryEmp.id, saleId]);
+        recordSalePurchase({
+          employeeId: salaryEmp.id, amount: salaryUse, saleId, saleCode: code,
+          date: String(b.ts || '').slice(0, 10) || null, userId: b.user_id || null,
+        });
+      }
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
@@ -544,7 +573,7 @@ export function createSale(b) {
       }
       return {
         id: saleId, code, total, paid, change_given: changeGiven,
-        cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy,
+        cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy, salary_amount: salaryUse,
       };
   });
 }
@@ -614,11 +643,22 @@ r.post('/sales/:id/cancel', (req, res) => {
         refType: 'sale', refId: s.id, refCode: s.code, note: `Huỷ hoá đơn ${s.code}`,
       });
     }
-    if (s.paid > 0) {
+    /* Phần trả bằng lương không hoàn tiền mặt — đảo lại vào sổ lương (PAY-403),
+       trừ phần đã hoàn vào lương qua phiếu trả hàng trước đó */
+    const salaryPaid = Math.max(0, Number(s.salary_amount) || 0);
+    if (salaryPaid > 0) {
+      const refunded = get('SELECT COALESCE(SUM(salary_refund), 0) AS n FROM sale_returns WHERE sale_id = ?', [s.id]).n;
+      reverseSalePurchase({
+        employeeId: s.salary_employee_id, amount: salaryPaid - refunded, refType: 'sale_cancel', refId: s.id,
+        refCode: s.code, saleCode: s.code, userId: req.user?.id || null, reason: `Huỷ hoá đơn ${s.code}`,
+      });
+    }
+    const cashBack = s.paid - salaryPaid;
+    if (cashBack > 0) {
       const accountId = defaultCashAccount();
       const cust = s.customer_id ? get('SELECT name FROM customers WHERE id = ?', [s.customer_id]) : null;
       if (accountId) addCashTx({
-        accountId, direction: 'out', amount: s.paid, category: 'sale_return',
+        accountId, direction: 'out', amount: cashBack, category: 'sale_return',
         partnerType: 'customer', partnerId: s.customer_id, partnerName: cust?.name || 'Khách lẻ',
         refType: 'sale', refId: s.id, refCode: s.code,
         note: `Hoàn tiền do huỷ hoá đơn ${s.code}`,
@@ -752,7 +792,7 @@ function returnedByLine(saleId, lines) {
   return done;
 }
 
-const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher'];
+const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher', 'salary'];
 
 /**
  * Lập phiếu khách trả hàng. Dùng chung cho màn hình Hoá đơn và cho việc
@@ -834,6 +874,10 @@ export function createSaleReturn(b) {
   if (method === 'debt' && !customerId) {
     throw badRequest('Cấn trừ vào công nợ thì phải có khách hàng.', 'DEBT_NEEDS_CUSTOMER');
   }
+  /* Hoàn vào lương (plan 28): chỉ hoá đơn gốc đã trả bằng lương */
+  if (method === 'salary' && !(sale && sale.salary_amount > 0 && sale.salary_employee_id)) {
+    throw badRequest('Chỉ hoá đơn trả bằng cách trừ vào lương mới hoàn lại vào lương được.', 'SALARY_REFUND_NOT_ALLOWED');
+  }
 
   return tx(() => {
     const defectWh = items.some((i) => i.condition === 'defect') ? ensureDefectWarehouse() : null;
@@ -853,7 +897,7 @@ export function createSaleReturn(b) {
 
     /* Tiền mặt / chuyển khoản mới chi ra quỹ. Cấn trừ nợ và phiếu đổi hàng
        thì không đụng tới quỹ. */
-    const moneyBack = method === 'debt' || method === 'voucher'
+    const moneyBack = method === 'debt' || method === 'voucher' || method === 'salary'
       ? 0
       : Math.min(Math.max(0, Math.round(Number(b.refunded) || 0)), Math.max(total, 0));
     const code = nextCode('sale_returns', 'TH');
@@ -905,6 +949,24 @@ export function createSaleReturn(b) {
         note: `Hoàn tiền trả hàng ${code}`, ts: b.ts || null,
       });
     }
+    /* Hoàn vào lương theo đúng giá khách thực trả của phần hàng trả (PAY-404),
+       không vượt số đã trừ lương của hoá đơn gốc */
+    if (method === 'salary' && total > 0) {
+      const used = get('SELECT COALESCE(SUM(salary_refund), 0) AS n FROM sale_returns WHERE sale_id = ? AND id <> ?',
+        [sale.id, returnId]).n;
+      const room = Math.max(0, sale.salary_amount - used);
+      if (total > room) {
+        const vnd = (v) => Math.round(v).toLocaleString('vi-VN');
+        throw badRequest(`Hoá đơn ${sale.code} trừ lương ${vnd(sale.salary_amount)} đ`
+          + `${used ? `, đã hoàn vào lương ${vnd(used)} đ` : ''} — chỉ hoàn vào lương được tối đa ${vnd(room)} đ.`,
+        'SALARY_REFUND_EXCEEDED');
+      }
+      run('UPDATE sale_returns SET salary_refund = ? WHERE id = ?', [total, returnId]);
+      reverseSalePurchase({
+        employeeId: sale.salary_employee_id, amount: total, refType: 'sale_return', refId: returnId, refCode: code,
+        saleCode: sale.code, userId: b.user_id || null, reason: `Trả hàng ${code} của hoá đơn ${sale.code}`,
+      });
+    }
     if (method === 'voucher' && total > 0) {
       voucher = createVoucher({
         amount: total, customerId, sourceType: 'sale_return', sourceId: returnId, sourceCode: code,
@@ -949,6 +1011,12 @@ r.post('/sale-exchanges', (req, res) => {
     return res.status(400).json({ error: 'Chưa chọn món khách trả lại' });
   }
   const method = REFUND_METHODS.includes(b.refund_method) ? b.refund_method : 'cash';
+  if (method === 'salary') {
+    return res.status(400).json({
+      error: 'Đổi hàng không hoàn vào lương được — lập phiếu trả hàng riêng rồi bán hoá đơn mới.',
+      code: 'SALARY_EXCHANGE',
+    });
+  }
 
   try {
     const out = tx(() => {

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { api } from './api';
+import { api, setPayrollToken } from './api';
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
@@ -71,6 +71,7 @@ export function AppProvider({ children }) {
   const logout = useCallback(() => {
     setUser(null);
     localStorage.removeItem(LS_USER);
+    setPayrollToken('');
     setAccess({ can: [], permissions: {}, login_required: true });
   }, []);
 

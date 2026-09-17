@@ -263,6 +263,8 @@ export default function SaleReturnForm({ sale, user, accounts, onClose, onDone }
           <div className="space-y-3">
             <Field label="Trả lại khách bằng">
               <RefundMethodPicker value={method} hasCustomer={!!sale.customer_id} name="sr-refund"
+                salary={sale.salary_amount > 0
+                  ? { name: sale.salary_employee_name, max: Math.max(0, sale.salary_amount - (sale.salary_refunded || 0)) } : null}
                 onChange={(m) => { setMethod(m); setAccountId(''); }} />
             </Field>
 
@@ -296,7 +298,8 @@ export default function SaleReturnForm({ sale, user, accounts, onClose, onDone }
               )}
               <div className="flex justify-between pt-1.5 border-t border-line font-bold">
                 <span>
-                  {method === 'voucher' ? 'Cấp phiếu đổi hàng' : method === 'debt' ? 'Cấn trừ vào công nợ' : 'Khách được nhận'}
+                  {method === 'voucher' ? 'Cấp phiếu đổi hàng' : method === 'debt' ? 'Cấn trừ vào công nợ'
+                    : method === 'salary' ? 'Hoàn vào lương' : 'Khách được nhận'}
                 </span>
                 <span className="tabular font-mono text-accent">{money(total)}</span>
               </div>

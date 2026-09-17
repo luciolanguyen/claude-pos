@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, Receipt, Users, Undo2, Wallet, Package,
   Truck, FileText, Boxes, ClipboardCheck, ArrowLeftRight, Settings as Cog,
   BarChart3, LogOut, Menu, X, ChevronDown, Zap, HandCoins, UserCog, Landmark, Wrench,
-  ShieldCheck, ClipboardList, PackageX, Handshake,
+  ShieldCheck, ClipboardList, PackageX, Handshake, IdCard,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { ROLE_LABEL } from '../lib/format';
@@ -49,14 +49,17 @@ export const NAV = [
   { to: '/cash', icon: Wallet, label: 'Quỹ tiền', perm: 'cash.manage' },
   /* Hàng người khác gửi bán qua tiệm (tài liệu 24, mục 5.3) */
   { to: '/consign', icon: Handshake, label: 'Đối tác vãng lai', perm: 'cash.manage' },
+  /* Bảng lương (plan 28): tiệm tắt đăng nhập thì ẩn hẳn — không có ai để phân quyền */
+  { to: '/payroll', icon: IdCard, label: 'Lương nhân viên', perm: 'payroll.manage', needsLogin: true },
   { to: '/reports', icon: BarChart3, label: 'Báo cáo', perm: 'report.view' },
   { to: '/settings', icon: Cog, label: 'Thiết lập', perm: 'settings.manage' },
 ];
 
 /** Lọc menu theo quyền. Nhóm mất hết con thì bỏ luôn nhóm. */
-export function visibleNav(can) {
+export function visibleNav(can, loginRequired = true) {
   const out = [];
   for (const item of NAV) {
+    if (item.needsLogin && !loginRequired) continue;
     if (item.children) {
       const kids = item.children.filter((c) => !c.perm || can(c.perm));
       if (kids.length) out.push({ ...item, children: kids });
@@ -140,8 +143,8 @@ function NavItem({ item, onNavigate }) {
 }
 
 export default function Layout({ children }) {
-  const { store, user, logout, can } = useApp();
-  const nav = visibleNav(can);
+  const { store, user, logout, can, access } = useApp();
+  const nav = visibleNav(can, access?.login_required !== false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const loc = useLocation();
 

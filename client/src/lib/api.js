@@ -11,11 +11,33 @@ function currentUserId() {
   }
 }
 
+/* Phiên mở bảng lương bằng mã PIN (plan 28). Giữ trong sessionStorage: đóng
+   thẻ trình duyệt là phải gõ PIN lại, và không bao giờ nằm lâu trên máy. */
+const SS_PAYROLL = 'thpos.payroll';
+export function payrollToken() {
+  try { return sessionStorage.getItem(SS_PAYROLL) || ''; } catch { return ''; }
+}
+export function setPayrollToken(token) {
+  try {
+    if (token) sessionStorage.setItem(SS_PAYROLL, token);
+    else sessionStorage.removeItem(SS_PAYROLL);
+  } catch { /* trình duyệt chặn bộ nhớ phiên — lần sau hỏi PIN lại */ }
+}
+/** Đường dẫn ảnh phiếu ứng: thẻ <img> không gửi được header nên kèm id và phiên trên địa chỉ */
+export function payrollPhotoUrl(file) {
+  const q = new URLSearchParams({ uid: String(currentUserId() || ''), pt: payrollToken() });
+  return `${BASE}/payroll/photo/${encodeURIComponent(file)}?${q}`;
+}
+
 async function request(method, path, body) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
   const uid = currentUserId();
   if (uid) headers['x-user-id'] = String(uid);
+  if (path.startsWith('/payroll')) {
+    const pt = payrollToken();
+    if (pt) headers['x-payroll-token'] = pt;
+  }
 
   const res = await fetch(BASE + path, {
     method,

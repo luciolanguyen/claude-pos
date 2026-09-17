@@ -22,6 +22,8 @@ import posExtras from './routes/pos-extras.js';
 import consign from './routes/consign.js';
 import debts from './routes/debts.js';
 import barcodes from './routes/barcodes.js';
+import payroll from './routes/payroll.js';
+import { cleanupPayrollPhotos } from './payroll.js';
 import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
@@ -48,7 +50,7 @@ app.use(express.json({ limit: '80mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-payroll-token');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -148,7 +150,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
+app.use('/api', payroll, debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));
@@ -178,10 +180,13 @@ function lanAddresses() {
 
 // Dọn ảnh bảo hành quá hạn: chạy lúc khởi động rồi mỗi 24 giờ một lần.
 // Máy chủ trong tiệm thường bật cả ngày nên không cần lịch phức tạp.
-try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
-setInterval(() => {
+/* Ảnh phiếu ứng lương của kỳ đã chốt: xoá sau số tháng chủ tiệm đặt (plan 28, §7.3) */
+const cleanupAll = () => {
   try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
-}, 24 * 60 * 60 * 1000).unref();
+  try { cleanupPayrollPhotos(); } catch (e) { console.error('[dọn ảnh lương] lỗi:', e.message); }
+};
+cleanupAll();
+setInterval(cleanupAll, 24 * 60 * 60 * 1000).unref();
 
 /* ------------------------------ HTTPS nội bộ ------------------------------ */
 let httpsServer = null;

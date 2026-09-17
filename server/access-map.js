@@ -25,6 +25,12 @@ export const ACCESS_RULES = [
   ['GET',  /^\/product-image\//,          null],
   ['GET',  /^\/pos-featured$/,            null],
 
+  /* --- Bảng lương (plan 28): đặt trước mọi luật rộng. Thu ngân bấm "Trừ vào
+     lương" ở quầy chỉ đọc được TÊN nhân viên để chọn — không thấy lương,
+     không thấy số dư. Mọi đường khác còn phải mở bằng PIN (routes/payroll.js). --- */
+  ['GET',  /^\/payroll\/employee-names$/,  'sale.pos'],
+  ['*',    /^\/payroll/,                   'payroll.manage'],
+
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],
   ['POST', /^\/sales$/,                   'sale.pos'],

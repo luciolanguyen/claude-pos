@@ -27,6 +27,11 @@ export const PRODUCT_DIR = path.join(
   DATA_DIR, DB_NAME === 'pos' ? 'products' : `products-${DB_NAME}`);
 if (!fs.existsSync(PRODUCT_DIR)) fs.mkdirSync(PRODUCT_DIR, { recursive: true });
 
+/* Ảnh phiếu ứng lương có chữ ký (plan 28, §7.2) — cùng cách bám tên CSDL */
+export const PAYROLL_DIR = path.join(
+  DATA_DIR, DB_NAME === 'pos' ? 'payroll' : `payroll-${DB_NAME}`);
+if (!fs.existsSync(PAYROLL_DIR)) fs.mkdirSync(PAYROLL_DIR, { recursive: true });
+
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
@@ -339,6 +344,17 @@ addColumns('purchases', {
 });
 addColumns('purchase_items', { line_vat: 'INTEGER', discount_share: 'INTEGER', cost_unit: 'INTEGER' });
 addColumns('suppliers', { vat_in_cost: 'INTEGER NOT NULL DEFAULT 0', vat_discount_mode: 'TEXT' });
+
+/* Mua hàng trừ vào lương nhân viên (plan 28, §6). Là TIỀN TRẢ BẰNG CÁCH KHÁC,
+   không phải giảm giá: ghi vào discount thì sai căn cứ tính VAT và thổi phồng
+   báo cáo giảm giá. Phần này cộng vào paid nên không thành nợ của khách, và
+   không sinh phiếu thu vì không có đồng nào vào két. */
+addColumns('sales', {
+  salary_amount: 'INTEGER NOT NULL DEFAULT 0',
+  salary_employee_id: 'INTEGER',
+});
+/* Trả hàng của hoá đơn trừ lương: hoàn lại vào lương, không chi tiền, không trừ nợ */
+addColumns('sale_returns', { salary_refund: 'INTEGER NOT NULL DEFAULT 0' });
 
 /* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
 addColumns('sale_order_deposits', { payer_name: 'TEXT' });
@@ -1102,8 +1118,10 @@ export const saleOwedSql = (a = 's') => `MAX(0, CASE
  * nghìn lấy món 500 nghìn thì nợ bị ghi thấp đi 300 nghìn so với thật.
  * Công thức này sửa luôn cả các phiếu đổi hàng cũ.
  */
+/* Hoàn vào lương nhân viên (plan 28): hoá đơn gốc trả bằng lương, khách chưa từng
+   nợ đồng nào — hoàn lại vào sổ lương, không được trừ vào nợ của khách. */
 export const returnCreditSql = (a = 'sr') => `(CASE
-    WHEN ${a}.refund_method = 'voucher' THEN 0
+    WHEN ${a}.refund_method IN ('voucher', 'salary') THEN 0
     WHEN ${a}.exchange_sale_id IS NOT NULL THEN ${a}.debt_offset
     ELSE ${a}.total - ${a}.refunded
   END)`;

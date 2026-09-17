@@ -23,6 +23,7 @@ import Consign from './pages/Consign';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Orders from './pages/Orders';
+import Payroll from './pages/Payroll';
 
 /* ==================================================================== */
 /* Đăng nhập — nhẹ nhàng, chỉ để ghi nhận ai đang bán                    */
@@ -241,6 +242,8 @@ function Shell() {
               <Route path="cash" element={<Guard perm="cash.manage"><Cash /></Guard>} />
               {/* Đối soát hàng gửi bán của chủ vãng lai (tài liệu 24, mục 5.3) */}
               <Route path="consign" element={<Guard perm="cash.manage"><Consign /></Guard>} />
+              {/* Lương nhân viên (plan 28) — trang tự khoá thêm bằng mã PIN */}
+              <Route path="payroll" element={<Guard perm="payroll.manage"><Payroll /></Guard>} />
               <Route path="reports" element={<Guard perm="report.view"><Reports /></Guard>} />
               <Route path="settings" element={<Guard perm="settings.manage"><Settings /></Guard>} />
 

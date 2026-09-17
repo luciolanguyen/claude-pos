@@ -31,6 +31,9 @@ export const PERMISSIONS = {
   /* Sửa số công nợ và chốt sổ công nợ (plan 31, 6b / 6c): chủ tiệm chốt cho
      cả chủ và quản lý, nhưng mỗi lần sửa vẫn bắt gõ PIN, ghi lý do, lưu vết */
   'debt.adjust':     'Sửa công nợ, chốt sổ công nợ',
+  /* Bảng lương (plan 28): chủ tiệm chốt quản lý xem được y như chủ (28-1).
+     Mở bảng lương còn phải gõ mã PIN mỗi phiên — xem routes/payroll.js */
+  'payroll.manage':  'Bảng lương nhân viên',
   'report.view':     'Xem báo cáo',
   /* Nhập / xuất hàng loạt tách riêng khỏi quyền sửa hàng hoá: một lần nhập
      file sai là hỏng cả danh mục, mà xuất file là mang dữ liệu tiệm ra
