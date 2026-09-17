@@ -291,6 +291,14 @@ function hydrate(p) {
     FROM stock s JOIN warehouses w ON w.id = s.warehouse_id
     WHERE s.product_id = ?`, [p.id]);
   p.total_stock = p.stock.reduce((a, s) => a + s.qty, 0);
+  /* Giá nhập gần nhất quy về đơn vị cơ bản + ngày (plan 31, 1.4a / 1.4b) */
+  const lastIn = get(`
+    SELECT CAST(ROUND(pi.price * 1.0 / COALESCE(NULLIF(pi.factor, 0), 1)) AS INTEGER) AS price, pu.ts
+    FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+    WHERE pi.product_id = ? AND pu.status = 'done'
+    ORDER BY pu.ts DESC, pi.id DESC LIMIT 1`, [p.id]);
+  p.last_purchase_price = lastIn?.price ?? null;
+  p.last_purchase_at = lastIn?.ts ?? null;
   return p;
 }
 
@@ -431,6 +439,11 @@ r.get('/products/pos', (req, res) => {
               FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
              WHERE pi.product_id = p.id AND pu.status = 'done'
              ORDER BY pu.ts DESC, pi.id DESC LIMIT 1) AS last_purchase_price,
+           /* Ngày của hai con số trên (plan 31, hạng mục 1.4b) — tên có "cost" /
+              "purchase" nên cũng bị cắt với người không xem được giá vốn */
+           p.cost_updated_at,
+           (SELECT MAX(pu.ts) FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+             WHERE pi.product_id = p.id AND pu.status = 'done') AS last_purchase_at,
            COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0) AS stock
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
     WHERE p.active = 1 ORDER BY p.name`, [warehouseId]);

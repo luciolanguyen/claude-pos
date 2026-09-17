@@ -156,6 +156,7 @@ r.get('/suppliers/:id', (req, res) => {
     FROM purchases p WHERE p.supplier_id = ? ORDER BY p.id DESC LIMIT 200`, [s.id]);
   s.returns = all(`
     SELECT pr.id, pr.code, pr.ts, pr.subtotal, pr.expense, pr.total, pr.refunded, pr.reason, pr.mode,
+           pr.sent_at, pr.received_at, pr.settle_method,
            p.code AS purchase_code
     FROM purchase_returns pr LEFT JOIN purchases p ON p.id = pr.purchase_id
     WHERE pr.supplier_id = ? ORDER BY pr.id DESC LIMIT 200`, [s.id]);

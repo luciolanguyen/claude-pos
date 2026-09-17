@@ -16,6 +16,7 @@ import {
   Store, MapPin, History,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { DUE, DueBadge } from '../components/PosOrders';
 import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
 import { money, n, qty as fq, date, datetime, isoDate, match, matchMode, readMoney, ROLE_LABEL } from '../lib/format';
 import {
@@ -114,6 +115,19 @@ function OrderList() {
         />
       </div>
 
+      {/* Đèn hạn giao của các đơn còn chờ (plan 31, 1.5b) */}
+      {sum?.open_count > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] px-1" aria-label="Hạn giao các đơn đang chờ">
+          {['late', 'today', 'soon', 'later'].map((k) => (
+            <span key={k} className={`inline-flex items-center gap-1.5 ${sum?.[`${k}_count`] ? '' : 'text-muted-ink'}`}>
+              <span className={`w-2.5 h-2.5 rounded-full ${DUE[k].dot}`} aria-hidden="true" />
+              <b className="tabular">{n(sum?.[`${k}_count`] || 0)}</b> {DUE[k].label.toLowerCase()}
+            </span>
+          ))}
+          <span className="text-2xs text-muted-ink">Gần hạn: còn tối đa 1 ngày làm việc, không tính Thứ 7 và Chủ nhật</span>
+        </div>
+      )}
+
       <div className="card">
         <div className="p-3 flex flex-wrap items-center gap-2 border-b border-line">
           <SearchInput
@@ -174,11 +188,13 @@ function OrderList() {
                           </td>
                           <td className="whitespace-nowrap">
                             {o.promised_at ? (
-                              <span className={o.is_late ? 'text-danger font-semibold' : ''}>
-                                {date(o.promised_at)}
-                                {/* is_late là 0/1 của SQLite; thiếu !! thì React in ra số 0 */}
-                                {!!o.is_late && <span className="ml-1 text-2xs">(trễ)</span>}
-                              </span>
+                              <div className="flex flex-col items-start gap-0.5">
+                                <span className={o.due_state === 'late' ? 'text-danger font-semibold' : ''}>
+                                  {date(o.promised_at)}
+                                </span>
+                                {/* Đèn hạn giao (plan 31, 1.5b) — gần hạn không tính T7, CN */}
+                                <DueBadge state={o.due_state} />
+                              </div>
                             ) : <span className="text-muted-ink">—</span>}
                           </td>
                           <td className="text-right tabular font-semibold">{money(o.total)}</td>

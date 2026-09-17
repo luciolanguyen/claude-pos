@@ -122,13 +122,45 @@ r.get('/orders', (req, res) => {
     LEFT JOIN users u ON u.id = o.user_id
     ${w}
     ORDER BY o.id DESC
-    LIMIT ${size} OFFSET ${(p - 1) * size}`, params);
+    LIMIT ${size} OFFSET ${(p - 1) * size}`, params)
+    .map((o) => ({ ...o, due_state: ['open', 'partial'].includes(o.status) ? dueState(o.promised_at) : null }));
 
   res.json({ rows, total, page: p, page_size: size });
 });
 
+/**
+ * Đèn hạn giao của đơn đặt (plan 31, hạng mục 1.5b):
+ *   late   đã quá ngày hẹn
+ *   today  hẹn giao hôm nay
+ *   soon   gần đến hạn — chỉ còn tối đa MỘT ngày làm việc tới ngày hẹn,
+ *          KHÔNG đếm Thứ 7 và Chủ nhật (thứ Sáu thì đơn hẹn thứ Hai đã sáng đèn)
+ *   later  chưa đến hạn
+ */
+export function dueState(promisedAt, now = new Date()) {
+  if (!promisedAt) return null;
+  const due = String(promisedAt).slice(0, 10);
+  const today = now.toLocaleDateString('sv-SE');
+  if (due < today) return 'late';
+  if (due === today) return 'today';
+  const d = new Date(`${today}T00:00:00`);
+  let work = 0;
+  for (let i = 0; i < 400; i += 1) {
+    d.setDate(d.getDate() + 1);
+    const wd = d.getDay();
+    if (wd !== 0 && wd !== 6) work += 1;
+    if (work > 1) return 'later';
+    if (d.toLocaleDateString('sv-SE') >= due) break;
+  }
+  return 'soon';
+}
+
 /** Số liệu nhanh cho thẻ tóm tắt phía trên danh sách. */
 r.get('/orders-summary', (req, res) => {
+  /* Đếm theo đèn hạn giao — tính bằng JS vì phải bỏ Thứ 7, Chủ nhật */
+  const due = { late: 0, today: 0, soon: 0, later: 0, none: 0 };
+  for (const o of all(`SELECT promised_at FROM sale_orders WHERE status IN ('open','partial')`)) {
+    due[dueState(o.promised_at) || 'none'] += 1;
+  }
   const s = get(`
     SELECT
       SUM(CASE WHEN status IN ('open','partial') THEN 1 ELSE 0 END) AS open_count,
@@ -142,6 +174,9 @@ r.get('/orders-summary', (req, res) => {
     open_value: s?.open_value || 0,
     deposit_held: s?.deposit_held || 0,
     late_count: s?.late_count || 0,
+    today_count: due.today,
+    soon_count: due.soon,
+    later_count: due.later,
   });
 });
 

@@ -115,7 +115,10 @@ const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'm
      số trả chủ hàng = tiền bán − hoa hồng, lộ ra thì trừ ngược ra hoa hồng
      (plan 31, 1.1d). Thu ngân vẫn khai mức hoa hồng lúc bán — khoá đó tên
      commission_value, không bị cắt. */
-  'commission', 'payable', 'consign_commission'];
+  'commission', 'payable', 'consign_commission',
+  /* Ngày cập nhật giá vốn / ngày nhập gần nhất (plan 31, 1.4b) đi kèm con số, chủ tiệm chốt
+     chỉ người xem được giá vốn mới thấy */
+  'cost_updated_at', 'last_purchase_at'];
 
 /* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
    chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */

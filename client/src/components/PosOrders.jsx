@@ -32,6 +32,31 @@ import InvoicePrint from './InvoicePrint';
  * Đếm đơn tới hẹn giao hôm nay và đơn đã quá hẹn. Tự làm mới mỗi 5 phút —
  * đủ để không bỏ sót mà không làm nặng máy chủ.
  */
+/* ================== ĐÈN HẠN GIAO (plan 31, hạng mục 1.5b) =================
+ * Máy chủ tính sẵn `due_state` cho đơn còn chờ giao:
+ *   late   quá ngày hẹn          · today  hẹn giao hôm nay
+ *   soon   còn tối đa một ngày làm việc — KHÔNG đếm Thứ 7, Chủ nhật
+ *   later  chưa tới hạn
+ */
+export const DUE = {
+  late: { label: 'Trễ hẹn', short: 'trễ', dot: 'bg-red-500', pill: 'bg-red-50 border-red-300 text-red-800' },
+  today: { label: 'Giao hôm nay', short: 'hôm nay', dot: 'bg-orange-500', pill: 'bg-orange-50 border-orange-300 text-orange-900' },
+  soon: { label: 'Gần hạn', short: 'gần hạn', dot: 'bg-amber-400', pill: 'bg-amber-50 border-amber-300 text-amber-900' },
+  later: { label: 'Chưa tới hạn', short: 'chưa tới', dot: 'bg-emerald-500', pill: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
+};
+
+/** Nhãn đèn hạn giao cạnh ngày hẹn. */
+export function DueBadge({ state }) {
+  const d = DUE[state];
+  if (!d) return null;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-2xs font-semibold whitespace-nowrap ${d.pill}`}>
+      <span className={`w-2 h-2 rounded-full ${d.dot}`} aria-hidden="true" />
+      {d.label}
+    </span>
+  );
+}
+
 export function OrderBell({ onOpen }) {
   const { data, reload } = useFetch(() => api.ordersSummary(), []);
 
@@ -40,23 +65,38 @@ export function OrderBell({ onOpen }) {
     return () => clearInterval(t);
   }, [reload]);
 
-  const late = data?.late_count || 0;
   const open = data?.open_count || 0;
   if (!open) return null;
+  const counts = {
+    late: data?.late_count || 0, today: data?.today_count || 0,
+    soon: data?.soon_count || 0, later: data?.later_count || 0,
+  };
+  /* Chỉ hiện những đèn đang sáng; không đơn nào gấp thì hiện tổng số đơn */
+  const lit = ['late', 'today', 'soon'].filter((k) => counts[k] > 0);
+  const tone = counts.late ? 'bg-red-500/20 border-red-400/40 text-red-100 hover:bg-red-500/30'
+    : counts.today ? 'bg-orange-500/20 border-orange-400/40 text-orange-100 hover:bg-orange-500/30'
+      : counts.soon ? 'bg-amber-400/15 border-amber-300/40 text-amber-100 hover:bg-amber-400/25'
+        : 'bg-white/10 border-white/15 text-slate-300 hover:text-white';
+  const summary = ['late', 'today', 'soon', 'later']
+    .filter((k) => counts[k] > 0)
+    .map((k) => `${counts[k]} đơn ${DUE[k].label.toLowerCase()}`)
+    .join(' · ');
 
   return (
     <button
       onClick={onOpen}
-      className={`relative h-9 px-2.5 rounded border text-[13px] font-semibold hidden md:flex items-center gap-1.5
-                  transition-colors duration-150 cursor-pointer
-                  ${late > 0
-                    ? 'bg-red-500/20 border-red-400/40 text-red-200 hover:bg-red-500/30'
-                    : 'bg-white/10 border-white/15 text-slate-300 hover:text-white'}`}
-      title={late > 0 ? `${late} đơn đặt hàng đã quá hẹn giao` : `${open} đơn đặt hàng đang chờ`}
-      aria-label={late > 0 ? `${late} đơn đặt hàng quá hẹn, ${open} đơn đang chờ` : `${open} đơn đặt hàng đang chờ`}
+      className={`relative h-9 px-2.5 rounded border text-[13px] font-semibold hidden md:flex items-center gap-2
+                  transition-colors duration-150 cursor-pointer ${tone}`}
+      title={`${summary}${counts.soon ? ' (gần hạn không tính Thứ 7, Chủ nhật)' : ''}`}
+      aria-label={`Đơn đặt hàng: ${summary || `${open} đơn đang chờ`}`}
     >
       <Bell size={14} aria-hidden="true" />
-      {late > 0 ? `${n(late)} trễ hẹn` : `${n(open)} đơn`}
+      {lit.length ? lit.map((k) => (
+        <span key={k} className="inline-flex items-center gap-1 whitespace-nowrap">
+          <span className={`w-2 h-2 rounded-full ${DUE[k].dot}`} aria-hidden="true" />
+          <span className="tabular">{n(counts[k])}</span> {DUE[k].short}
+        </span>
+      )) : `${n(open)} đơn`}
     </button>
   );
 }
@@ -306,11 +346,12 @@ export function PickOrderModal({ open, onClose, onDelivered }) {
                           {o.phone_display && <div className="text-2xs text-muted-ink tabular">{o.phone_display}</div>}
                         </td>
                         <td className="whitespace-nowrap">
-                          {o.promised_at
-                            ? <span className={o.is_late ? 'text-danger font-semibold' : ''}>
-                                {date(o.promised_at)}{!!o.is_late && ' (trễ)'}
-                              </span>
-                            : <span className="text-muted-ink">—</span>}
+                          {o.promised_at ? (
+                            <div className="flex flex-col items-start gap-0.5">
+                              <span className={o.due_state === 'late' ? 'text-danger font-semibold' : ''}>{date(o.promised_at)}</span>
+                              <DueBadge state={o.due_state} />
+                            </div>
+                          ) : <span className="text-muted-ink">—</span>}
                         </td>
                         <td className="text-right tabular">{money(o.total)}</td>
                         <td className="text-right tabular">

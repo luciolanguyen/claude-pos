@@ -121,15 +121,29 @@ export default function CartPickerModal({
   lines = [], onAdd, onPatch, onRemove, amountOf, priceOf, priceLabel = 'Đơn giá',
   editPrice = true, title, subtitle, onCreateRequest, footerNote,
   noQty = false, fields = null, showPrice = true, rightCol = null,
+  /* Phiếu nhập NCC (plan 31, hạng mục 5.1b): hộp rộng hết cỡ màn hình, và mỗi
+     dòng có ô số lượng + nút giỏ y như hộp chọn hàng của đơn khách đặt */
+  wide = false, qtyEntry = false,
 }) {
   const { meta } = useApp();
   const [q, setQ] = useState('');
   const [mode, setMode] = useState('contains');
   const [cat, setCat] = useState('');
+  const [want, setWant] = useState({});   // product_id -> số đang gõ, chưa bấm giỏ
   const t = themeOf(kind);
   const Icon = t.icon;
 
-  useEffect(() => { if (open) setQ(''); }, [open]);
+  useEffect(() => { if (open) { setQ(''); setWant({}); } }, [open]);
+
+  /* Bấm nút giỏ: chưa có thì thêm đúng số đã gõ; có rồi thì ghi đè số lượng */
+  const take = (p, value) => {
+    const v = Number(value) || 0;
+    if (!(v > 0)) return;
+    const line = lines.find((l) => l.product_id === p.id);
+    if (line) onPatch(line.key, { qty: v });
+    else onAdd(p, v);
+    setWant((m) => { const c = { ...m }; delete c[p.id]; return c; });
+  };
 
   const branch = useMemo(
     () => (cat ? categoryBranch(meta.categories, cat) : null), [meta.categories, cat]);
@@ -172,7 +186,7 @@ export default function CartPickerModal({
       onClose={onClose}
       title={title || `Chọn hàng — ${t.label}`}
       subtitle={subtitle || `${t.flow}. Sửa ở đây là phiếu bên dưới đổi theo ngay.`}
-      size="xl"
+      size={wide ? 'full' : 'xl'}
       footer={<>
         <span className="mr-auto text-[13px]">
           {showPrice && !noQty
@@ -191,7 +205,7 @@ export default function CartPickerModal({
         <span className="text-2xs">· {t.flow}</span>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <div className={`grid gap-3 ${wide ? 'lg:grid-cols-[minmax(0,1fr)_420px]' : 'lg:grid-cols-[minmax(0,1fr)_380px]'}`}>
         {/* ------------------------- Tìm hàng ------------------------- */}
         <div className="space-y-2 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -224,14 +238,16 @@ export default function CartPickerModal({
                 : null}
             />
           ) : (
-            <div className="table-wrap max-h-[52vh]">
+            <div className={`table-wrap ${wide ? 'max-h-[calc(100vh-19rem)]' : 'max-h-[52vh]'}`}>
               <table className="data">
                 <thead>
                   <tr>
                     <th>Tên hàng</th>
                     <th className="text-right">Tồn kho</th>
                     {showPrice && <th className="text-right">{priceLabel}</th>}
-                    <th style={{ width: 96 }} />
+                    {qtyEntry
+                      ? <th style={{ width: 196 }} className="text-right">Số lượng</th>
+                      : <th style={{ width: 96 }} />}
                   </tr>
                 </thead>
                 <tbody>
@@ -252,13 +268,54 @@ export default function CartPickerModal({
                         {showPrice && (
                           <td className="num">{money(priceOf ? priceOf(p) : p.cost_price)}</td>
                         )}
-                        <td className="text-right">
-                          <Button size="sm" variant={c ? 'primary' : 'soft'} icon={Plus}
-                            onClick={() => onAdd(p, 1)}
-                            aria-label={c ? `Thêm 1 ${p.name}, đang có ${fq(c)} trong giỏ` : `Thêm ${p.name}`}>
-                            {c ? fq(c) : 'Thêm'}
-                          </Button>
-                        </td>
+                        {qtyEntry ? (
+                          <td>
+                            {(() => {
+                              const value = want[p.id] ?? (c || 1);
+                              const changed = c > 0 && Number(value) !== c;
+                              return (
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <QtyInput
+                                    value={value}
+                                    min={0}
+                                    className="!w-20"
+                                    onChange={(v) => setWant((m) => ({ ...m, [p.id]: v }))}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); take(p, value); } }}
+                                    aria-label={`Số lượng ${p.name}`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => take(p, value)}
+                                    disabled={!(Number(value) > 0)}
+                                    aria-pressed={c > 0}
+                                    aria-label={c
+                                      ? `${p.name} đang có ${fq(c)} trên phiếu — bấm để đổi thành ${fq(value)}`
+                                      : `Thêm ${fq(value)} ${p.name} vào phiếu`}
+                                    className={`h-8 min-w-[5.25rem] px-2 rounded border text-[13px] font-semibold inline-flex items-center
+                                                justify-center gap-1 cursor-pointer transition-colors duration-150 disabled:opacity-50
+                                                disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2
+                                                focus-visible:outline-offset-1 focus-visible:outline-accent
+                                                ${c
+                                                  ? (changed ? 'bg-amber-500 border-amber-600 text-white hover:bg-amber-600'
+                                                    : 'bg-accent border-accent text-white hover:bg-emerald-700')
+                                                  : 'bg-card border-line hover:bg-muted'}`}
+                                  >
+                                    <ShoppingCart size={14} aria-hidden="true" />
+                                    {c ? `(${fq(c)})` : 'Thêm'}
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                        ) : (
+                          <td className="text-right">
+                            <Button size="sm" variant={c ? 'primary' : 'soft'} icon={Plus}
+                              onClick={() => onAdd(p, 1)}
+                              aria-label={c ? `Thêm 1 ${p.name}, đang có ${fq(c)} trong giỏ` : `Thêm ${p.name}`}>
+                              {c ? fq(c) : 'Thêm'}
+                            </Button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -281,7 +338,7 @@ export default function CartPickerModal({
               Chưa chọn hàng nào. Bấm <b>Thêm</b> ở danh sách bên trái.
             </p>
           ) : (
-            <ul className="divide-y divide-line max-h-[52vh] overflow-y-auto">
+            <ul className={`divide-y divide-line overflow-y-auto ${wide ? 'max-h-[calc(100vh-19rem)]' : 'max-h-[52vh]'}`}>
               {lines.map((l) => (
                 <li key={l.key} className="py-2">
                   <div className="flex items-start gap-2">

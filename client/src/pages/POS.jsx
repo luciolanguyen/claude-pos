@@ -357,7 +357,7 @@ function ProductTile({
            con số, để khách đứng cạnh quầy không đọc trộm được. Phần trăm lãi
            vẫn hiện — biết lãi bao nhiêu phần trăm không suy ra được giá vốn. */
         <div className="text-2xs text-muted-ink tabular border-t border-line pt-0.5 leading-snug">
-          <span className="whitespace-nowrap">
+          <span className="whitespace-nowrap" title={p.cost_updated_at ? `Giá vốn cập nhật ${date(p.cost_updated_at)}` : undefined}>
             Vốn{' '}
             {blindKeys
               ? <b className="font-mono tracking-wider text-ink">{blindCode(p.cost_price, blindKeys.cost)}</b>
@@ -368,12 +368,17 @@ function ProductTile({
               +{Math.round((price - p.cost_price) / p.cost_price * 100)}%
             </span>
           )}
+          {/* Ngày cập nhật giá vốn (plan 31, hạng mục 1.4b) — dd/mm cho gọn ô */}
+          {p.cost_updated_at && (
+            <span className="ml-1 whitespace-nowrap">· {date(p.cost_updated_at).slice(0, 5)}</span>
+          )}
           {p.last_purchase_price > 0 && (
-            <div className="whitespace-nowrap">
-              Nhập gần nhất{' '}
+            <div className="whitespace-nowrap" title={p.last_purchase_at ? `Nhập ngày ${date(p.last_purchase_at)}` : undefined}>
+              Nhập{' '}
               {blindKeys
                 ? <b className="font-mono tracking-wider text-ink">{blindCode(p.last_purchase_price, blindKeys.purchase)}</b>
                 : n(p.last_purchase_price)}
+              {p.last_purchase_at && <> · {date(p.last_purchase_at).slice(0, 5)}</>}
             </div>
           )}
         </div>
@@ -2280,6 +2285,7 @@ export default function POS() {
         <ProductInfoModal
           product={infoOf}
           priceListId={tab.priceListId}
+          blindKeys={blindOn ? blindKeys : null}
           onClose={() => setInfoOf(null)}
         />
       )}

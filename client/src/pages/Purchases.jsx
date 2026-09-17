@@ -1333,6 +1333,8 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         kind="purchase"
+        wide
+        qtyEntry
         products={products || []}
         lines={lines}
         onAdd={addProduct}

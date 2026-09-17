@@ -215,6 +215,61 @@ addColumns('purchase_returns', {
   mode: "TEXT NOT NULL DEFAULT 'free'",             // by_purchase | free
 });
 
+/* Trả hàng NCC — ai trả / ai chịu chi phí, và trạng thái theo dõi (plan 31, đợt 5).
+ *
+ * Chủ tiệm chốt: công nợ NCC CHỈ giảm khi NCC đã nhận hàng trả. Phiếu lập
+ * trước đợt này coi như đã gửi và NCC đã nhận — đánh dấu MỘT LẦN lúc thêm
+ * cột, để số nợ NCC đang có không nhảy sau khi nâng cấp. */
+{
+  const hadStatus = db.prepare('PRAGMA table_info(purchase_returns)').all()
+    .some((c) => c.name === 'received_at');
+  addColumns('purchase_returns', {
+    expense_payer: "TEXT NOT NULL DEFAULT 'supplier'",  // ai đưa tiền trước: shop | supplier
+    expense_bearer: "TEXT NOT NULL DEFAULT 'shop'",     // ai chịu: shop | supplier | split
+    expense_shop: 'INTEGER NOT NULL DEFAULT 0',         // phần tiệm chịu (phần còn lại NCC chịu)
+    expense_cash_tx_id: 'INTEGER',                      // phiếu chi tiền xe khi tiệm trả trước
+    settle_method: "TEXT NOT NULL DEFAULT 'offset'",    // offset: cấn trừ công nợ · refund: NCC hoàn tiền
+    sent_at: 'TEXT',                                    // đã gửi hàng đi
+    received_at: 'TEXT',                                // NCC xác nhận đã nhận — từ lúc này mới trừ nợ
+    issue_note: 'TEXT',                                 // trục trặc: NCC chê hàng, thiếu, hỏng thêm…
+    issue_resolved_at: 'TEXT',
+  });
+  if (!hadStatus) {
+    db.exec(`UPDATE purchase_returns
+             SET sent_at = ts, received_at = ts, expense_shop = expense,
+                 settle_method = CASE WHEN refunded > 0 THEN 'refund' ELSE 'offset' END`);
+  }
+}
+
+/* Ngày cập nhật giá vốn gần nhất (plan 31, hạng mục 1.4b). Giá vốn đổi ở sáu
+   chỗ (bình quân khi nhập, trả NCC, sửa tay, sản xuất, nhập Excel…) nên ghi
+   bằng trigger — không đường nào lọt, khỏi vá từng chỗ. */
+{
+  const hadCostDate = db.prepare('PRAGMA table_info(products)').all().some((c) => c.name === 'cost_updated_at');
+  addColumns('products', { cost_updated_at: 'TEXT' });
+  /* Nâng cấp lần đầu: hàng có sẵn chưa có ngày nào. Lấy tạm ngày nhập hàng gần
+     nhất — giá vốn bình quân được tính lại đúng lúc đó; chưa nhập lần nào thì
+     để trống, thà không hiện còn hơn hiện một ngày bịa. */
+  if (!hadCostDate) {
+    db.exec(`UPDATE products SET cost_updated_at = (
+               SELECT MAX(pu.ts) FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+               WHERE pi.product_id = products.id AND pu.status = 'done')
+             WHERE cost_price > 0`);
+  }
+}
+db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_upd
+         AFTER UPDATE OF cost_price ON products
+         WHEN NEW.cost_price IS NOT OLD.cost_price
+         BEGIN
+           UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
+         END`);
+db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_ins
+         AFTER INSERT ON products
+         WHEN NEW.cost_updated_at IS NULL AND NEW.cost_price > 0
+         BEGIN
+           UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
+         END`);
+
 /* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
 addColumns('sale_order_deposits', { payer_name: 'TEXT' });
 addColumns('sale_order_deliveries', { mode: "TEXT NOT NULL DEFAULT 'pickup'" });
@@ -979,7 +1034,14 @@ export function customerDebt(customerId) {
   return c.opening_debt + s - r - paid;
 }
 
-/** Công nợ nhà cung cấp = nợ đầu kỳ + (nhập chưa trả) - (trả hàng chưa nhận) - (đã trả nợ). */
+/**
+ * Công nợ nhà cung cấp = nợ đầu kỳ + (nhập chưa trả) − (trả hàng NCC ĐÃ NHẬN, trừ phần NCC đã
+ * hoàn tiền mặt) − (đã trả nợ).
+ *
+ * Phiếu trả NCC chưa nhận hàng thì chưa trừ nợ (chủ tiệm chốt, plan 31 đợt 5). Tiền NCC
+ * hoàn chỉ ghi được sau khi NCC đã nhận, nên nhánh "chưa nhận mà có hoàn tiền" chỉ để
+ * sổ vẫn cân nếu dữ liệu cũ lỡ có.
+ */
 export function supplierDebt(supplierId) {
   const s = get('SELECT opening_debt FROM suppliers WHERE id = ?', [supplierId]);
   if (!s) return 0;
@@ -989,7 +1051,8 @@ export function supplierDebt(supplierId) {
     [supplierId]
   ).d;
   const r = get(
-    `SELECT COALESCE(SUM(total - refunded), 0) AS d FROM purchase_returns WHERE supplier_id = ?`,
+    `SELECT COALESCE(SUM(CASE WHEN received_at IS NOT NULL THEN total - refunded ELSE -refunded END), 0) AS d
+     FROM purchase_returns WHERE supplier_id = ?`,
     [supplierId]
   ).d;
   const paid = get(
