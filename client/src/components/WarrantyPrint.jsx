@@ -347,14 +347,6 @@ export default function WarrantyPrint({ tickets, batch = null, focusId = null, m
     ? `print-area size-${receiptFormat}`
     : tagFormat === 'k80' ? 'print-area size-k80' : 'print-area print-labels';
 
-  const Seg = ({ value, onChange, options, label }) => (
-    <div className="flex gap-1" role="radiogroup" aria-label={label}>
-      {options.map(([k, lb]) => (
-        <button key={k} type="button" role="radio" aria-checked={value === k} onClick={() => onChange(k)}
-          className={`btn btn-sm ${value === k ? 'btn-secondary' : 'btn-outline'}`}>{lb}</button>
-      ))}
-    </div>
-  );
 
   return (
     <>
@@ -429,5 +421,17 @@ export default function WarrantyPrint({ tickets, batch = null, focusId = null, m
       </Modal>
       <div className={printClass}>{mode === 'receipt' ? receiptBody : tagBody(true)}</div>
     </>
+  );
+}
+
+/* Nhóm nút chọn một trong nhiều. Khai ngoài thân component cha (BRD mục 8). */
+function Seg({ value, onChange, options, label }) {
+  return (
+    <div className="flex gap-1" role="radiogroup" aria-label={label}>
+      {options.map(([k, lb]) => (
+        <button key={k} type="button" role="radio" aria-checked={value === k} onClick={() => onChange(k)}
+          className={`btn btn-sm ${value === k ? 'btn-secondary' : 'btn-outline'}`}>{lb}</button>
+      ))}
+    </div>
   );
 }

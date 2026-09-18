@@ -33,6 +33,9 @@ export const ACCESS_RULES = [
 
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],
+  /* Khai lại hoa hồng / giá bốc của hàng mua hộ sau khi bán (BRD nâng cấp, mục 5):
+     chỉ người được xem giá vốn — tức chủ và quản lý — mới đụng tới phần lãi này */
+  ['PUT',  /^\/sales\/\d+\/consign-items\/\d+$/, 'cost.view'],
   ['POST', /^\/sales$/,                   'sale.pos'],
   ['POST', /^\/sales\/\d+\/pay$/,         'sale.pos'],
   ['PUT',  /^\/sales\/\d+\/delivery$/,    'sale.pos'],

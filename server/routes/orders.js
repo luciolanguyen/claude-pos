@@ -66,6 +66,61 @@ function refreshStatus(orderId) {
     [next, next, orderId]);
 }
 
+/* ==================================================================== *
+ * NGUỒN HÀNG CỦA ĐƠN (BRD nâng cấp, mục 2)
+ *
+ * Khách đặt món tiệm không đủ tồn thì phải nhớ đi đặt của mối. Người đặt hàng
+ * đánh dấu "đã đặt NCC" — đặt được bao nhiêu ghi bấy nhiêu, nên đơn có ba
+ * trạng thái nguồn hàng:
+ *
+ *   ready    đủ tồn để giao, không phải đặt gì thêm
+ *   short    còn thiếu mà CHƯA đặt mối — đây là nhóm phải nhắc mỗi ngày
+ *   partial  đã đặt mối một phần, vẫn còn thiếu
+ *   ordered  phần thiếu đã đặt mối đủ, chỉ chờ hàng về để giao
+ * ==================================================================== */
+
+/** Thiếu bao nhiêu (theo ĐƠN VỊ của dòng đơn) sau khi trừ tồn kho của kho bán. */
+function shortOf(line) {
+  const remaining = Math.max(0, num(line.qty) - num(line.delivered_qty));
+  if (remaining <= 0.0001) return 0;
+  const factor = num(line.factor, 1) || 1;
+  const haveInUnit = num(line.stock_base) / factor;
+  return Math.max(0, Math.round((remaining - haveInUnit) * 1000) / 1000);
+}
+
+function supplyState(lines) {
+  const short = lines.map((l) => ({ line: l, need: shortOf(l) })).filter((x) => x.need > 0.0001);
+  if (!short.length) return { state: 'ready', short_lines: 0, po_lines: 0, done_lines: 0 };
+  const done = short.filter((x) => num(x.line.po_qty) >= x.need - 0.0001).length;
+  const started = short.filter((x) => num(x.line.po_qty) > 0.0001).length;
+  return {
+    state: done === short.length ? 'ordered' : started ? 'partial' : 'short',
+    short_lines: short.length, po_lines: started, done_lines: done,
+  };
+}
+
+/** Tình trạng nguồn hàng của nhiều đơn một lượt — cho danh sách và cho chuông. */
+export function supplyMap(orderIds) {
+  const out = new Map();
+  const ids = [...new Set((orderIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return out;
+  const rows = all(`
+    SELECT i.order_id, i.qty, i.delivered_qty, i.factor, i.po_qty,
+           COALESCE(st.qty, 0) AS stock_base
+    FROM sale_order_items i
+    JOIN sale_orders o ON o.id = i.order_id
+    LEFT JOIN stock st ON st.product_id = i.product_id AND st.warehouse_id = o.warehouse_id
+    WHERE i.order_id IN (${ids.map(() => '?').join(',')})
+      AND i.qty - i.delivered_qty > 0.0001`, ids);
+  const byOrder = new Map();
+  for (const r of rows) {
+    if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, []);
+    byOrder.get(r.order_id).push(r);
+  }
+  for (const id of ids) out.set(id, supplyState(byOrder.get(id) || []));
+  return out;
+}
+
 /** Tên khách đứng trên đơn — dùng làm người đưa cọc mặc định. */
 function orderCustomerName(o) {
   if (o?.customer_id) {
@@ -79,7 +134,7 @@ function orderCustomerName(o) {
 
 r.get('/orders', (req, res) => {
   const {
-    q = '', customer_id, status, from, to, late, page = 1, page_size = 20,
+    q = '', customer_id, status, from, to, late, supply: supplyFilter = '', page = 1, page_size = 20,
   } = req.query;
   const where = [];
   const params = [];
@@ -95,6 +150,15 @@ r.get('/orders', (req, res) => {
   // Trễ hẹn: quá ngày hẹn mà chưa giao xong
   if (late === '1') {
     where.push("o.status IN ('open','partial') AND o.promised_at IS NOT NULL AND date(o.promised_at) < date('now','localtime')");
+  }
+  /* Lọc theo nguồn hàng (BRD mục 2): "need" = còn thiếu, chưa đặt đủ của mối */
+  if (supplyFilter) {
+    const openIds = all(`SELECT id FROM sale_orders WHERE status IN ('open','partial')`).map((x) => x.id);
+    const m = supplyMap(openIds);
+    const want = supplyFilter === 'need' ? ['short', 'partial'] : [supplyFilter];
+    const ids = openIds.filter((id) => want.includes(m.get(id)?.state));
+    where.push(ids.length ? `o.id IN (${ids.map(() => '?').join(',')})` : '1 = 0');
+    params.push(...ids);
   }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
@@ -124,6 +188,10 @@ r.get('/orders', (req, res) => {
     ORDER BY o.id DESC
     LIMIT ${size} OFFSET ${(p - 1) * size}`, params)
     .map((o) => ({ ...o, due_state: ['open', 'partial'].includes(o.status) ? dueState(o.promised_at) : null }));
+
+  /* Tình trạng nguồn hàng: đủ tồn, còn thiếu chưa đặt mối, đã đặt một phần, đã đặt đủ */
+  const supply = supplyMap(rows.filter((o) => ['open', 'partial'].includes(o.status)).map((o) => o.id));
+  for (const o of rows) Object.assign(o, supply.get(o.id) ? { supply: supply.get(o.id) } : { supply: null });
 
   res.json({ rows, total, page: p, page_size: size });
 });
@@ -169,6 +237,13 @@ r.get('/orders-summary', (req, res) => {
       SUM(CASE WHEN status IN ('open','partial') AND promised_at IS NOT NULL
                     AND date(promised_at) < date('now','localtime') THEN 1 ELSE 0 END) AS late_count
     FROM sale_orders`);
+  /* Đếm theo nguồn hàng để quầy biết đơn nào đang chờ đi đặt mối (BRD mục 2) */
+  const openIds = all(`SELECT id FROM sale_orders WHERE status IN ('open','partial')`).map((x) => x.id);
+  const supply = supplyMap(openIds);
+  const bySupply = { ready: 0, short: 0, partial: 0, ordered: 0 };
+  for (const v of supply.values()) bySupply[v.state] = (bySupply[v.state] || 0) + 1;
+  const last = get(`SELECT MAX(id) AS id, MAX(ts) AS ts FROM sale_orders WHERE status IN ('open','partial')`);
+
   res.json({
     open_count: s?.open_count || 0,
     open_value: s?.open_value || 0,
@@ -177,6 +252,13 @@ r.get('/orders-summary', (req, res) => {
     today_count: due.today,
     soon_count: due.soon,
     later_count: due.later,
+    /* Đơn mới nhất — màn hình bán hàng so với số đã xem để bật dấu "có đơn mới" */
+    max_id: last?.id || 0,
+    latest_ts: last?.ts || null,
+    short_count: bySupply.short,
+    partial_po_count: bySupply.partial,
+    ordered_count: bySupply.ordered,
+    ready_count: bySupply.ready,
   });
 });
 
@@ -275,13 +357,23 @@ r.get('/orders/:id', (req, res) => {
   o.items = all(`
     SELECT i.*, p.sku, p.base_unit, p.barcode,
            (i.qty - i.delivered_qty) AS remaining_qty,
-           COALESCE(st.qty, 0) AS stock_qty
+           COALESCE(st.qty, 0) AS stock_qty,
+           COALESCE(whst.qty, 0) AS stock_base,
+           u.full_name AS po_user_name
     FROM sale_order_items i
     LEFT JOIN products p ON p.id = i.product_id
     LEFT JOIN (SELECT product_id, SUM(qty) AS qty FROM stock GROUP BY product_id) st
            ON st.product_id = i.product_id
+    LEFT JOIN stock whst ON whst.product_id = i.product_id AND whst.warehouse_id = ?
+    LEFT JOIN users u ON u.id = i.po_user_id
     WHERE i.order_id = ?
-    ORDER BY i.id`, [o.id]);
+    ORDER BY i.id`, [o.warehouse_id, o.id]);
+  /* Mỗi dòng: còn thiếu bao nhiêu so với tồn kho, đã đặt mối bao nhiêu */
+  for (const it of o.items) {
+    it.short_qty = shortOf(it);
+    it.po_left = Math.max(0, Math.round((it.short_qty - num(it.po_qty)) * 1000) / 1000);
+  }
+  o.supply = supplyState(o.items);
 
   o.deliveries = all(`
     SELECT d.*, s.code AS sale_code, s.total AS sale_total, s.paid AS sale_paid,
@@ -509,6 +601,60 @@ r.post('/orders/:id/deposit', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+/**
+ * Đánh dấu đã đặt hàng của NCC cho những dòng còn thiếu (BRD nâng cấp, mục 2).
+ *   items: [{ item_id, po_qty }]   — số đã đặt, theo đúng đơn vị của dòng
+ *   all: true                      — đánh dấu đặt ĐỦ phần còn thiếu của mọi dòng
+ *   clear: true                    — bỏ đánh dấu (đặt hụt, mối báo không có hàng)
+ */
+r.post('/orders/:id/supply', (req, res) => {
+  const o = get('SELECT * FROM sale_orders WHERE id = ?', [req.params.id]);
+  if (!o) return res.status(404).json({ error: 'Không tìm thấy đơn đặt hàng' });
+  if (!['open', 'partial'].includes(o.status)) {
+    return res.status(400).json({ error: 'Đơn đã giao xong hoặc đã huỷ — không cần đặt thêm hàng.' });
+  }
+  const b = req.body || {};
+  const note = String(b.note || '').trim().slice(0, 200) || null;
+  const lines = all(`
+    SELECT i.*, COALESCE(st.qty, 0) AS stock_base
+    FROM sale_order_items i
+    LEFT JOIN stock st ON st.product_id = i.product_id AND st.warehouse_id = ?
+    WHERE i.order_id = ?`, [o.warehouse_id, o.id]);
+
+  tx(() => {
+    const set = (line, qty) => {
+      const v = Math.max(0, Math.round(num(qty) * 1000) / 1000);
+      run(`UPDATE sale_order_items SET po_qty = ?, po_note = ?,
+             po_at = CASE WHEN ? > 0 THEN datetime('now','localtime') ELSE NULL END,
+             po_user_id = CASE WHEN ? > 0 THEN ? ELSE NULL END
+           WHERE id = ?`,
+      [v, note, v, v, b.user_id || req.user?.id || null, line.id]);
+    };
+    if (b.clear === true) {
+      for (const line of lines) set(line, 0);
+    } else if (b.all === true) {
+      for (const line of lines) {
+        const need = shortOf(line);
+        if (need > 0.0001) set(line, need);
+      }
+    } else {
+      const want = new Map((Array.isArray(b.items) ? b.items : [])
+        .map((x) => [Number(x.item_id), num(x.po_qty)]));
+      for (const line of lines) {
+        if (!want.has(line.id)) continue;
+        /* Không cho ghi quá phần còn thiếu — ghi thừa thì đơn hiện "đã đặt đủ" mà thực ra chưa */
+        set(line, Math.min(want.get(line.id), shortOf(line)));
+      }
+    }
+  });
+  const fresh = all(`
+    SELECT i.*, COALESCE(st.qty, 0) AS stock_base
+    FROM sale_order_items i
+    LEFT JOIN stock st ON st.product_id = i.product_id AND st.warehouse_id = ?
+    WHERE i.order_id = ?`, [o.warehouse_id, o.id]);
+  res.json({ ok: true, supply: supplyState(fresh) });
 });
 
 /* ============================ GIAO HÀNG ============================ *

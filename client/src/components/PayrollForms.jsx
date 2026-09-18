@@ -9,12 +9,14 @@
    sự kiện bàn phím — mất nút micro là chủ tiệm phải gõ tay.
    ==================================================================== */
 import { useState, useEffect, useMemo } from 'react';
-import { Lock, KeyRound, AlertTriangle, CalendarOff, Trash2 } from 'lucide-react';
+import { Lock, KeyRound, AlertTriangle, CalendarOff, Trash2, Printer } from 'lucide-react';
 import { api, setPayrollToken } from '../lib/api';
 import { useApp } from '../lib/store';
 import { money, n } from '../lib/format';
 import { Button, Modal, Field, Input, Select, Textarea, MoneyInput, Confirm, Spinner } from './ui';
 import PhotoPicker from './PhotoPicker';
+import { PayslipModal } from './PayrollDocs';
+import { daysBetween } from '../lib/lunar';
 
 const today = () => new Date().toLocaleDateString('sv-SE');
 const vn = (iso) => (iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '');
@@ -546,13 +548,36 @@ export function SettleModal({ employee, cycles, carryIn, onClose, onDone }) {
   const [accountId, setAccountId] = useState('');
   const [note, setNote] = useState('');
   const [early, setEarly] = useState(false);
+  /* Chốt sớm: trả đủ tháng, hay chỉ trả theo số ngày đã làm (BRD nâng cấp, mục 6) */
+  const [earlyMode, setEarlyMode] = useState('full');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [preview, setPreview] = useState(null);
 
-  const chosen = open.slice(0, count);
+  const picked = open.slice(0, count);
+  const hasEarly = picked.some((c) => !c.ended);
+
+  /* "Chỉ trả theo số ngày đã làm": máy chủ cắt kỳ cuối tại hôm nay, tiền nền =
+     lương tháng × số ngày làm ÷ 30. Tính y vậy ở đây để nút và bản in trước
+     hiện đúng số sẽ trả, không phải số đủ tháng. */
+  const todayIso = new Date().toLocaleDateString('sv-SE');
+  const lastEarly = hasEarly ? picked[picked.length - 1] : null;
+  const earlyMany = picked.filter((c) => !c.ended).length > 1;
+  const canWorked = !!lastEarly && !earlyMany && todayIso >= lastEarly.date_from && todayIso < lastEarly.date_to;
+  const worked = early && earlyMode === 'worked' && canWorked;
+  const chosen = (() => {
+    if (!worked) return picked;
+    const c = lastEarly;
+    const from = c.work_from_date && c.work_from_date > c.date_from ? c.work_from_date : c.date_from;
+    const days = Math.max(0, daysBetween(from, todayIso) + 1);
+    const baseNow = Math.round(c.monthly_wage * days / 30);
+    return [...picked.slice(0, -1), {
+      ...c, date_to: todayIso, work_days: days, is_partial: 1, gift_day: false,
+      base: baseNow, net: c.net - c.base + baseNow,
+    }];
+  })();
   const earned = chosen.reduce((a, c) => a + c.net, 0);
   const total = (carryIn || 0) + earned;
-  const hasEarly = chosen.some((c) => !c.ended);
 
   const save = async () => {
     setBusy(true);
@@ -560,6 +585,7 @@ export function SettleModal({ employee, cycles, carryIn, onClose, onDone }) {
     try {
       const s = await api.post(`/payroll/employees/${employee.id}/settle`, {
         cycle_ids: chosen.map((c) => c.id), account_id: accountId || null, note, allow_early: early,
+        early_mode: hasEarly ? (worked ? 'worked' : 'full') : undefined,
       });
       onDone?.(s);
     } catch (e) {
@@ -570,10 +596,22 @@ export function SettleModal({ employee, cycles, carryIn, onClose, onDone }) {
   };
 
   return (
+    <>
     <Modal open onClose={onClose} size="md" title={`Chốt lương — ${employee.full_name}`}
       subtitle="Chốt lần lượt từ kỳ cũ nhất. Chốt nhiều kỳ một lúc ra một phiếu lương liệt kê riêng từng kỳ."
       footer={<>
         <Button onClick={onClose}>Huỷ</Button>
+        {/* In bảng tính TRƯỚC khi chốt cho nhân viên coi (BRD nâng cấp, mục 1) */}
+        <Button icon={Printer} disabled={!chosen.length} onClick={() => setPreview({
+          code: '(chưa chốt)',
+          ts: new Date().toISOString(),
+          detail: {
+            employee: { id: employee.id, code: employee.code, full_name: employee.full_name, pay_mode: employee.pay_mode },
+            cycles: chosen, carry_in: carryIn || 0, earned, pay: Math.max(0, total), carry_out: Math.min(0, total),
+          },
+        })}>
+          Xem trước / In
+        </Button>
         <Button variant="primary" size="lg" loading={busy} onClick={save} disabled={!chosen.length || (hasEarly && !early)}>
           Xác nhận đã trả {money(Math.max(0, total))}
         </Button>
@@ -618,13 +656,52 @@ export function SettleModal({ employee, cycles, carryIn, onClose, onDone }) {
           )}
         </div>
         {hasEarly && (
-          <label className="flex items-start gap-2 text-[13px] cursor-pointer rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-amber-900">
-            <input type="checkbox" className="w-5 h-5 mt-0.5 accent-amber-600" checked={early} onChange={(e) => setEarly(e.target.checked)} />
-            <span>
-              <b>Chốt sớm khi kỳ chưa hết.</b> Sau khi chốt, không báo nghỉ được vào những ngày còn lại của kỳ; tiền ứng,
-              mua hàng phát sinh thêm sẽ tính vào kỳ sau.
-            </span>
-          </label>
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-amber-900 space-y-2">
+            <label className="flex items-start gap-2 text-[13px] cursor-pointer">
+              <input type="checkbox" className="w-5 h-5 mt-0.5 accent-amber-600" checked={early} onChange={(e) => setEarly(e.target.checked)} />
+              <span>
+                <b>Chốt sớm khi kỳ chưa hết.</b> Sau khi chốt, không báo nghỉ được vào những ngày đã chốt; tiền ứng,
+                mua hàng phát sinh thêm tính vào kỳ sau.
+              </span>
+            </label>
+            {early && (
+              <fieldset className="space-y-1.5" aria-label="Cách tính khi chốt sớm">
+                {[['full', 'Trả đủ cả tháng',
+                  'Trả trọn lương tháng luôn, coi như chủ tặng những ngày còn lại — hay dùng khi trả lương trước Tết.'],
+                ['worked', 'Chỉ trả theo số ngày đã làm',
+                  'Cắt kỳ tại hôm nay: trả lương những ngày đã làm; phần còn lại của kỳ trả nốt vào lần chốt sau, cộng lại vẫn đủ lương tháng.'],
+                ].map(([k, label, hint]) => {
+                  const off = k === 'worked' && !canWorked;
+                  return (
+                    <label key={k} className={`flex items-start gap-2 text-[13px] rounded border p-2
+                      ${off ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}
+                      ${(worked ? 'worked' : 'full') === k ? 'border-amber-500 bg-white' : 'border-amber-200'}`}>
+                      <input type="radio" name="early-mode" className="w-4 h-4 mt-0.5 accent-amber-600"
+                        checked={(worked ? 'worked' : 'full') === k} disabled={off} onChange={() => setEarlyMode(k)} />
+                      <span>
+                        <b>{label}</b>
+                        <span className="block text-2xs">
+                          {off
+                            ? (earlyMany
+                              ? 'Đang chọn hơn một kỳ chưa hết — chỉ cắt theo ngày được khi chốt một kỳ đang chạy.'
+                              : 'Hôm nay là ngày cuối kỳ — trả đủ tháng luôn.')
+                            : hint}
+                        </span>
+                        {k === 'worked' && worked && (
+                          <span className="block text-2xs mt-0.5">
+                            Làm <b>{chosen[chosen.length - 1].work_days} ngày</b> (tới hôm nay) → lương{' '}
+                            <b className="tabular">{money(chosen[chosen.length - 1].base)}</b>; còn{' '}
+                            <b className="tabular">{money(Math.max(0, lastEarly.monthly_wage - chosen[chosen.length - 1].base))}</b>{' '}
+                            trả vào lần chốt sau.
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </fieldset>
+            )}
+          </div>
         )}
         <div className="grid grid-cols-2 gap-2">
           <Field label="Chi từ quỹ" htmlFor="st-acc">
@@ -637,6 +714,8 @@ export function SettleModal({ employee, cycles, carryIn, onClose, onDone }) {
         <ErrorLine text={err} />
       </div>
     </Modal>
+    {preview && <PayslipModal preview={preview} onClose={() => setPreview(null)} />}
+    </>
   );
 }
 
@@ -644,6 +723,7 @@ export function DailyPayModal({ employee, due, onClose, onDone }) {
   const [accountId, setAccountId] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [preview, setPreview] = useState(null);
   const save = async () => {
     setBusy(true);
     setErr('');
@@ -657,9 +737,22 @@ export function DailyPayModal({ employee, due, onClose, onDone }) {
   };
   const moneyEntries = (due.entries || []).filter((e) => !(e.type === 'bonus' && !e.merged) && e.amount);
   return (
+    <>
     <Modal open onClose={onClose} size="sm" title={`Trả lương ngày — ${employee.full_name}`}
       footer={<>
         <Button onClick={onClose}>Huỷ</Button>
+        <Button icon={Printer} onClick={() => setPreview({
+          code: '(chưa chốt)',
+          ts: new Date().toISOString(),
+          detail: {
+            employee: { id: employee.id, code: employee.code, full_name: employee.full_name, pay_mode: 'daily' },
+            daily: {
+              from: due.from, to: due.to, day_rate: due.day_rate, days: due.days, work_days: due.work_days,
+              wage: due.wage, summary: due.summary, entries: due.entries,
+            },
+            carry_in: due.carry_in, earned: due.earned, pay: due.pay, carry_out: due.carry_out,
+          },
+        })}>Xem trước / In</Button>
         <Button variant="primary" size="lg" loading={busy} onClick={save}>Đã trả {money(due.pay)}</Button>
       </>}>
       <div className="space-y-3 text-[13px]">
@@ -691,6 +784,8 @@ export function DailyPayModal({ employee, due, onClose, onDone }) {
         <ErrorLine text={err} />
       </div>
     </Modal>
+    {preview && <PayslipModal preview={preview} onClose={() => setPreview(null)} />}
+    </>
   );
 }
 

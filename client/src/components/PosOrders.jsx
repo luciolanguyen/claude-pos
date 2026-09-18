@@ -18,12 +18,15 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
+import { useLiveReload, useChangeReload } from '../lib/useLive';
 import { money, n, qty as fq, date, datetime, isoDate, match } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty,
   Spinner, Badge, Combo, Textarea, QtyInput, SearchInput, TotalRow, ErrorBox,
 } from './ui';
 import InvoicePrint from './InvoicePrint';
+import DeliveryInfoModal, { EMPTY_DELIVERY, deliveryBody, normalizeDelivery } from './PosDeliveryForm';
+import DeliveryNotePrint from './DeliveryNotePrint';
 
 /* ==================== CHUÔNG ĐƠN TỚI HẸN ========================== */
 
@@ -45,6 +48,32 @@ export const DUE = {
   later: { label: 'Chưa tới hạn', short: 'chưa tới', dot: 'bg-emerald-500', pill: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
 };
 
+/* ============ NGUỒN HÀNG CỦA ĐƠN (BRD nâng cấp, mục 2) ============
+ * Khách đặt món tiệm không đủ tồn: phải nhớ đi đặt của mối, rồi đánh dấu lại
+ * để cả tiệm biết đơn đó đang chờ hàng về chứ không phải chờ ai đi đặt.
+ */
+export const SUPPLY = {
+  ready: { label: 'Đủ hàng — chờ giao', short: 'đủ hàng', dot: 'bg-emerald-500', pill: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
+  short: { label: 'Chờ đặt hàng NCC', short: 'cần đặt', dot: 'bg-rose-500', pill: 'bg-rose-50 border-rose-300 text-rose-800' },
+  partial: { label: 'Chờ đặt NCC thêm', short: 'đặt thiếu', dot: 'bg-violet-500', pill: 'bg-violet-50 border-violet-300 text-violet-800' },
+  ordered: { label: 'Đã đặt NCC — chưa về', short: 'chờ hàng', dot: 'bg-sky-500', pill: 'bg-sky-50 border-sky-300 text-sky-800' },
+};
+
+export function SupplyBadge({ supply, showReady = false }) {
+  const st = supply?.state;
+  const d = SUPPLY[st];
+  if (!d || (st === 'ready' && !showReady)) return null;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-2xs font-semibold whitespace-nowrap ${d.pill}`}>
+      <span className={`w-2 h-2 rounded-full ${d.dot}`} aria-hidden="true" />
+      {d.label}
+      {st === 'partial' && supply.short_lines > 0 && (
+        <span className="font-normal">({supply.short_lines - supply.done_lines} món còn thiếu)</span>
+      )}
+    </span>
+  );
+}
+
 /** Nhãn đèn hạn giao cạnh ngày hẹn. */
 export function DueBadge({ state }) {
   const d = DUE[state];
@@ -57,15 +86,28 @@ export function DueBadge({ state }) {
   );
 }
 
+const SEEN_KEY = 'thpos.orders.seen';
+const readSeen = () => { try { return Number(localStorage.getItem(SEEN_KEY)) || 0; } catch { return 0; } };
+
 export function OrderBell({ onOpen }) {
   const { data, reload } = useFetch(() => api.ordersSummary(), []);
+  const [seen, setSeen] = useState(readSeen);
 
-  useEffect(() => {
-    const t = setInterval(reload, 5 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [reload]);
+  /* Cập nhật ngay khi vừa lưu / giao / huỷ một đơn ở chính máy này, và mỗi phút
+     một lần cho đơn máy khác vừa lưu — trước đây năm phút mới đếm lại nên phải
+     chuyển trang mới thấy đơn "hôm nay", "gần hạn" (BRD mục 2). */
+  useChangeReload(reload, ['/orders']);
+  useLiveReload(reload, { interval: 60000 });
 
   const open = data?.open_count || 0;
+  const maxId = data?.max_id || 0;
+  /* Đơn mới do máy khác vừa lưu — quầy phải thấy ngay mà không cần đọc bảng (mục 2) */
+  const fresh = maxId > seen;
+  const needPo = (data?.short_count || 0) + (data?.partial_po_count || 0);
+  const openList = () => {
+    if (maxId) { try { localStorage.setItem(SEEN_KEY, String(maxId)); } catch { /* bộ nhớ bị chặn */ } setSeen(maxId); }
+    onOpen?.();
+  };
   if (!open) return null;
   const counts = {
     late: data?.late_count || 0, today: data?.today_count || 0,
@@ -82,13 +124,19 @@ export function OrderBell({ onOpen }) {
     .map((k) => `${counts[k]} đơn ${DUE[k].label.toLowerCase()}`)
     .join(' · ');
 
+  const title = `${summary}${counts.soon ? ' (gần hạn không tính Thứ 7, Chủ nhật)' : ''}`
+    + (needPo ? ` · ${needPo} đơn còn thiếu hàng cần đặt của mối` : '')
+    + (fresh ? ' · có đơn mới' : '');
+
   return (
     <button
-      onClick={onOpen}
+      onClick={openList}
       className={`relative h-9 px-2.5 rounded border text-[13px] font-semibold hidden md:flex items-center gap-2
-                  transition-colors duration-150 cursor-pointer ${tone}`}
-      title={`${summary}${counts.soon ? ' (gần hạn không tính Thứ 7, Chủ nhật)' : ''}`}
-      aria-label={`Đơn đặt hàng: ${summary || `${open} đơn đang chờ`}`}
+                  transition-colors duration-150 cursor-pointer ${fresh ? 'ring-2 ring-amber-300' : ''} ${tone}`}
+      title={title}
+      aria-label={`Đơn đặt hàng: ${summary || `${open} đơn đang chờ`}`
+        + (needPo ? `, ${needPo} đơn cần đặt hàng của nhà cung cấp` : '')
+        + (fresh ? ', có đơn mới' : '')}
     >
       <Bell size={14} aria-hidden="true" />
       {lit.length ? lit.map((k) => (
@@ -97,6 +145,19 @@ export function OrderBell({ onOpen }) {
           <span className="tabular">{n(counts[k])}</span> {DUE[k].short}
         </span>
       )) : `${n(open)} đơn`}
+      {/* Còn đơn thiếu hàng chưa đặt mối: nhắc ngay ngoài quầy */}
+      {needPo > 0 && (
+        <span className="inline-flex items-center gap-1 whitespace-nowrap border-l border-white/20 pl-2">
+          <span className="w-2 h-2 rounded-full bg-rose-400" aria-hidden="true" />
+          <span className="tabular">{n(needPo)}</span> cần đặt
+        </span>
+      )}
+      {fresh && (
+        <span className="absolute -top-1 -right-1 flex h-3 w-3" aria-hidden="true">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-75" />
+          <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-400 border border-amber-200" />
+        </span>
+      )}
     </button>
   );
 }
@@ -312,7 +373,7 @@ export function PickOrderModal({ open, onClose, onDelivered }) {
       onClose={onClose}
       title="Khách tới lấy hàng đã đặt"
       subtitle="Tìm đơn theo mã, tên khách hoặc số điện thoại"
-      size="lg"
+      size="xl"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
       <div className="space-y-2">
@@ -332,6 +393,9 @@ export function PickOrderModal({ open, onClose, onDelivered }) {
                   <thead>
                     <tr>
                       <th>Mã đơn</th><th>Khách hàng</th><th>Hẹn giao</th>
+                      {/* Đơn còn thiếu hàng: chờ đặt NCC, chờ đặt thêm, hay đã đặt mà chưa về.
+                          Đủ hàng thì ô trống — giao được ngay (BRD nâng cấp, mục 2). */}
+                      <th>Tình trạng hàng</th>
                       <th className="text-right">Tổng tiền</th>
                       <th className="text-right">Cọc còn</th>
                       <th style={{ width: 90 }} />
@@ -353,6 +417,7 @@ export function PickOrderModal({ open, onClose, onDelivered }) {
                             </div>
                           ) : <span className="text-muted-ink">—</span>}
                         </td>
+                        <td><SupplyBadge supply={o.supply} /></td>
                         <td className="text-right tabular">{money(o.total)}</td>
                         <td className="text-right tabular">
                           {o.deposit_left > 0 ? money(o.deposit_left) : <span className="text-muted-ink">—</span>}
@@ -383,6 +448,11 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
   const [method, setMethod] = useState('cash');
   const [accountId, setAccountId] = useState('');
   const [busy, setBusy] = useState(false);
+  /* Khách nhờ giao tận nơi ngay lúc tới lấy (BRD mục 2): dùng đúng hộp thông tin
+     giao hàng của màn hình bán hàng, không dựng thêm mẫu thứ hai. */
+  const [ship, setShip] = useState(null);          // null = khách tự lấy
+  const [editShip, setEditShip] = useState(false);
+  const { data: carriers } = useFetch(() => api.carriers(), []);
 
   const pending = useMemo(
     () => (o?.items || []).filter((i) => i.remaining_qty > 0.0001), [o]);
@@ -419,8 +489,10 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
     setBusy(true);
     try {
       const res = await api.post(`/orders/${o.id}/deliver`, {
-        /* Giao tại quầy: khách đứng đó tự lấy, không vào bảng giao hàng */
-        mode: 'pickup',
+        /* Khách tự lấy thì không vào bảng giao hàng; nhờ giao thì gửi kèm
+           thông tin giao theo đúng mẫu chung */
+        mode: ship ? 'ship' : 'pickup',
+        ...(ship ? deliveryBody(ship) : {}),
         items: chosen.map((i) => ({ item_id: i.id, qty: qtys[i.id] })),
         paid: Number(paid) || 0,
         received: Number(paid) || 0,
@@ -470,6 +542,81 @@ function DeliverAtCounter({ orderId, onClose, onDone }) {
     >
       {loading || !o ? <Spinner /> : (
         <div className="space-y-3">
+          {o.supply && o.supply.state !== 'ready' && (
+            <p role="status" className="flex flex-wrap items-center gap-1.5 text-[13px] rounded-lg border border-line bg-muted/40 px-2.5 py-1.5">
+              <SupplyBadge supply={o.supply} />
+              <span className="text-muted-ink">
+                Đơn còn món chưa đủ tồn — chỉ giao được phần đang có, phần còn lại giao lần sau.
+              </span>
+            </p>
+          )}
+          {/* Khách tới lấy, nhưng nhờ giao tận nhà luôn — chọn ngay ở đây (BRD mục 2) */}
+          <div role="tablist" aria-label="Hình thức giao" className="grid grid-cols-2 gap-1.5">
+            {[['pickup', 'Khách tự lấy', Package, 'Khách đứng ở quầy nhận hàng'],
+              ['ship', 'Giao hàng tận nơi', Truck, 'Ghi địa chỉ, người giao, phí ship']].map(([k, label, Icon, hint]) => {
+              const on = (k === 'ship') === !!ship;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  onClick={() => {
+                    if (k === 'pickup') { setShip(null); return; }
+                    setShip((cur) => cur || normalizeDelivery({
+                      ...EMPTY_DELIVERY,
+                      name: o.customer_display === 'Khách lẻ' ? '' : o.customer_display || '',
+                      phone: o.phone_display || '',
+                      address: o.delivery_address || o.customer_address || '',
+                    }));
+                    setEditShip(true);
+                  }}
+                  className={`flex items-center gap-2 rounded-lg border p-2.5 text-left cursor-pointer transition-colors duration-150
+                              focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent
+                              ${on ? 'border-accent bg-accent-soft' : 'border-line hover:bg-muted'}`}
+                >
+                  <Icon size={18} className={on ? 'text-emerald-800' : 'text-muted-ink'} aria-hidden="true" />
+                  <span>
+                    <span className="block text-[13px] font-bold">{label}</span>
+                    <span className="block text-2xs text-muted-ink">{hint}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {ship && (
+            <div className="card p-2.5 flex items-start gap-2 text-[13px]">
+              <Truck size={16} className="text-muted-ink shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">
+                  {ship.name || o.customer_display}{ship.phone ? ` · ${ship.phone}` : ''}
+                </div>
+                <div className="text-muted-ink">{ship.address || 'Chưa ghi địa chỉ giao'}</div>
+                <div className="text-2xs text-muted-ink">
+                  {[ship.carrierName && `hãng ${ship.carrierName}`,
+                    ship.shipperMode === 'staff' && ship.shipperUserName && `người giao: ${ship.shipperUserName}`,
+                    ship.shipperMode === 'free' && (ship.shipperName || ship.shipperPhone) && `shipper: ${[ship.shipperName, ship.shipperPhone].filter(Boolean).join(' ')}`,
+                    Number(ship.shipFee) > 0 && `phí ${money(ship.shipFee)}${ship.shopPaysShip ? ' (tiệm chịu)' : ''}`,
+                    ship.note].filter(Boolean).join(' · ') || 'Chưa có người giao — bấm Sửa để điền'}
+                </div>
+              </div>
+              <Button size="sm" onClick={() => setEditShip(true)}>Sửa</Button>
+            </div>
+          )}
+
+          <DeliveryInfoModal
+            open={editShip}
+            onClose={() => setEditShip(false)}
+            value={ship}
+            customer={{ name: o.customer_display, phone: o.phone_display, address: o.customer_address }}
+            carriers={carriers || []}
+            goodsTotal={saleTotal}
+            canPay={false}
+            onSave={(v) => { setShip(normalizeDelivery(v)); setEditShip(false); }}
+            onClear={() => { setShip(null); setEditShip(false); }}
+          />
+
           <div className="table-wrap">
             <table className="data">
               <thead>

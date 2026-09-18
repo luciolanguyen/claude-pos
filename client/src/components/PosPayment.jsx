@@ -54,6 +54,8 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
   const [vBusy, setVBusy] = useState(false);
   const [vErr, setVErr] = useState('');
   const [print, setPrint] = useState({ invoice: true, note: true });
+  /* In kèm phiếu soạn hàng cho nhân viên đi lấy hàng (BRD nâng cấp, mục 3) */
+  const [pickSlip, setPickSlip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   /* Danh sách TÊN nhân viên (không lương, không số dư) — chỉ khi tiệm bật đăng nhập */
@@ -77,6 +79,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     setVoucher(null);
     setVErr('');
     setPrint(delivery ? { invoice: true, note: true, ...(delivery.print || {}) } : { invoice: true, note: false });
+    setPickSlip(false);
     setErr('');
     /* KHÔNG chọn sẵn ai: mặc định người đang đứng quầy là thu ngân tự mua ghi vào
        lương mình chỉ bằng hai lần bấm mà chẳng ai để ý (plan 28, PAY-405) */
@@ -172,6 +175,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     ...(!codMode && method === 'salary' ? { salary_amount: due, salary_employee_id: Number(salaryEmp) || null } : {}),
     ...(approval ? { approval_token: approval.token } : {}),
     ...(delivery ? { _print: print } : {}),
+    ...(pickSlip ? { _pick: true } : {}),
     ...extra,
   });
 
@@ -531,6 +535,23 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
           )}
 
           {delivery && <PrintChoice value={print} onChange={setPrint} idPrefix="pay-print" />}
+
+          {/* Phiếu soạn hàng: không có giá tiền, có vị trí kệ — đưa nhân viên đi lấy hàng */}
+          <label htmlFor="pay-pick" className="flex items-start gap-2 cursor-pointer rounded-lg border border-line p-2.5">
+            <input
+              id="pay-pick"
+              type="checkbox"
+              className="w-5 h-5 mt-0.5 accent-emerald-700 cursor-pointer"
+              checked={pickSlip}
+              onChange={(e) => setPickSlip(e.target.checked)}
+            />
+            <span className="text-[13px] leading-tight">
+              In thêm phiếu soạn hàng cho nhân viên
+              <span className="block text-2xs text-muted-ink">
+                Chỉ tên hàng, vị trí kệ và số lượng — không in giá tiền
+              </span>
+            </span>
+          </label>
 
           {err && (
             <p role="alert" className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">

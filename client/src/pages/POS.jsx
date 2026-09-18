@@ -16,10 +16,11 @@ import {
 } from '../lib/format';
 import {
   Button, IconButton, Input, Modal, Field, Empty, Spinner, Badge, Combo, Textarea, QtyInput, Confirm,
-  Select, MoneyInput, ErrorBox,
+  Select, MoneyInput, ErrorBox, SearchInput,
 } from '../components/ui';
 import InvoicePrint from '../components/InvoicePrint';
 import DeliveryNotePrint from '../components/DeliveryNotePrint';
+import PickingSlipPrint from '../components/PickingSlipPrint';
 import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
 import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
 import DeliveryInfoModal, {
@@ -1272,7 +1273,7 @@ export default function POS() {
   });
 
   const submit = async (payload) => {
-    const { collect_debt: collectDebt = 0, _print: printPref = null, ...rest } = payload;
+    const { collect_debt: collectDebt = 0, _print: printPref = null, _pick: pickSlip = false, ...rest } = payload;
     /* Lỗi ở bước này (thiếu hàng, cần PIN...) thì ném ra cho hộp thanh toán
        báo. Qua được bước này là hoá đơn ĐÃ LƯU — mọi việc sau đó hỏng cũng
        không được ném lỗi, kẻo thu ngân tưởng chưa lưu mà bấm lại lần nữa. */
@@ -1308,6 +1309,15 @@ export default function POS() {
       toast(`Hoá đơn ${res.code} đã lưu nhưng chưa tải được để in — vào Hoá đơn hoặc Theo dõi giao để in lại.`,
         'warn', 8000);
     }
+    /* Phiếu soạn hàng (BRD nâng cấp, mục 3): in ngay sau hoá đơn để nhân viên
+       cầm đi lấy hàng — không có giá tiền, có vị trí kệ. */
+    if (pickSlip) {
+      try {
+        const sale = queue.find((x) => x.kind === 'invoice')?.sale || await api.sale(res.id);
+        queue.push({ kind: 'pick', key: `p${res.id}`, sale });
+      } catch { /* in lại được từ màn hình Hoá đơn */ }
+    }
+
     /* Món có bảo hành: in phiếu bảo hành sau hoá đơn, chọn gộp hay tách (tài liệu 09, mục 5) */
     if (tab.cart.some((l) => Number(l.warrantyMonths) > 0)) {
       try {
@@ -1970,6 +1980,7 @@ export default function POS() {
                   <ConsignLine
                     key={c.key}
                     c={c}
+                    seeCost={can('cost.view')}
                     partners={partners || []}
                     onChange={(patch) => updateConsign(c.key, patch)}
                     onRemove={() => removeConsign(c.key)}
@@ -2245,7 +2256,7 @@ export default function POS() {
         partners={partners || []}
         onClose={() => setConsignOpen(false)}
         onPartnerAdded={reloadPartners}
-        onSave={(row) => { addConsign(row); setConsignOpen(false); }}
+        onSave={(rows) => { (Array.isArray(rows) ? rows : [rows]).forEach(addConsign); setConsignOpen(false); }}
       />
 
       {/* Ghi chú hàng đặc thù của khách đang chọn (tài liệu 24, phần 3) */}
@@ -2403,6 +2414,9 @@ export default function POS() {
       {printing?.kind === 'note' && (
         <DeliveryNotePrint key={printing.key} note={printing.note} onClose={nextPrint} />
       )}
+      {printing?.kind === 'pick' && (
+        <PickingSlipPrint key={printing.key} sale={printing.sale} store={store} onClose={nextPrint} />
+      )}
       {printing?.kind === 'warranty' && (
         <WarrantyCardPrint key={printing.key} sale={printing.sale} store={store}
           mode={settings?.pos?.warranty_card_mode === 'separate' ? 'separate' : 'combined'}
@@ -2478,7 +2492,7 @@ function PriceHistoryModal({ line, customer, onClose, onApply }) {
  *
  * Hoá đơn in cho khách KHÔNG có mấy dòng này — xem mẫu in.
  * ==================================================================== */
-function ConsignLine({ c, partners, onChange, onRemove }) {
+function ConsignLine({ c, partners, onChange, onRemove, seeCost = true }) {
   const amount = Math.round((Number(c.qty) || 0) * (Number(c.price) || 0));
   const commission = consignCommission(c, amount);
   const payable = amount - commission;
@@ -2498,11 +2512,16 @@ function ConsignLine({ c, partners, onChange, onRemove }) {
                 ? `Hàng gửi: ${partner?.name || c.partner_name || 'chủ hàng'}`
                 : 'Tiệm tự bốc ngoài'}
             </span>
-            {c.partner_id ? (
+            {/* Hoa hồng, giá bốc, chênh lệch là phần lãi — thu ngân không thấy (BRD nâng cấp, mục 5) */}
+            {!seeCost ? (
+              <span className="text-2xs text-muted-ink">chủ tiệm chốt hoa hồng / giá bốc sau</span>
+            ) : c.partner_id ? (
               <span className="text-2xs text-muted-ink tabular">
                 Trả chủ {n(payable)}
                 {commission > 0 && <span className="text-emerald-700 font-semibold"> · hoa hồng {n(commission)}</span>}
               </span>
+            ) : !(Number(c.cost) > 0) ? (
+              <span className="text-2xs text-warn">chưa có giá bốc — khai sau ở chi tiết hoá đơn</span>
             ) : (
               <span className="text-2xs tabular">
                 Bốc {n(c.cost)}/{c.unit_name || 'đv'}
@@ -2546,34 +2565,92 @@ function ConsignLine({ c, partners, onChange, onRemove }) {
 }
 
 /* ==================================================================== *
- * HỘP THÊM MỘT MÓN MUA HỘ VÃNG LAI (tài liệu 24, phần 5.1)
+ * HỘP THÊM MÓN MUA HỘ VÃNG LAI — NHẬP NHIỀU MÓN MỘT LƯỢT
+ * (tài liệu 24, phần 5.1; BRD nâng cấp, mục 1 và mục 5)
  *
- * Để trống tên chủ hàng = tiệm tự chạy đi bốc, trả đứt tiền mặt tại chỗ,
- * ăn chênh lệch — không treo công nợ với ai.
- * Chọn đích danh chủ hàng = hàng người ta gửi, tiệm giữ hoa hồng, phần còn
- * lại treo chờ đối soát.
+ * Bảng nhiều dòng như một tờ kê: gõ xong món này là dòng trống kế tiếp đã
+ * chờ sẵn, Enter là xuống dòng. Mỗi dòng tự chọn nguồn hàng:
+ *   - "Tiệm tự bốc" = tiệm chạy đi bốc, trả đứt tại chỗ, ăn chênh lệch.
+ *   - tên chủ hàng  = hàng người ta gửi, tiệm giữ hoa hồng, phần còn lại
+ *     treo chờ đối soát.
+ * Thu ngân chỉ thấy và gõ GIÁ BÁN; hoa hồng, giá bốc, chênh lệch do chủ tiệm
+ * hoặc quản lý chốt sau khi hoá đơn xong (máy chủ cũng bỏ qua nếu gõ lên).
  * ==================================================================== */
+
+/* Một dòng trống — mang theo nguồn hàng và mức hoa hồng của dòng trên nó,
+   vì mấy món khách nhờ mua một lượt thường lấy cùng một mối. */
+const consignBlank = (src = null) => ({
+  key: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+  name: '', unit_name: '', qty: 1, price: 0, cost: 0,
+  partner_id: src?.partner_id ?? null,
+  commission_type: src?.commission_type || 'percent',
+  commission_value: src?.commission_value ?? 10,
+});
+const consignFilled = (r) => !!r.name.trim() || Number(r.price) > 0;
+
+/* Luôn chừa đúng MỘT dòng trống ở cuối bảng để gõ món kế tiếp */
+const consignWithTail = (list) => {
+  const last = list[list.length - 1];
+  return !last || consignFilled(last) ? [...list, consignBlank(last)] : list;
+};
+
+const CONSIGN_GRID_COST = 'md:grid-cols-[1.5rem_minmax(0,1fr)_4.5rem_4.5rem_8rem_10rem_9.5rem_7.5rem_2.25rem]';
+const CONSIGN_GRID_CASH = 'md:grid-cols-[1.5rem_minmax(0,1fr)_4.5rem_4.5rem_9rem_11rem_7.5rem_2.25rem]';
+
 function ConsignItemModal({ open, customer, partners, onClose, onSave, onPartnerAdded }) {
-  const { toast } = useApp();
-  const EMPTY = {
-    name: '', unit_name: '', qty: 1, price: 0, cost: 0,
-    partner_id: null, commission_type: 'percent', commission_value: 10, note: '',
-  };
-  const [f, setF] = useState(EMPTY);
+  const { toast, can } = useApp();
+  const seeCost = can('cost.view');
+  const [rows, setRows] = useState(() => [consignBlank()]);
+  const [note, setNote] = useState('');
   const [newPartner, setNewPartner] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [bad, setBad] = useState({});             // key dòng -> các ô còn thiếu
+  const [curKey, setCurKey] = useState(null);      // dòng con trỏ đang đứng
+  const [pickedNote, setPickedNote] = useState('');
+  const [sugOpen, setSugOpen] = useState(false);   // danh sách gợi ý tên món
+  const [hi, setHi] = useState(-1);
 
-  useEffect(() => { if (open) { setF(EMPTY); setNewPartner(''); setErr(''); setPickedNote(''); setHidden(false); } }, [open]);
+  /* Đưa con trỏ tới một ô của một dòng, chờ dòng đó vẽ xong mới gọi */
+  const refs = useRef({});
+  const [focusReq, setFocusReq] = useState(null);  // { key, field }
+  useEffect(() => {
+    if (!focusReq) return;
+    const el = refs.current[`${focusReq.key}:${focusReq.field}`];
+    if (el) { el.focus(); el.select?.(); setFocusReq(null); }
+  }, [focusReq, rows]);
+
+  useEffect(() => {
+    if (open) {
+      const r = consignBlank();
+      setRows([r]); setNote(''); setNewPartner(''); setErr(''); setBad({});
+      setCurKey(r.key); setPickedNote(''); setSugOpen(false);
+    }
+  }, [open]);
+
+  const patch = (key, p) => {
+    setRows((list) => consignWithTail(list.map((r) => (r.key === key ? { ...r, ...p } : r))));
+    setBad((b) => (b[key] ? { ...b, [key]: undefined } : b));
+    setErr('');
+  };
+  const remove = (key) => setRows((list) => consignWithTail(list.filter((r) => r.key !== key)));
+
+  /* Đổi nguồn hàng của một dòng: chọn chủ hàng thì điền sẵn mức hoa hồng đã
+     thoả thuận với người đó (nếu đã khai) */
+  const setSource = (key, pid) => {
+    const p = partners.find((x) => x.id === pid);
+    patch(key, {
+      partner_id: p ? p.id : null,
+      ...(p && Number(p.commission_value) > 0
+        ? { commission_type: p.commission_type || 'percent', commission_value: p.commission_value } : {}),
+    });
+  };
 
   /* ---- Ghi nhớ món mua hộ (plan 31, hạng mục 4f) ----
-     Gõ vài chữ là ra món khách này từng nhờ mua và món hay bán của tiệm;
-     chọn là điền sẵn đơn vị, giá bán, chủ hàng, hoa hồng như lần trước. */
-  const [nameFocus, setNameFocus] = useState(false);
-  const [hidden, setHidden] = useState(false);       // vừa chọn xong thì cất danh sách đi
-  const [hi, setHi] = useState(-1);
-  const [pickedNote, setPickedNote] = useState('');
-  const dq = useDebounced(f.name, 200);
+     Gõ vài chữ ở ô tên của dòng nào thì gợi ý hiện ngay dưới dòng đó: món
+     khách này từng nhờ mua và món hay bán. Chọn là điền sẵn như lần trước. */
+  const cur = rows.find((r) => r.key === curKey);
+  const dq = useDebounced(cur?.name || '', 200);
   const { data: sug } = useFetch(
     () => api.consignSuggest({ customer_id: customer?.id || '', q: dq }),
     [dq, customer?.id, open], { skip: !open });
@@ -2581,40 +2658,43 @@ function ConsignItemModal({ open, customer, partners, onClose, onSave, onPartner
     ...(sug?.customer || []).map((x) => ({ ...x, group: 'customer' })),
     ...(sug?.common || []).map((x) => ({ ...x, group: 'common' })),
   ], [sug]);
-  const showSug = open && nameFocus && !hidden && sugList.length > 0;
   useEffect(() => { setHi(-1); }, [sugList]);
 
-  const pick = (x) => {
+  const pick = (key, x) => {
     const partnerOk = !!x.partner_id && partners.some((p) => p.id === x.partner_id);
-    setF((cur) => ({
-      ...cur,
+    patch(key, {
       name: x.name,
       unit_name: x.unit_name || '',
       price: Math.round(Number(x.price) || 0),
       partner_id: partnerOk ? x.partner_id : null,
-      commission_type: partnerOk ? (x.commission_type || 'percent') : cur.commission_type,
-      commission_value: partnerOk ? (x.commission_value ?? cur.commission_value) : cur.commission_value,
+      ...(partnerOk ? { commission_type: x.commission_type || 'percent', commission_value: x.commission_value ?? 10 } : {}),
       /* Giá bốc chỉ có khi người đứng quầy được xem giá vốn — máy chủ cắt trường
-         "cost" với người khác, lúc đó để trống cho tự điền */
+         "cost" với người khác, lúc đó để trống cho chủ tiệm khai sau */
       cost: !x.partner_id && x.cost !== undefined ? Math.round(Number(x.cost) || 0) : 0,
-    }));
+    });
     setPickedNote(x.partner_id && !partnerOk
-      ? `Lần trước lấy hàng của ${x.partner_name || 'một chủ hàng'} — chủ hàng này đã ngừng, chọn lại chủ hàng bên dưới.`
+      ? `"${x.name}": lần trước lấy hàng của ${x.partner_name || 'một chủ hàng'} — người này đã ngừng, chọn lại nguồn hàng.`
       : '');
-    setHidden(true);
+    setSugOpen(false);
+    setFocusReq({ key, field: 'qty' });
   };
 
-  const onNameKey = (e) => {
-    if (!showSug) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((i) => Math.min(sugList.length - 1, i + 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((i) => Math.max(-1, i - 1)); }
-    else if (e.key === 'Enter' && hi >= 0) { e.preventDefault(); pick(sugList[hi]); }
+  const rowIndex = (key) => rows.findIndex((r) => r.key === key);
+  /* Enter ở ô số: xuống ô tên của dòng kế (dòng trống cuối luôn có sẵn) */
+  const nextRow = (key) => {
+    const next = rows[rowIndex(key) + 1];
+    if (next) setFocusReq({ key: next.key, field: 'name' });
   };
-
-  const amount = Math.round((Number(f.qty) || 0) * (Number(f.price) || 0));
-  const commission = consignCommission(f, amount);
-  const payable = amount - commission;
-  const margin = amount - Math.round((Number(f.qty) || 0) * (Number(f.cost) || 0));
+  const onNameKey = (key) => (e) => {
+    const open2 = sugOpen && curKey === key && sugList.length > 0;
+    if (open2 && e.key === 'ArrowDown') { e.preventDefault(); setHi((i) => Math.min(sugList.length - 1, i + 1)); }
+    else if (open2 && e.key === 'ArrowUp') { e.preventDefault(); setHi((i) => Math.max(-1, i - 1)); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (open2 && hi >= 0) pick(key, sugList[hi]);
+      else setFocusReq({ key, field: 'price' });
+    }
+  };
 
   const addPartner = async () => {
     const name = newPartner.trim();
@@ -2623,37 +2703,88 @@ function ConsignItemModal({ open, customer, partners, onClose, onSave, onPartner
     try {
       const p = await api.addConsignPartner({ name });
       onPartnerAdded?.();
-      setF((x) => ({ ...x, partner_id: p.id }));
+      /* Gán luôn cho dòng đang đứng (hoặc dòng có món cuối cùng) */
+      const target = cur && consignFilled(cur) ? cur : [...rows].reverse().find(consignFilled);
+      if (target) patch(target.key, { partner_id: p.id });
       setNewPartner('');
-      toast(`Đã thêm chủ hàng ${p.name}`, 'ok');
+      toast(`Đã thêm chủ hàng ${p.name}${target ? ` cho "${target.name || 'dòng đang gõ'}"` : ''}`, 'ok');
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
+  const filled = rows.filter(consignFilled);
+  const sums = filled.reduce((a, r) => {
+    const amt = Math.round((Number(r.qty) || 0) * (Number(r.price) || 0));
+    a.amount += amt;
+    if (r.partner_id) {
+      const c = consignCommission(r, amt);
+      a.commission += c;
+      a.payable += amt - c;
+    } else if (Number(r.cost) > 0) {
+      a.margin += amt - Math.round((Number(r.qty) || 0) * (Number(r.cost) || 0));
+    } else {
+      a.noCost += 1;              // chưa khai giá bốc: chưa biết lãi, đừng cộng cả tiền bán vào lãi
+    }
+    return a;
+  }, { amount: 0, commission: 0, payable: 0, margin: 0, noCost: 0 });
+
   const save = () => {
-    if (!f.name.trim()) { setErr('Bắt buộc nhập tên món.'); return; }
-    if (!(Number(f.qty) > 0)) { setErr('Số lượng phải lớn hơn 0.'); return; }
-    if (!(Number(f.price) > 0)) { setErr('Bắt buộc nhập giá bán cho khách.'); return; }
-    onSave({
-      ...f,
-      name: f.name.trim(),
-      unit_name: f.unit_name.trim() || null,
-      qty: Number(f.qty),
-      price: Math.round(Number(f.price) || 0),
-      cost: f.partner_id ? 0 : Math.round(Number(f.cost) || 0),
-      partner_name: partners.find((x) => x.id === f.partner_id)?.name || null,
-    });
+    if (!filled.length) { setErr('Chưa gõ món nào — gõ tên món và giá bán ở dòng đầu.'); return; }
+    const miss = {};
+    for (const r of filled) {
+      const m = [];
+      if (!r.name.trim()) m.push('name');
+      if (!(Number(r.qty) > 0)) m.push('qty');
+      if (!(Number(r.price) > 0)) m.push('price');
+      if (m.length) miss[r.key] = m;
+    }
+    const firstBad = filled.find((r) => miss[r.key]);
+    if (firstBad) {
+      const WHAT = { name: 'tên món', qty: 'số lượng', price: 'giá bán' };
+      setBad(miss);
+      const count = Object.keys(miss).length;
+      setErr(`Dòng ${rowIndex(firstBad.key) + 1} còn thiếu ${miss[firstBad.key].map((k) => WHAT[k]).join(', ')}`
+        + (count > 1 ? ` (và ${count - 1} dòng khác)` : '') + '.');
+      setFocusReq({ key: firstBad.key, field: miss[firstBad.key][0] });
+      return;
+    }
+    onSave(filled.map((r) => ({
+      name: r.name.trim(),
+      unit_name: r.unit_name.trim() || null,
+      qty: Number(r.qty),
+      price: Math.round(Number(r.price) || 0),
+      cost: r.partner_id ? 0 : Math.round(Number(r.cost) || 0),
+      partner_id: r.partner_id,
+      partner_name: partners.find((p) => p.id === r.partner_id)?.name || null,
+      commission_type: r.commission_type,
+      commission_value: r.commission_value,
+      note: note.trim(),
+    })));
   };
+
+  const grid = seeCost ? CONSIGN_GRID_COST : CONSIGN_GRID_CASH;
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Thêm món mua hộ vãng lai"
-      subtitle="Món tiệm không có sẵn — bốc ngoài bán chênh lệch, hoặc bán giùm hàng người khác gửi"
-      size="md"
+      subtitle="Gõ nhiều món một lượt — xong món này Enter là xuống dòng kế. Món tiệm không có sẵn: bốc ngoài, hoặc bán giùm hàng người khác gửi."
+      size="xl"
       footer={<>
+        <span className="mr-auto text-[13px] leading-tight">
+          <b>{n(filled.length)} món</b> · khách trả <b className="tabular">{money(sums.amount)}</b>
+          {seeCost && filled.length > 0 && (
+            <span className="block text-2xs text-muted-ink">
+              Tiệm lãi <b className="text-emerald-700 tabular">{money(sums.commission + sums.margin)}</b>
+              {sums.payable > 0 && <> · nợ chủ hàng <b className="text-violet-800 tabular">{money(sums.payable)}</b></>}
+              {sums.noCost > 0 && <> · <span className="text-warn">{n(sums.noCost)} món chưa có giá bốc</span></>}
+            </span>
+          )}
+        </span>
         <Button onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" onClick={save} disabled={busy}>Thêm vào giỏ</Button>
+        <Button variant="primary" onClick={save} disabled={busy || !filled.length}>
+          {filled.length > 1 ? `Thêm ${n(filled.length)} món vào giỏ` : 'Thêm vào giỏ'}
+        </Button>
       </>}
     >
       <div className="space-y-3">
@@ -2662,167 +2793,235 @@ function ConsignItemModal({ open, customer, partners, onClose, onSave, onPartner
           <p className="text-2xs text-amber-900 bg-amber-50 border border-warn/30 rounded px-2 py-1.5">{pickedNote}</p>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Tên món" required className="sm:col-span-3" htmlFor="cs-name">
-            <Input id="cs-name" value={f.name} autoFocus autoComplete="off"
-              onChange={(e) => { setF((x) => ({ ...x, name: e.target.value })); setHidden(false); setPickedNote(''); }}
-              onFocus={() => setNameFocus(true)}
-              /* Trễ một nhịp để cú bấm vào gợi ý kịp ăn trước khi danh sách đóng */
-              onBlur={() => setTimeout(() => setNameFocus(false), 150)}
-              onKeyDown={onNameKey}
-              role="combobox"
-              aria-expanded={showSug}
-              aria-controls="cs-suggest"
-              placeholder="Gõ tên món — có gợi ý món từng mua hộ" />
-          </Field>
-          {showSug && (
-            <ul id="cs-suggest" role="listbox" aria-label="Gợi ý món mua hộ"
-              className="sm:col-span-4 -mt-1.5 max-h-60 overflow-y-auto rounded border border-violet-200 bg-card shadow-pop divide-y divide-line">
-              {sugList.map((x, i) => (
-                <li key={`${x.group}:${x.name}`} role="option" aria-selected={i === hi}>
-                  {(i === 0 || sugList[i - 1].group !== x.group) && (
-                    <div className="px-2.5 pt-1.5 pb-0.5 text-2xs font-bold uppercase text-violet-800 bg-violet-50/70">
-                      {x.group === 'customer' ? `${customer?.name || 'Khách này'} từng nhờ mua` : 'Món mua hộ hay bán'}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => pick(x)}
-                    className={`w-full text-left px-2.5 py-1.5 flex items-center gap-2 cursor-pointer
-                                ${i === hi ? 'bg-accent-soft/60' : 'hover:bg-muted/60'}`}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px] font-semibold truncate">{x.name}</span>
-                      <span className="block text-2xs text-muted-ink truncate">
-                        {x.unit_name ? `${x.unit_name} · ` : ''}
-                        {x.partner_id ? `của ${x.partner_name || 'chủ hàng'}${x.commission_value ? ` · hoa hồng ${n(x.commission_value)}${x.commission_type === 'percent' ? '%' : 'đ'}` : ''}` : 'tiệm tự bốc'}
-                        {` · ${n(x.times)} lần · gần nhất ${date(x.last_ts)}`}
-                      </span>
-                    </span>
-                    <span className="tabular text-[13px] font-semibold shrink-0">{money(x.price)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <Field label="Đơn vị" htmlFor="cs-unit">
-            <Input id="cs-unit" value={f.unit_name}
-              onChange={(e) => setF((x) => ({ ...x, unit_name: e.target.value }))}
-              placeholder="Cái" />
-          </Field>
-          <Field label="Số lượng" required htmlFor="cs-qty">
-            <QtyInput id="cs-qty" size="md" value={f.qty}
-              onChange={(v) => setF((x) => ({ ...x, qty: v }))} />
-          </Field>
-          <Field label="Giá bán cho khách" required className="sm:col-span-3" htmlFor="cs-price">
-            <MoneyInput id="cs-price" value={f.price}
-              onChange={(v) => setF((x) => ({ ...x, price: v }))} />
-          </Field>
-        </div>
-
-        <Field
-          label="Chủ hàng gửi bán"
-          hint="Để trống nếu tiệm tự chạy đi bốc và trả đứt tiền mặt tại chỗ"
-        >
-          <Combo
-            items={[...partners]}
-            value={f.partner_id}
-            onChange={(id) => setF((x) => ({ ...x, partner_id: id || null }))}
-            placeholder="Không chọn ai — tiệm tự bốc ngoài"
-            filter={(x, q) => match(x.name, q) || (x.phone || '').includes(q.trim())}
-            render={(x) => ({ label: x.name, sub: x.phone || '' })}
-          />
-        </Field>
-
-        <div className="flex items-end gap-1.5">
-          <Field label="Thêm nhanh chủ hàng mới" className="flex-1" htmlFor="cs-newp">
-            <Input id="cs-newp" value={newPartner}
-              onChange={(e) => setNewPartner(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPartner(); } }}
-              placeholder="Tên chủ hàng, ví dụ: Anh Ruột" />
-          </Field>
-          <Button icon={Plus} onClick={addPartner} disabled={!newPartner.trim() || busy}>Thêm</Button>
-        </div>
-
-        {/* Hai kịch bản rẽ nhánh rõ ràng, không để người đứng quầy đoán */}
-        {f.partner_id ? (
-          <div className="card p-3 bg-violet-50 border-violet-200 space-y-2">
-            <h4 className="text-[13px] font-bold text-violet-900 flex items-center gap-1.5">
-              <Handshake size={14} aria-hidden="true" />
-              Hàng của chủ khác gửi — treo đối soát
-            </h4>
-            <div className="flex items-end gap-2">
-              <Field label="Hoa hồng tiệm giữ" className="flex-1">
-                <div className="flex gap-1.5">
-                  <Select className="!w-20" aria-label="Cách tính hoa hồng"
-                    value={f.commission_type}
-                    onChange={(e) => setF((x) => ({ ...x, commission_type: e.target.value }))}>
-                    <option value="percent">%</option>
-                    <option value="amount">đồng</option>
-                  </Select>
-                  <Input type="number" min="0" step="any" className="flex-1"
-                    aria-label="Mức hoa hồng"
-                    value={f.commission_value}
-                    onChange={(e) => setF((x) => ({ ...x, commission_value: e.target.value }))} />
-                </div>
-              </Field>
-            </div>
-            <div className="text-2xs space-y-0.5">
-              <div className="flex justify-between">
-                <span className="text-muted-ink">Khách trả</span>
-                <span className="tabular font-semibold">{money(amount)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-ink">Hoa hồng tiệm giữ</span>
-                <span className="tabular font-semibold text-emerald-700">{money(commission)}</span>
-              </div>
-              <div className="flex justify-between border-t border-violet-200 pt-0.5">
-                <span className="font-semibold text-violet-900">Còn nợ chủ hàng</span>
-                <span className="tabular font-bold text-violet-900">{money(payable)}</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="card p-3 bg-amber-50 border-warn/30 space-y-2">
-            <h4 className="text-[13px] font-bold text-amber-900 flex items-center gap-1.5">
-              <Wallet size={14} aria-hidden="true" />
-              Tiệm tự bốc ngoài — ăn chênh lệch, không treo nợ ai
-            </h4>
-            <Field
-              label="Giá tiệm bốc (một đơn vị)"
-              hint="Tiền trả đứt tại chỗ. Vào giá vốn của đơn để tính đúng lãi — không tự sinh phiếu chi, muốn ghi quỹ thì lập phiếu bên Quỹ tiền."
-            >
-              <MoneyInput value={f.cost} onChange={(v) => setF((x) => ({ ...x, cost: v }))} />
-            </Field>
-            <div className="text-2xs space-y-0.5">
-              <div className="flex justify-between">
-                <span className="text-muted-ink">Khách trả</span>
-                <span className="tabular font-semibold">{money(amount)}</span>
-              </div>
-              <div className="flex justify-between border-t border-warn/30 pt-0.5">
-                <span className="font-semibold text-amber-900">Tiệm ăn chênh</span>
-                <span className={`tabular font-bold ${margin < 0 ? 'text-danger' : 'text-emerald-700'}`}>
-                  {money(margin)}
-                </span>
-              </div>
-            </div>
-          </div>
+        {!seeCost && (
+          <p className="text-[13px] rounded-lg border border-line bg-muted/40 px-2.5 py-2 flex items-start gap-1.5">
+            <ShieldCheck size={15} className="shrink-0 mt-0.5 text-accent" aria-hidden="true" />
+            <span>
+              Chỉ cần gõ <b>tên món, số lượng và giá bán cho khách</b>. Hoa hồng, giá tiệm bốc và tiền
+              chênh lệch do chủ tiệm hoặc quản lý chốt lại sau khi hoá đơn xong.
+            </span>
+          </p>
         )}
 
-        <Field label="Ghi chú" htmlFor="cs-note">
-          <Input id="cs-note" value={f.note}
-            onChange={(e) => setF((x) => ({ ...x, note: e.target.value }))}
-            placeholder="Lấy ở tiệm anh Tư chợ Cái Bè" />
-        </Field>
+        <div role="table" aria-label="Các món mua hộ" className="md:rounded-lg md:border md:border-line">
+          {/* Tiêu đề cột — màn hình hẹp thì mỗi dòng thành một thẻ, ô tự có chữ gợi ý */}
+          <div role="row" className={`hidden md:grid ${grid} gap-2 px-2 py-1.5 bg-muted/60 border-b border-line
+                                      text-2xs font-bold uppercase text-muted-ink rounded-t-lg`}>
+            <span role="columnheader">#</span>
+            <span role="columnheader">Tên món</span>
+            <span role="columnheader">ĐVT</span>
+            <span role="columnheader" className="text-right">SL</span>
+            <span role="columnheader" className="text-right">Giá bán</span>
+            <span role="columnheader">Nguồn hàng</span>
+            {seeCost && <span role="columnheader">Hoa hồng / giá bốc</span>}
+            <span role="columnheader" className="text-right">Thành tiền</span>
+            <span role="columnheader"><span className="sr-only">Xoá</span></span>
+          </div>
+          <div className="space-y-2 md:space-y-0">
+            {rows.map((r, i) => (
+              <ConsignRow
+                key={r.key}
+                r={r}
+                index={i}
+                tail={i === rows.length - 1 && !consignFilled(r)}
+                grid={grid}
+                seeCost={seeCost}
+                partners={partners}
+                missing={bad[r.key] || []}
+                setRef={(field) => (el) => { refs.current[`${r.key}:${field}`] = el; }}
+                onPatch={(p) => patch(r.key, p)}
+                onSource={(pid) => setSource(r.key, pid)}
+                onRemove={() => remove(r.key)}
+                onNext={() => nextRow(r.key)}
+                onRowFocus={() => setCurKey(r.key)}
+                onNameKey={onNameKey(r.key)}
+                onNameFocus={() => { setCurKey(r.key); setSugOpen(true); }}
+                onNameBlur={() => setTimeout(() => setSugOpen(false), 150)}
+                onNameType={() => { setSugOpen(true); setPickedNote(''); }}
+                sugList={sugOpen && curKey === r.key ? sugList : []}
+                hi={hi}
+                onPick={(x) => pick(r.key, x)}
+                customerName={customer?.name}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="flex items-end gap-1.5">
+            <Field label="Thêm nhanh chủ hàng mới" className="flex-1" htmlFor="cs-newp"
+              hint="Thêm xong là gán luôn cho dòng đang gõ.">
+              <Input id="cs-newp" value={newPartner}
+                onChange={(e) => setNewPartner(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPartner(); } }}
+                placeholder="Tên chủ hàng, ví dụ: Anh Ruột" />
+            </Field>
+            <Button icon={Plus} onClick={addPartner} disabled={!newPartner.trim() || busy} className="mb-5">Thêm</Button>
+          </div>
+          <Field label="Ghi chú (cho các món trên)" htmlFor="cs-note">
+            <Input id="cs-note" value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Lấy ở tiệm anh Tư chợ Cái Bè" />
+          </Field>
+        </div>
 
         <p className="text-2xs text-muted-ink flex items-start gap-1.5">
           <ShieldCheck size={12} className="shrink-0 mt-0.5" aria-hidden="true" />
-          Hoá đơn in cho khách <b className="mx-1">không hiện</b> tên chủ hàng hay giá bốc — món
+          Hoá đơn in cho khách <b className="mx-1">không hiện</b> tên chủ hàng hay giá bốc — các món
           này in phẳng như hàng của tiệm.
         </p>
       </div>
     </Modal>
+  );
+}
+
+/* Một dòng của bảng mua hộ. Màn hình rộng: một hàng ngang theo cột; màn hình
+   hẹp (điện thoại bán hàng): một thẻ, các ô xếp hai tầng. */
+function ConsignRow({
+  r, index, tail, grid, seeCost, partners, missing, setRef, onPatch, onSource, onRemove, onNext,
+  onRowFocus, onNameKey, onNameFocus, onNameBlur, onNameType, sugList, hi, onPick, customerName,
+}) {
+  const amount = Math.round((Number(r.qty) || 0) * (Number(r.price) || 0));
+  const commission = consignCommission(r, amount);
+  const margin = amount - Math.round((Number(r.qty) || 0) * (Number(r.cost) || 0));
+  const miss = (f) => (missing.includes(f) ? '!border-danger ring-1 ring-danger/40' : '');
+  const enterNext = (e) => { if (e.key === 'Enter') { e.preventDefault(); onNext(); } };
+  const label = `dòng ${index + 1}`;
+
+  return (
+    <div
+      role="row"
+      onFocus={onRowFocus}
+      className={`grid grid-cols-6 ${grid} gap-2 items-start rounded-lg border border-line p-2
+                  md:rounded-none md:border-0 md:border-b md:last:border-b-0 md:px-2 md:py-1.5
+                  ${tail ? 'bg-muted/25' : r.partner_id ? 'bg-violet-50/50' : ''}`}
+    >
+      <span role="cell" className="col-span-6 md:col-span-1 text-2xs font-bold text-muted-ink md:pt-2.5 tabular">
+        <span className="md:hidden">Món </span>{index + 1}
+      </span>
+
+      {/* Tên món + gợi ý món từng mua hộ */}
+      <div role="cell" className="relative col-span-6 md:col-span-1">
+        <Input
+          inputRef={setRef('name')}
+          value={r.name}
+          autoFocus={index === 0}
+          autoComplete="off"
+          className={miss('name')}
+          aria-label={`Tên món ${label}`}
+          placeholder={tail && index > 0 ? 'Gõ món tiếp theo…' : 'Tên món — có gợi ý món từng mua hộ'}
+          onChange={(e) => { onPatch({ name: e.target.value }); onNameType(); }}
+          onFocus={onNameFocus}
+          onBlur={onNameBlur}
+          onKeyDown={onNameKey}
+          role="combobox"
+          aria-expanded={sugList.length > 0}
+          aria-controls={`cs-sug-${r.key}`}
+        />
+        {sugList.length > 0 && (
+          <ul id={`cs-sug-${r.key}`} role="listbox" aria-label="Gợi ý món mua hộ"
+            className="absolute left-0 right-0 top-full mt-1 z-30 max-h-60 overflow-y-auto rounded border
+                       border-violet-200 bg-card shadow-pop divide-y divide-line md:min-w-[26rem]">
+            {sugList.map((x, i) => (
+              <li key={`${x.group}:${x.name}`} role="option" aria-selected={i === hi}>
+                {(i === 0 || sugList[i - 1].group !== x.group) && (
+                  <div className="px-2.5 pt-1.5 pb-0.5 text-2xs font-bold uppercase text-violet-800 bg-violet-50/70">
+                    {x.group === 'customer' ? `${customerName || 'Khách này'} từng nhờ mua` : 'Món mua hộ hay bán'}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => onPick(x)}
+                  className={`w-full text-left px-2.5 py-1.5 flex items-center gap-2 cursor-pointer
+                              ${i === hi ? 'bg-accent-soft/60' : 'hover:bg-muted/60'}`}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-semibold truncate">{x.name}</span>
+                    <span className="block text-2xs text-muted-ink truncate">
+                      {x.unit_name ? `${x.unit_name} · ` : ''}
+                      {x.partner_id
+                        ? `của ${x.partner_name || 'chủ hàng'}${seeCost && x.commission_value ? ` · hoa hồng ${n(x.commission_value)}${x.commission_type === 'percent' ? '%' : 'đ'}` : ''}`
+                        : 'tiệm tự bốc'}
+                      {` · ${n(x.times)} lần · gần nhất ${date(x.last_ts)}`}
+                    </span>
+                  </span>
+                  <span className="tabular text-[13px] font-semibold shrink-0">{money(x.price)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div role="cell" className="col-span-2 md:col-span-1">
+        <Input value={r.unit_name} placeholder="Cái" aria-label={`Đơn vị ${label}`}
+          onChange={(e) => onPatch({ unit_name: e.target.value })} onKeyDown={enterNext} />
+      </div>
+      <div role="cell" className="col-span-2 md:col-span-1">
+        <QtyInput size="md" inputRef={setRef('qty')} value={r.qty} className={miss('qty')} aria-label={`Số lượng ${label}`}
+          onChange={(v) => onPatch({ qty: v })} onKeyDown={enterNext} />
+      </div>
+      <div role="cell" className="col-span-2 md:col-span-1">
+        <MoneyInput inputRef={setRef('price')} value={r.price} className={miss('price')}
+          placeholder="Giá bán" aria-label={`Giá bán cho khách ${label}`}
+          onChange={(v) => onPatch({ price: v })} onKeyDown={enterNext} />
+      </div>
+
+      <div role="cell" className={`${seeCost ? 'col-span-3' : 'col-span-6'} md:col-span-1`}>
+        <Select value={r.partner_id || ''} aria-label={`Nguồn hàng ${label}`}
+          className={r.partner_id ? '!border-violet-300 !text-violet-900' : ''}
+          onChange={(e) => onSource(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Tiệm tự bốc ngoài</option>
+          {partners.map((p) => <option key={p.id} value={p.id}>Hàng gửi: {p.name}</option>)}
+        </Select>
+      </div>
+
+      {seeCost && (
+        <div role="cell" className="col-span-3 md:col-span-1">
+          {r.partner_id ? (
+            <div className="flex gap-1">
+              <Select className="!w-[3.25rem] !px-1" aria-label={`Cách tính hoa hồng ${label}`}
+                value={r.commission_type}
+                onChange={(e) => onPatch({ commission_type: e.target.value })}>
+                <option value="percent">%</option>
+                <option value="amount">đ</option>
+              </Select>
+              <Input type="number" min="0" step="any" className="flex-1 min-w-0 text-right"
+                aria-label={`Mức hoa hồng ${label}`} title="Hoa hồng tiệm giữ"
+                value={r.commission_value}
+                onChange={(e) => onPatch({ commission_value: e.target.value })} onKeyDown={enterNext} />
+            </div>
+          ) : (
+            <MoneyInput value={r.cost} placeholder="Giá bốc / đv" aria-label={`Giá tiệm bốc một đơn vị ${label}`}
+              title="Giá tiệm bốc (một đơn vị) — vào giá vốn để tính đúng lãi"
+              onChange={(v) => onPatch({ cost: v })} onKeyDown={enterNext} />
+          )}
+        </div>
+      )}
+
+      <div role="cell" className="col-span-5 md:col-span-1 text-right md:pt-1.5">
+        <div className="tabular font-bold text-[13px]">{money(amount)}</div>
+        {!tail && seeCost && amount > 0 && (
+          r.partner_id
+            ? <div className="text-2xs tabular leading-tight">
+              <span className="block text-emerald-700">HH {n(commission)}</span>
+              <span className="block text-muted-ink">trả chủ {n(amount - commission)}</span>
+            </div>
+            : <div className={`text-2xs tabular ${Number(r.cost) > 0 ? (margin < 0 ? 'text-danger' : 'text-emerald-700') : 'text-muted-ink'}`}>
+              {Number(r.cost) > 0 ? `chênh ${n(margin)}` : 'chưa có giá bốc'}
+            </div>
+        )}
+      </div>
+
+      <div role="cell" className="col-span-1 flex justify-end md:pt-0.5">
+        {!tail && (
+          <IconButton icon={Trash2} size={14} label={`Xoá ${r.name || label}`}
+            className="!text-danger hover:!bg-red-50" onClick={onRemove} />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -3111,8 +3310,39 @@ function CustomerQuickModal({ open, customerId, onClose, onChanged }) {
 function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
   const { toast } = useApp();
   const { data, busy, reload } = useFetch(() => api.get('/drafts'), [], { skip: !open });
+  const [q, setQ] = useState('');
+  const [selId, setSelId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [busyDel, setBusyDel] = useState(false);
+
+  const rows = useMemo(() => {
+    const list = Array.isArray(data) ? data : [];
+    const k = q.trim();
+    if (!k) return list;
+    return list.filter((d) => match(d.title || '', k) || match(d.code || '', k)
+      || match(d.customer_name || '', k) || match(d.buyer_name || '', k));
+  }, [data, q]);
+
+  useEffect(() => { if (open) { setQ(''); setSelId(null); setDetail(null); } }, [open]);
+
+  /* Chọn sẵn đơn đầu tiên: mở hộp ra là thấy luôn nội dung, khỏi bấm thêm một nhịp */
+  useEffect(() => {
+    if (!open || selId || !rows.length) return;
+    setSelId(rows[0].id);
+  }, [open, rows, selId]);
+
+  useEffect(() => {
+    if (!selId) { setDetail(null); return undefined; }
+    let alive = true;
+    setLoadingDetail(true);
+    api.draft(selId)
+      .then((d) => { if (alive) setDetail(d); })
+      .catch(() => { if (alive) setDetail(null); })
+      .finally(() => { if (alive) setLoadingDetail(false); });
+    return () => { alive = false; };
+  }, [selId]);
 
   /* Dùng hộp xác nhận của phần mềm, không dùng window.confirm — trình duyệt
      nhúng trong ứng dụng chặn hộp đó, bấm xoá xong không có gì xảy ra. */
@@ -3120,6 +3350,7 @@ function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
     setBusyDel(true);
     try {
       await api.del(`/drafts/${deleting.id}`);
+      if (deleting.id === selId) { setSelId(null); setDetail(null); }
       setDeleting(null);
       reload();
       onChanged?.();
@@ -3131,71 +3362,147 @@ function DraftsModal({ open, onClose, onOpen, openIds, onChanged }) {
     }
   };
 
+  const p = detail?.payload || null;
+  const cart = Array.isArray(p?.cart) ? p.cart : [];
+  const consign = Array.isArray(p?.consign) ? p.consign : [];
+  const goods = cart.reduce((a, l) => a + Math.round((Number(l.qty) || 0) * (Number(l.price) || 0)), 0);
+  const consignSum = consign.reduce((a, c) => a + Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)), 0);
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Đơn lưu tạm"
       subtitle="Đơn đang bán dở, lưu trên máy chủ nên máy nào trong tiệm cũng mở tiếp được. Mở lại thì đơn rời khỏi danh sách này."
-      size="xl"
+      size="full"
       footer={<Button onClick={onClose}>Đóng</Button>}
     >
-      {busy ? <Spinner />
-        : !data?.length ? (
-          <Empty
-            icon={Save}
-            title="Chưa có hoá đơn tạm nào"
-            message="Đang bán dở mà khách hẹn quay lại? Bấm Lưu tạm ở màn hình bán hàng."
-          />
-        ) : (
-          <div className="table-wrap">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Tên</th><th>Mã</th><th>Khách hàng</th><th>Người mua hộ</th>
-                  <th className="text-right">Số mặt</th>
-                  <th className="text-right">Tạm tính</th>
-                  <th>Lưu lúc</th><th>Người lưu</th>
-                  <th className="text-right">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((d) => {
-                  const isOpen = openIds.includes(d.id);
-                  return (
-                    <tr key={d.id} className="hoverable">
-                      <td className="font-semibold">{d.tab_no ? tabTitle(d.tab_no) : (d.title || '(chưa đặt tên)')}</td>
-                      <td className="font-mono text-muted-ink">{d.code}</td>
-                      <td>{d.customer_name || 'Khách lẻ'}</td>
-                      {/* Người mua hộ (plan 31, 1.2b) — thợ lấy hàng cho chủ nhà */}
-                      <td className={d.buyer_name ? 'text-violet-800' : 'text-muted-ink'}>
-                        {d.buyer_name
-                          ? <>{d.buyer_name}{d.buyer_phone && <div className="text-2xs text-muted-ink">{d.buyer_phone}</div>}</>
-                          : '—'}
-                      </td>
-                      <td className="num">
-                        {d.item_count}
-                        {d.consign_count > 0 && <div className="text-2xs text-violet-700">+{d.consign_count} mua hộ</div>}
-                      </td>
-                      <td className="num font-semibold">{money(d.total)}</td>
-                      <td className="text-muted-ink whitespace-nowrap">{smartTime(d.updated_at)}</td>
-                      <td className="text-muted-ink">{d.user_name || '—'}</td>
-                      <td>
-                        <div className="flex items-center justify-end gap-1">
-                          {isOpen
-                            ? <Badge tone="info">Đang mở</Badge>
-                            : <Button size="sm" variant="soft" onClick={() => onOpen(d)}>Mở tiếp</Button>}
-                          <IconButton icon={Trash2} label={`Xoá ${d.title || d.code}`} size={14}
-                            className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(d)} />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {/* Hai khung: danh sách bên trái, nội dung đơn đang chọn bên phải (BRD mục 1) */}
+      <div className="grid gap-3 lg:grid-cols-[minmax(280px,360px)_1fr] lg:h-[calc(100vh-16rem)]">
+        <section className={`flex flex-col min-h-0 gap-2 ${selId ? 'hidden lg:flex' : ''}`} aria-label="Danh sách đơn lưu tạm">
+          <SearchInput size="sm" value={q} onChange={setQ} placeholder="Tìm tên đơn, mã, khách hàng..." />
+          <div className="flex-1 min-h-0 overflow-y-auto rounded border border-line bg-card divide-y divide-line">
+            {busy && !data ? <Spinner />
+              : !rows.length ? (
+                <Empty
+                  icon={Save}
+                  title={q ? 'Không có đơn nào khớp' : 'Chưa có hoá đơn tạm nào'}
+                  message={q ? 'Thử từ khoá khác.' : 'Đang bán dở mà khách hẹn quay lại? Bấm Lưu tạm ở màn hình bán hàng.'}
+                />
+              ) : rows.map((d) => {
+                const isOpen = openIds.includes(d.id);
+                const active = d.id === selId;
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => setSelId(d.id)}
+                    aria-current={active}
+                    className={`w-full text-left px-2.5 py-2 cursor-pointer transition-colors duration-100
+                                ${active ? 'bg-accent-soft/60' : 'hover:bg-muted/60'}`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-semibold text-[13px] truncate">
+                        {d.tab_no ? tabTitle(d.tab_no) : (d.title || '(chưa đặt tên)')}
+                      </span>
+                      <span className="tabular text-[13px] font-semibold shrink-0">{money(d.total)}</span>
+                    </div>
+                    <div className="text-2xs text-muted-ink flex items-center gap-1.5 flex-wrap">
+                      <span className="font-mono">{d.code}</span>
+                      <span>· {d.customer_name || 'Khách lẻ'}</span>
+                      <span>· {d.item_count} món{d.consign_count > 0 ? ` +${d.consign_count} mua hộ` : ''}</span>
+                      <span>· {smartTime(d.updated_at)}</span>
+                      {isOpen && <Badge tone="info">Đang mở</Badge>}
+                    </div>
+                  </button>
+                );
+              })}
           </div>
-        )}
+        </section>
+
+        <section className={`flex flex-col min-h-0 ${selId ? '' : 'hidden lg:flex'}`} aria-label="Nội dung đơn đang chọn">
+          {!selId ? (
+            <Empty icon={Save} title="Chưa chọn đơn nào" message="Bấm một đơn bên trái để xem nội dung." />
+          ) : loadingDetail && !detail ? <Spinner label="Đang mở đơn tạm..." />
+            : !detail ? <Empty icon={Save} title="Không mở được đơn này" message="Thử chọn đơn khác." />
+              : (
+                <div className="flex flex-col min-h-0 gap-2">
+                  <div className="flex flex-wrap items-start gap-2">
+                    <Button size="sm" className="lg:hidden" icon={ArrowLeft} onClick={() => setSelId(null)}>Danh sách</Button>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold">
+                        {detail.tab_no ? tabTitle(detail.tab_no) : (detail.title || '(chưa đặt tên)')}
+                        <span className="ml-2 font-mono text-2xs text-muted-ink">{detail.code}</span>
+                      </div>
+                      <div className="text-2xs text-muted-ink">
+                        {detail.customer_name || 'Khách lẻ'}
+                        {p?.buyer?.name ? ` · người mua hộ: ${p.buyer.name}` : ''}
+                        {' · lưu '}{smartTime(detail.updated_at)}
+                        {detail.user_name ? ` bởi ${detail.user_name}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {openIds.includes(detail.id)
+                        ? <Badge tone="info">Đang mở ở tab khác</Badge>
+                        : <Button size="sm" variant="primary" onClick={() => onOpen(detail)}>Mở tiếp đơn này</Button>}
+                      <IconButton icon={Trash2} label={`Xoá ${detail.title || detail.code}`} size={14}
+                        className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(detail)} />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-h-0 overflow-y-auto rounded border border-line bg-card">
+                    {cart.length === 0 && consign.length === 0 ? (
+                      <p className="p-3 text-[13px] text-muted-ink">Đơn tạm này không còn dòng hàng nào.</p>
+                    ) : (
+                      <table className="data">
+                        <thead>
+                          <tr>
+                            <th>Tên hàng</th>
+                            <th className="text-right">SL</th>
+                            <th className="text-right">Đơn giá</th>
+                            <th className="text-right">Thành tiền</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cart.map((l, i) => (
+                            <tr key={`c${i}`}>
+                              <td>
+                                <div className="font-medium">{l.name}</div>
+                                <div className="text-2xs text-muted-ink">{l.unit_name}{l.note ? ` · ${l.note}` : ''}</div>
+                              </td>
+                              <td className="num">{fq(l.qty)}</td>
+                              <td className="num">{money(l.price)}</td>
+                              <td className="num font-semibold">{money(Math.round((Number(l.qty) || 0) * (Number(l.price) || 0)))}</td>
+                            </tr>
+                          ))}
+                          {consign.map((c, i) => (
+                            <tr key={`s${i}`} className="bg-violet-50/40">
+                              <td>
+                                <div className="font-medium">{c.name}</div>
+                                <div className="text-2xs text-violet-800">
+                                  Mua hộ{c.partner_name ? ` · hàng của ${c.partner_name}` : ' · tiệm tự bốc'}
+                                </div>
+                              </td>
+                              <td className="num">{fq(c.qty)}</td>
+                              <td className="num">{money(c.price)}</td>
+                              <td className="num font-semibold">{money(Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr>
+                            <td colSpan={3}>Tạm tính{consign.length > 0 ? ` (gồm ${n(consign.length)} món mua hộ)` : ''}</td>
+                            <td className="num">{money(goods + consignSum)}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    )}
+                  </div>
+                  {p?.note && <p className="text-2xs text-muted-ink">Ghi chú: {p.note}</p>}
+                </div>
+              )}
+        </section>
+      </div>
 
       <Confirm
         open={!!deleting}

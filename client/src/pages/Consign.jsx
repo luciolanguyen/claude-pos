@@ -485,6 +485,13 @@ function DoneTab() {
 
   return (
     <div className="p-3 space-y-3">
+      {/* Tiền còn nợ các chủ hàng — trả thiếu thì phần còn lại nằm đây (BRD mục 4) */}
+      {data?.sums?.owing > 0 && (
+        <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-[13px] text-amber-900">
+          Tiệm còn nợ các chủ hàng <b className="tabular">{money(data.sums.owing)}</b> trong các đợt đã chốt.
+          Bấm <b>Trả tiếp</b> ở đợt còn nợ để trả thêm — trả bao nhiêu cũng được.
+        </p>
+      )}
       {busy && !data ? <Spinner />
         : error ? <ErrorBox error={error} onRetry={reload} />
           : rows.length === 0 ? (
@@ -503,9 +510,10 @@ function DoneTab() {
                       <th className="text-right">Tiền bán hộ</th>
                       <th className="text-right">Hoa hồng</th>
                       <th className="text-right">Chiết khấu</th>
-                      {/* Số phải trả sau chiết khấu — đã trả hay chưa xem cột Phiếu chi */}
-                      <th className="text-right">Thực trả</th>
-                      <th>Phiếu chi</th>
+                      {/* Số phải trả sau chiết khấu, đã trả bao nhiêu, còn nợ bao nhiêu */}
+                      <th className="text-right">Phải trả</th>
+                      <th className="text-right">Đã trả</th>
+                      <th>Còn nợ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -524,15 +532,19 @@ function DoneTab() {
                         <td className="num text-emerald-700">{money(x.commission)}</td>
                         <td className="num">{x.discount > 0 ? money(x.discount) : '—'}</td>
                         <td className="num font-bold">{money(x.payout)}</td>
+                        <td className="num">{x.paid > 0 ? money(x.paid) : '—'}</td>
                         <td onClick={(e) => e.stopPropagation()}>
-                          {x.cash_code
-                            ? <Badge tone="ok">{x.cash_code}</Badge>
-                            : x.payout > 0 ? (
+                          {x.owing > 0 ? (
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <span className="tabular font-semibold text-warn">{money(x.owing)}</span>
                               <Button size="sm" variant="primary" icon={Banknote} onClick={() => setPaying(x)}
-                                title="Đợt này chốt sổ mà chưa trả tiền — bấm để lập phiếu chi">
-                                Chi tiền
+                                title="Trả thêm cho chủ hàng — trả một phần cũng được">
+                                {x.paid > 0 ? 'Trả tiếp' : 'Chi tiền'}
                               </Button>
-                            ) : <Badge tone="mute">Không phải trả</Badge>}
+                            </div>
+                          ) : x.payout > 0
+                            ? <Badge tone="ok">Đã trả đủ</Badge>
+                            : <Badge tone="mute">Không phải trả</Badge>}
                         </td>
                       </tr>
                     ))}
@@ -569,11 +581,15 @@ function PaySettlementModal({ settlement, onClose, onDone }) {
   const [err, setErr] = useState('');
   const [voucher, setVoucher] = useState(null);
   const [paid, setPaid] = useState(null);
+  /* Trả một phần cũng được (BRD nâng cấp, mục 4): mặc định trả nốt phần còn nợ */
+  const owing = settlement ? Math.max(0, (settlement.payout || 0) - (settlement.paid || 0)) : 0;
+  const [amount, setAmount] = useState(0);
 
   useEffect(() => {
     if (settlement) {
       setAccountId((accounts.find((a) => a.type === 'cash') || accounts[0])?.id || '');
       setErr(''); setPaid(null);
+      setAmount(owing);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settlement?.id]);
@@ -582,10 +598,13 @@ function PaySettlementModal({ settlement, onClose, onDone }) {
     setBusy(true);
     setErr('');
     try {
-      const res = await api.payConsignSettlement(settlement.id, { account_id: accountId || undefined, user_id: user?.id });
-      setPaid(res);
+      const res = await api.payConsignSettlement(settlement.id, {
+        amount, account_id: accountId || undefined, user_id: user?.id,
+      });
+      setPaid({ ...res, amount });
       onDone?.();
-      toast(`Đã chi ${money(res.payout)} cho ${settlement.partner_name} — phiếu ${res.cash_code}`, 'ok', 6000);
+      toast(`Đã chi ${money(amount)} cho ${settlement.partner_name} — phiếu ${res.cash_code}`
+        + (res.owing > 0 ? ` · còn nợ ${money(res.owing)}` : ''), 'ok', 7000);
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
@@ -607,15 +626,18 @@ function PaySettlementModal({ settlement, onClose, onDone }) {
           <Button variant="primary" icon={Printer} onClick={printVoucher}>In phiếu chi</Button>
         </> : <>
           <Button onClick={onClose}>Huỷ</Button>
-          <Button variant="primary" icon={Banknote} onClick={pay} loading={busy}>
-            Chi {money(settlement?.payout)}
+          <Button variant="primary" icon={Banknote} onClick={pay} loading={busy} disabled={!(amount > 0) || amount > owing}>
+            Chi {money(amount)}
           </Button>
         </>}
       >
         {settlement && (paid ? (
           <p className="text-[13px]">
             Đã lập phiếu chi <b className="font-mono">{paid.cash_code}</b> trả{' '}
-            <b>{money(paid.payout)}</b> cho <b>{settlement.partner_name}</b>.
+            <b>{money(paid.amount)}</b> cho <b>{settlement.partner_name}</b>.
+            {paid.owing > 0
+              ? <> Còn nợ <b className="text-warn">{money(paid.owing)}</b> — trả tiếp ở danh sách đợt đã chốt.</>
+              : ' Đã trả đủ đợt này.'}
           </p>
         ) : (
           <div className="space-y-3">
@@ -627,9 +649,28 @@ function PaySettlementModal({ settlement, onClose, onDone }) {
                 <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular">− {money(settlement.discount)}</span></div>
               )}
               <div className="flex justify-between border-t border-line pt-1 font-bold">
-                <span>Thực trả</span><span className="tabular text-accent">{money(settlement.payout)}</span>
+                <span>Phải trả</span><span className="tabular">{money(settlement.payout)}</span>
+              </div>
+              {settlement.paid > 0 && (
+                <div className="flex justify-between"><span className="text-muted-ink">Đã trả trước đó</span><span className="tabular">− {money(settlement.paid)}</span></div>
+              )}
+              <div className="flex justify-between font-bold">
+                <span>Còn nợ</span><span className="tabular text-accent">{money(owing)}</span>
               </div>
             </div>
+            <Field label="Lần này trả" htmlFor="csp-amount"
+              hint="Chưa gom đủ thì trả một phần; phần còn lại vẫn nằm trong sổ nợ chủ hàng.">
+              <MoneyInput id="csp-amount" size="lg" value={amount} autoFocus
+                onChange={(v) => setAmount(Math.max(0, Math.min(v, owing)))} />
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                <button type="button" onClick={() => setAmount(owing)}
+                  className={`btn btn-sm ${amount === owing ? 'btn-soft' : 'btn-outline'}`}>Trả hết {n(owing)}</button>
+                {owing >= 2 && (
+                  <button type="button" onClick={() => setAmount(Math.round(owing / 2))}
+                    className={`btn btn-sm ${amount === Math.round(owing / 2) ? 'btn-soft' : 'btn-outline'}`}>Một nửa</button>
+                )}
+              </div>
+            </Field>
             <Field label="Chi từ quỹ" htmlFor="csp-acc">
               <Select id="csp-acc" value={accountId} onChange={(e) => setAccountId(Number(e.target.value))}>
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -655,8 +696,10 @@ function SettlementDetail({ id, onClose, onPay }) {
       subtitle={data ? `${data.partner_name} · ${n(data.item_count)} món` : ''}
       size="lg"
       footer={<>
-        {data && !data.cash_tx_id && data.payout > 0 && (
-          <Button variant="primary" icon={Banknote} onClick={() => onPay?.(data)}>Chi tiền {money(data.payout)}</Button>
+        {data && data.owing > 0 && (
+          <Button variant="primary" icon={Banknote} onClick={() => onPay?.(data)}>
+            {data.paid > 0 ? `Trả tiếp (còn ${money(data.owing)})` : `Chi tiền ${money(data.payout)}`}
+          </Button>
         )}
         <div className="flex-1" />
         <Button onClick={onClose}>Đóng</Button>
@@ -695,11 +738,31 @@ function SettlementDetail({ id, onClose, onPay }) {
               </tbody>
             </table>
           </div>
-          <p className="text-[13px]">
-            {data.cash_code
-              ? <>Đã chi tiền — phiếu chi <b className="font-mono">{data.cash_code}</b>{data.paid_at ? ` ngày ${date(data.paid_at)}` : ''}.</>
-              : <span className="text-warn font-semibold">Chưa chi tiền cho chủ hàng.</span>}
-          </p>
+          {/* Các lần đã trả — trả làm nhiều lần thì mỗi lần một dòng (BRD mục 4) */}
+          {data.payments?.length > 0 ? (
+            <div className="card p-2.5 text-[13px] space-y-1">
+              <div className="text-2xs font-bold text-muted-ink uppercase">Các lần đã trả</div>
+              {data.payments.map((p, i) => (
+                <div key={p.id} className="flex justify-between gap-2">
+                  <span>
+                    Lần {i + 1} · {datetime(p.ts)} · phiếu <b className="font-mono">{p.cash_code}</b>
+                    {p.account_name ? ` · ${p.account_name}` : ''}
+                  </span>
+                  <b className="tabular">{money(p.amount)}</b>
+                </div>
+              ))}
+              <div className="flex justify-between border-t border-line pt-1 font-semibold">
+                <span>{data.owing > 0 ? 'Còn nợ chủ hàng' : 'Đã trả đủ'}</span>
+                <span className={`tabular ${data.owing > 0 ? 'text-warn' : 'text-emerald-700'}`}>{money(data.owing)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[13px]">
+              {data.cash_code
+                ? <>Đã chi tiền — phiếu chi <b className="font-mono">{data.cash_code}</b>{data.paid_at ? ` ngày ${date(data.paid_at)}` : ''}.</>
+                : <span className="text-warn font-semibold">Chưa chi tiền cho chủ hàng.</span>}
+            </p>
+          )}
         </div>
       )}
     </Modal>
@@ -918,7 +981,9 @@ function StatementModal({ partner, onClose }) {
 }
 
 function PartnerForm({ value, onClose, onSaved, toast }) {
-  const [f, setF] = useState({ name: '', phone: '', note: '', active: 1 });
+  const [f, setF] = useState({
+    name: '', phone: '', note: '', active: 1, commission_type: 'percent', commission_value: 0,
+  });
   const [busy, setBusy] = useState(false);
   const open = !!value;
 
@@ -927,6 +992,8 @@ function PartnerForm({ value, onClose, onSaved, toast }) {
       setF({
         name: value.name || '', phone: value.phone || '',
         note: value.note || '', active: value.active === 0 ? 0 : 1,
+        commission_type: value.commission_type === 'amount' ? 'amount' : 'percent',
+        commission_value: value.commission_value ?? 0,
       });
     }
   }, [value]);
@@ -962,6 +1029,22 @@ function PartnerForm({ value, onClose, onSaved, toast }) {
         <Field label="Điện thoại" htmlFor="cp-phone">
           <Input id="cp-phone" value={f.phone}
             onChange={(e) => setF((x) => ({ ...x, phone: e.target.value }))} />
+        </Field>
+        {/* Thu ngân không gõ hoa hồng nữa (BRD nâng cấp, mục 5) — mức thoả thuận
+            khai sẵn ở đây, bán hàng là tự áp */}
+        <Field label="Hoa hồng tiệm giữ (mặc định)"
+          hint="Thu ngân bán hàng gửi của chủ này sẽ tự áp mức này; quản lý sửa lại được sau khi hoá đơn xong.">
+          <div className="flex gap-1.5">
+            <Select className="!w-24" aria-label="Cách tính hoa hồng mặc định"
+              value={f.commission_type}
+              onChange={(e) => setF((x) => ({ ...x, commission_type: e.target.value }))}>
+              <option value="percent">%</option>
+              <option value="amount">đồng</option>
+            </Select>
+            <Input type="number" min="0" step="any" className="flex-1" aria-label="Mức hoa hồng mặc định"
+              value={f.commission_value}
+              onChange={(e) => setF((x) => ({ ...x, commission_value: e.target.value }))} />
+          </div>
         </Field>
         <Field label="Ghi chú" htmlFor="cp-note">
           <Input id="cp-note" value={f.note}

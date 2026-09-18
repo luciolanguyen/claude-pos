@@ -9,6 +9,25 @@ import { useEffect, useRef } from 'react';
  * Thẻ đang ẩn thì không gọi máy chủ. Focus và visibilitychange hay bắn liền
  * nhau nên gộp lại, cách nhau dưới 1,5 giây thì chỉ tải một lần.
  */
+/**
+ * Nghe thay đổi do chính máy này vừa gây ra: lưu đơn đặt, giao hàng, huỷ đơn...
+ * `match` là mảng chuỗi con của đường dẫn API cần theo dõi.
+ */
+export function useChangeReload(reload, match = [], { enabled = true } = {}) {
+  const ref = useRef(reload);
+  ref.current = reload;
+  const keys = match.join('|');
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const on = (e) => {
+      const p = e.detail?.path || '';
+      if (!keys || keys.split('|').some((k) => k && p.includes(k))) ref.current?.();
+    };
+    window.addEventListener('thpos:changed', on);
+    return () => window.removeEventListener('thpos:changed', on);
+  }, [keys, enabled]);
+}
+
 export function useLiveReload(reload, { interval = 30000, enabled = true } = {}) {
   const ref = useRef(reload);
   ref.current = reload;

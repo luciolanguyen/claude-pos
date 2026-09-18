@@ -74,9 +74,11 @@ export function Field({ label, hint, error, required, className = '', children, 
   );
 }
 
-export function Input({ size = 'md', className = '', ...rest }) {
+/* inputRef: React 18 không cho truyền ref như một prop thường cho hàm component,
+   nên chỗ nào cần tự đặt con trỏ vào ô thì dùng inputRef. */
+export function Input({ size = 'md', className = '', inputRef, ...rest }) {
   const s = { sm: 'field-sm', md: '', lg: 'field-lg' }[size] || '';
-  return <input className={`field ${s} ${className}`} {...rest} />;
+  return <input ref={inputRef} className={`field ${s} ${className}`} {...rest} />;
 }
 
 export function Select({ size = 'md', className = '', children, ...rest }) {
@@ -98,7 +100,7 @@ export function Textarea({ className = '', rows = 3, ...rest }) {
  * nếu để {...rest} đè lên thì onBlur riêng sẽ nuốt mất việc đặt lại cờ
  * focused, và ô sẽ thôi đồng bộ với giá trị truyền vào.
  */
-export function MoneyInput({ value, onChange, size = 'md', className = '', onBlur, ...rest }) {
+export function MoneyInput({ value, onChange, size = 'md', className = '', onBlur, inputRef, ...rest }) {
   const [text, setText] = useState(() => (value ? n(value) : ''));
   const focused = useRef(false);
 
@@ -116,6 +118,7 @@ export function MoneyInput({ value, onChange, size = 'md', className = '', onBlu
   const s = { sm: 'field-sm', md: '', lg: 'field-lg' }[size] || '';
   return (
     <input
+      ref={inputRef}
       className={`field ${s} num ${className}`}
       inputMode="numeric"
       value={text}
@@ -132,10 +135,11 @@ export function MoneyInput({ value, onChange, size = 'md', className = '', onBlu
 }
 
 /** Ô nhập số lượng, cho phép số lẻ (12,5 mét dây). */
-export function QtyInput({ value, onChange, size = 'sm', className = '', min = 0, ...rest }) {
+export function QtyInput({ value, onChange, size = 'sm', className = '', min = 0, inputRef, ...rest }) {
   const s = { sm: 'field-sm', md: '', lg: 'field-lg' }[size] || '';
   return (
     <input
+      ref={inputRef}
       type="number"
       step="any"
       min={min}
@@ -221,6 +225,12 @@ export function Badge({ tone = 'mute', children, className = '' }) {
 export function Modal({ open, onClose, title, subtitle, children, footer, size = 'md', closeOnOverlay = true }) {
   const ref = useRef(null);
   const lastFocused = useRef(null);
+  /* Giữ onClose trong ref: nơi gọi thường viết onClose={() => setX(null)} — mỗi
+     lần gõ một chữ vào ô trong hộp là cha vẽ lại, hàm đó là hàm MỚI. Nếu để nó
+     trong danh sách phụ thuộc của effect thì effect dọn rồi chạy lại, kéo con trỏ
+     về ô đầu tiên — đúng lỗi "gõ một ký tự là con trỏ nhảy đi chỗ khác". */
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -228,17 +238,31 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    // Đưa tiêu điểm vào hộp thoại, giữ Tab quẩn trong hộp thoại
+    /* Đưa tiêu điểm vào hộp thoại, giữ Tab quẩn trong hộp thoại.
+       Trước đây lấy phần tử ĐẦU TIÊN khớp — mà nút X "Đóng" ở tiêu đề luôn đứng
+       trước mọi ô nhập, nên hộp nào mở ra con trỏ cũng nằm ở nút X, đè luôn ô đã
+       autoFocus (BRD nâng cấp, mục 8). Giờ: ô nào đã tự lấy con trỏ thì để yên;
+       không thì vào ô nhập đầu tiên của thân hộp; hộp chỉ có nút (hộp xác nhận)
+       thì vào nút đầu ở chân hộp — thường là "Huỷ", bấm nhầm Enter cũng an toàn. */
     const focusFirst = () => {
-      const el = ref.current?.querySelector(
-        'input:not([type=hidden]):not([disabled]), select, textarea, button:not([disabled]), [href]'
-      );
-      (el || ref.current)?.focus();
+      const box = ref.current;
+      if (!box) return;
+      const cur = document.activeElement;
+      if (cur && cur !== box && box.contains(cur)) return;
+      /* Ô không phải <input> mà muốn nhận con trỏ đầu tiên (ô chọn Combo) thì gắn data-autofocus */
+      const marked = box.querySelector('[data-autofocus]');
+      if (marked) { marked.focus(); return; }
+      const pick = (root, sel) => (root ? [...root.querySelectorAll(sel)].find((el) => el.offsetParent !== null) : null);
+      const el = pick(box.querySelector('[data-modal-body]'),
+        'input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]):not([readonly])')
+        || pick(box.querySelector('[data-modal-foot]'), 'button:not([disabled])')
+        || pick(box.querySelector('[data-modal-body]'), 'button:not([disabled]), [href]');
+      (el || box).focus();
     };
     const t = setTimeout(focusFirst, 30);
 
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); return; }
+      if (e.key === 'Escape') { e.stopPropagation(); closeRef.current?.(); return; }
       if (e.key !== 'Tab' || !ref.current) return;
       const items = [...ref.current.querySelectorAll(
         'a[href], button:not([disabled]), input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -256,7 +280,7 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
       document.body.style.overflow = prev;
       lastFocused.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   const w = {
@@ -286,9 +310,9 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
           </div>
           <IconButton icon={X} label="Đóng" onClick={onClose} />
         </div>
-        <div className="px-4 py-4 max-h-[calc(100vh-14rem)] overflow-y-auto">{children}</div>
+        <div data-modal-body className="px-4 py-4 max-h-[calc(100vh-14rem)] overflow-y-auto">{children}</div>
         {footer && (
-          <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line bg-muted/50 rounded-b-lg">
+          <div data-modal-foot className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line bg-muted/50 rounded-b-lg">
             {footer}
           </div>
         )}
@@ -540,6 +564,10 @@ export function Pager({ page, pageSize, total, onPage, onPageSize, sizes = PAGE_
 export function Combo({
   items, value, onChange, placeholder = 'Chọn...', render, filter,
   size = 'md', emptyText = 'Không tìm thấy', allowClear = true, className = '',
+  /* id để nhãn <Field htmlFor> trỏ tới, và để nơi khác đưa con trỏ về ô này */
+  id,
+  /* Mở hộp thoại là con trỏ vào ngay ô chọn này (Modal đọc dấu data-autofocus) */
+  autoFocus = false,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -581,6 +609,8 @@ export function Combo({
     <div ref={box} className={`relative ${className}`}>
       <button
         type="button"
+        id={id}
+        data-autofocus={autoFocus ? '' : undefined}
         className={`field ${s} flex items-center justify-between gap-2 text-left cursor-pointer`}
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"

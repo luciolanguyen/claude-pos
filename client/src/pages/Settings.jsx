@@ -212,20 +212,6 @@ function InvoiceSettings() {
     }
   };
 
-  const Check2 = ({ k, label, hint }) => (
-    <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
-      <input
-        type="checkbox"
-        className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
-        checked={!!form[k]}
-        onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.checked }))}
-      />
-      <span className="text-[13px]">
-        {label}
-        {hint && <span className="block text-2xs text-muted-ink">{hint}</span>}
-      </span>
-    </label>
-  );
 
   return (
     <div className="max-w-3xl space-y-4">
@@ -280,12 +266,12 @@ function InvoiceSettings() {
 
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-2">Nội dung in trên hoá đơn</h2>
-        <Check2 k="show_qr_bank" label="In mã QR chuyển khoản"
+        <CheckRow checked={!!form['show_qr_bank']} onChange={(v) => setForm((f) => ({ ...f, show_qr_bank: v }))} label="In mã QR chuyển khoản"
           hint="Cần điền đủ thông tin ngân hàng ở tab Thông tin cửa hàng" />
-        <Check2 k="show_barcode" label="In mã vạch hoá đơn" />
-        <Check2 k="show_cost" label="Hiện giá vốn và lãi trên bản in"
+        <CheckRow checked={!!form['show_barcode']} onChange={(v) => setForm((f) => ({ ...f, show_barcode: v }))} label="In mã vạch hoá đơn" />
+        <CheckRow checked={!!form['show_cost']} onChange={(v) => setForm((f) => ({ ...f, show_cost: v }))} label="Hiện giá vốn và lãi trên bản in"
           hint="Chỉ bật khi in bản lưu nội bộ, đừng đưa cho khách" />
-        <Check2 k="auto_print" label="Tự mở hộp thoại in ngay sau khi thanh toán" />
+        <CheckRow checked={!!form['auto_print']} onChange={(v) => setForm((f) => ({ ...f, auto_print: v }))} label="Tự mở hộp thoại in ngay sau khi thanh toán" />
       </div>
 
       {/* Phiếu thu nợ khổ K80 (tài liệu 14, mục 1.2) */}
@@ -2212,5 +2198,25 @@ function SimpleForm({ open, item, title, fields, extra, onClose, onSave }) {
         {err && <p className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>
+  );
+}
+
+/* Ô tích dùng chung cho các thẻ thiết lập. Khai Ở NGOÀI thân component cha:
+   khai bên trong thì mỗi lần vẽ lại là một hàm mới, React thay cả khối, ô tích
+   mất con trỏ ngay sau khi bấm (BRD nâng cấp, mục 8). */
+function CheckRow({ checked, onChange, label, hint }) {
+  return (
+    <label className="flex items-start gap-2.5 py-1.5 cursor-pointer">
+      <input
+        type="checkbox"
+        className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="text-[13px]">
+        <b>{label}</b>
+        {hint && <span className="block text-2xs text-muted-ink">{hint}</span>}
+      </span>
+    </label>
   );
 }

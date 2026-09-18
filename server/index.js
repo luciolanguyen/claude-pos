@@ -120,6 +120,9 @@ const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'm
      (plan 31, 1.1d). Thu ngân vẫn khai mức hoa hồng lúc bán — khoá đó tên
      commission_value, không bị cắt. */
   'commission', 'payable', 'consign_commission',
+  /* Mức hoa hồng thoả thuận (BRD nâng cấp, mục 5): thu ngân không được thấy nữa —
+     thấy mức là suy ra ngay tiệm ăn bao nhiêu trên mỗi món */
+  'commission_value', 'commission_type',
   /* Ngày cập nhật giá vốn / ngày nhập gần nhất (plan 31, 1.4b) đi kèm con số, chủ tiệm chốt
      chỉ người xem được giá vốn mới thấy */
   'cost_updated_at', 'last_purchase_at',

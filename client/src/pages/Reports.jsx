@@ -312,18 +312,6 @@ function PnlReport({ r }) {
     transport: 'Vận chuyển, xăng xe', tax: 'Thuế, lệ phí', other_out: 'Chi khác',
   };
 
-  const Row = ({ label, value, bold, indent, tone, hint }) => (
-    <div className={`flex items-baseline justify-between gap-3 py-1.5 ${indent ? 'pl-5' : ''} ${bold ? 'border-t border-line pt-2' : ''}`}>
-      <span className={bold ? 'font-bold' : 'text-muted-ink text-[13px]'}>
-        {label}
-        {hint && <span className="text-2xs block text-muted-ink font-normal">{hint}</span>}
-      </span>
-      <span className={`tabular font-mono ${bold ? 'text-base font-bold' : 'text-[13px]'} ${
-        tone === 'bad' ? 'text-danger' : tone === 'good' ? 'text-emerald-700' : ''}`}>
-        {money(value)}
-      </span>
-    </div>
-  );
 
   return (
     <div className="space-y-3">
@@ -573,6 +561,22 @@ function PurchasesReport({ r }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/* Một dòng "nhãn — số tiền" của bảng lãi lỗ. Khai ngoài thân component cha (BRD mục 8). */
+function Row({ label, value, bold, indent, tone, hint }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-3 py-1.5 ${indent ? 'pl-5' : ''} ${bold ? 'border-t border-line pt-2' : ''}`}>
+      <span className={bold ? 'font-bold' : 'text-muted-ink text-[13px]'}>
+        {label}
+        {hint && <span className="text-2xs block text-muted-ink font-normal">{hint}</span>}
+      </span>
+      <span className={`tabular font-mono ${bold ? 'text-base font-bold' : 'text-[13px]'} ${
+        tone === 'bad' ? 'text-danger' : tone === 'good' ? 'text-emerald-700' : ''}`}>
+        {money(value)}
+      </span>
     </div>
   );
 }

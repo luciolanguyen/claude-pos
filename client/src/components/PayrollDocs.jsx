@@ -7,9 +7,10 @@
    ==================================================================== */
 import { useState, useEffect } from 'react';
 import { Printer, Trash2, ImageDown, Share2, Camera } from 'lucide-react';
+import { readMoney } from '../lib/format';
 import { api, payrollPhotoUrl } from '../lib/api';
 import { useApp } from '../lib/store';
-import { money, n, datetime, readMoney } from '../lib/format';
+import { money, n, datetime } from '../lib/format';
 import { payslipModel, exportPayslip, signedMoney } from '../lib/payslip';
 import { Button, IconButton, Modal, Confirm, Badge } from './ui';
 import PhotoPicker from './PhotoPicker';
@@ -261,12 +262,149 @@ export function PayslipView({ model }) {
   );
 }
 
-export function PayslipModal({ settlementId, onClose, onUndone }) {
+/* ------------------------------------------------------------------ */
+/* Bản in phiếu lương: K80 cho máy in nhiệt ở quầy, A5 / A4 cho máy in giấy */
+/* ------------------------------------------------------------------ */
+
+export function PayslipSheet({ model, store, format = 'k80' }) {
+  if (!model) return null;
+  const rows = model.blocks.flatMap((b) => [
+    { kind: 'head', label: b.title, sub: b.subtitle },
+    ...b.rows,
+    ...(b.total ? [{ kind: 'sub', label: b.total.label, amount: b.total.amount }] : []),
+  ]).concat(model.tail);
+
+  if (format === 'k80') {
+    return (
+      <div className="print-k80 text-black bg-white">
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{store?.name || 'CỬA HÀNG'}</div>
+          {store?.address && <div>{store.address}</div>}
+        </div>
+        <div className="dashed" />
+        <div style={{ textAlign: 'center', fontWeight: 700, fontSize: 14, letterSpacing: 1 }}>{model.heading}</div>
+        <div style={{ textAlign: 'center' }}>
+          Số {model.code} · ngày {model.date}<br />
+          <b>{model.employee.full_name}</b>{model.employee.code ? ` (${model.employee.code})` : ''}
+        </div>
+        <div className="dashed" />
+        <table>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td style={{ paddingBottom: 2, fontWeight: r.kind === 'head' || r.kind === 'sub' ? 700 : 400 }}>
+                  {r.kind === 'head' ? r.label.toUpperCase() : r.label}
+                  {r.kind === 'head' && r.sub ? <div style={{ fontWeight: 400, fontSize: 10 }}>{r.sub}</div> : null}
+                </td>
+                <td style={{ textAlign: 'right', paddingBottom: 2, whiteSpace: 'nowrap' }}>
+                  {r.amount === null || r.amount === undefined ? '' : signedMoney(r.amount)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="dashed" />
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 10 }}>THỰC NHẬN</div>
+          <div style={{ fontWeight: 700, fontSize: 19, lineHeight: 1.2 }}>{money(model.pay)}</div>
+          <div style={{ fontStyle: 'italic', fontSize: 10 }}>{readMoney(model.pay)}</div>
+          {model.carry_out < 0 && (
+            <div style={{ fontSize: 10 }}>Còn nợ chuyển sang kỳ sau: {money(-model.carry_out)}</div>
+          )}
+        </div>
+        <div className="dashed" />
+        <div style={{ display: 'flex', justifyContent: 'space-between', textAlign: 'center', marginTop: 4 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700 }}>Chủ cửa hàng</div>
+            <div style={{ fontSize: 9, fontStyle: 'italic' }}>(ký, ghi rõ họ tên)</div>
+            <div style={{ height: 36 }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700 }}>Người nhận lương</div>
+            <div style={{ fontSize: 9, fontStyle: 'italic' }}>(ký, ghi rõ họ tên)</div>
+            <div style={{ height: 36 }} />
+            <div>{model.employee.full_name}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const isA4 = format === 'a4';
+  const px = (a5, a4) => (isA4 ? a4 : a5);
+  return (
+    <div className={`${isA4 ? 'print-a4' : 'print-a5'} text-black bg-white`}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div style={{ maxWidth: '60%' }}>
+          <div style={{ fontWeight: 800, fontSize: px(13, 15) }}>{store?.name || 'CỬA HÀNG'}</div>
+          {store?.address && <div style={{ fontSize: px(10, 11) }}>{store.address}</div>}
+          {store?.phone && <div style={{ fontSize: px(10, 11) }}>ĐT: {store.phone}</div>}
+        </div>
+        <div style={{ textAlign: 'right', fontSize: px(10, 11) }}>
+          <div>Số phiếu: <b>{model.code}</b></div>
+          <div>Ngày {model.date}</div>
+        </div>
+      </div>
+
+      <div style={{ textAlign: 'center', margin: px('14px 0 4px', '20px 0 6px') }}>
+        <div style={{ fontWeight: 800, fontSize: px(17, 20), letterSpacing: 1 }}>{model.heading}</div>
+        <div style={{ fontSize: px(11, 12) }}>
+          <b>{model.employee.full_name}</b>{model.employee.code ? ` · ${model.employee.code}` : ''}
+        </div>
+      </div>
+
+      <table className="lines" style={{ fontSize: px(11.5, 13) }}>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} style={{ background: r.kind === 'head' ? '#f1f5f9' : undefined }}>
+              <td style={{ fontWeight: r.kind === 'head' || r.kind === 'sub' ? 700 : 400, fontStyle: r.kind === 'note' ? 'italic' : 'normal' }}>
+                {r.label}
+                {r.kind === 'head' && r.sub ? <div style={{ fontWeight: 400, fontSize: px(9.5, 11) }}>{r.sub}</div> : null}
+              </td>
+              <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontWeight: r.kind === 'sub' ? 700 : 400 }}>
+                {r.amount === null || r.amount === undefined ? '' : signedMoney(r.amount)}
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <td style={{ fontWeight: 800, fontSize: px(13, 15) }}>THỰC NHẬN</td>
+            <td style={{ textAlign: 'right', fontWeight: 800, fontSize: px(13, 15) }}>{money(model.pay)}</td>
+          </tr>
+          <tr>
+            <td colSpan={2} style={{ fontStyle: 'italic', fontSize: px(10.5, 12) }}>
+              Bằng chữ: {readMoney(model.pay)}
+              {model.carry_out < 0 && ` · còn nợ chuyển sang kỳ sau ${money(-model.carry_out)}`}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', textAlign: 'center', fontSize: px(10.5, 12), marginTop: px(20, 28) }}>
+        {[['Chủ cửa hàng', ''], ['Người nhận lương', model.employee.full_name]].map(([role, name]) => (
+          <div key={role} style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700 }}>{role}</div>
+            <div style={{ fontSize: px(9, 10), fontStyle: 'italic' }}>(ký, ghi rõ họ tên)</div>
+            <div style={{ height: px(40, 54) }} />
+            <div>{name}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Hộp phiếu lương.
+ *   settlementId  phiếu đã chốt — tải từ máy chủ, in lại được bất cứ lúc nào
+ *   preview       bảng tính TRƯỚC khi chốt — in ra cho nhân viên coi rồi mới chốt
+ */
+export function PayslipModal({ settlementId, preview = null, onClose, onUndone }) {
   const { store, toast } = useApp();
   const [s, setS] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [undo, setUndo] = useState(false);
+  const [format, setFormat] = useState('k80');
 
   useEffect(() => {
     if (!settlementId) return;
@@ -274,8 +412,8 @@ export function PayslipModal({ settlementId, onClose, onUndone }) {
     setErr('');
     api.get(`/payroll/settlements/${settlementId}`).then(setS).catch((e) => setErr(e.message));
   }, [settlementId]);
-  if (!settlementId) return null;
-  const model = s ? payslipModel(s) : null;
+  if (!settlementId && !preview) return null;
+  const model = preview ? payslipModel(preview) : s ? payslipModel(s) : null;
   const share = typeof navigator !== 'undefined' && typeof navigator.canShare === 'function';
 
   const exportImg = async () => {
@@ -296,15 +434,25 @@ export function PayslipModal({ settlementId, onClose, onUndone }) {
         open
         onClose={onClose}
         size="md"
-        title={s ? `Phiếu lương ${s.code}` : 'Phiếu lương'}
-        subtitle={s ? `${s.employee_name} · trả ${money(s.pay_amount)}${s.cash_code ? ` · phiếu chi ${s.cash_code}` : ''} · ${datetime(s.ts)}` : ''}
+        title={preview ? 'Bảng tính lương (chưa chốt)' : s ? `Phiếu lương ${s.code}` : 'Phiếu lương'}
+        subtitle={preview
+          ? `${model?.employee?.full_name || ''} · tạm tính ${money(model?.pay || 0)} — in cho nhân viên coi trước khi chốt`
+          : s ? `${s.employee_name} · trả ${money(s.pay_amount)}${s.cash_code ? ` · phiếu chi ${s.cash_code}` : ''} · ${datetime(s.ts)}` : ''}
         footer={<>
-          {s?.is_latest && (
+          {s?.is_latest && !preview && (
             <Button variant="ghost" className="mr-auto text-danger" onClick={() => setUndo(true)}>Huỷ phiếu lương</Button>
           )}
+          {/* Ba khổ giấy: K80 máy in nhiệt ở quầy, A5 và A4 máy in giấy (BRD mục 1) */}
+          <div className="flex items-center gap-1 mr-auto">
+            {[['k80', 'K80'], ['a5', 'A5'], ['a4', 'A4']].map(([k, label]) => (
+              <button key={k} type="button" onClick={() => setFormat(k)} aria-pressed={format === k}
+                className={`btn btn-sm ${format === k ? 'btn-primary' : 'btn-outline'}`}>{label}</button>
+            ))}
+          </div>
           <Button onClick={onClose}>Đóng</Button>
+          <Button icon={Printer} disabled={!model} onClick={() => window.print()}>In phiếu</Button>
           <Button variant="primary" icon={share ? Share2 : ImageDown} loading={busy} disabled={!model} onClick={exportImg}>
-            {share ? 'Gửi ảnh phiếu lương' : 'Xuất ảnh phiếu lương'}
+            {share ? 'Gửi ảnh' : 'Xuất ảnh'}
           </Button>
         </>}
       >
@@ -316,6 +464,7 @@ export function PayslipModal({ settlementId, onClose, onUndone }) {
           </p>
         )}
       </Modal>
+      {model && <div className={`print-area size-${format}`}><PayslipSheet model={model} store={store} format={format} /></div>}
       <Confirm
         open={undo}
         onClose={() => setUndo(false)}

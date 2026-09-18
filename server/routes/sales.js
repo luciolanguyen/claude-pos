@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchWhere,
-  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams, partUntil } from '../db.js';
+  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams, partUntil,
+  logActivity } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
   maxDebtDaysFor,
 } from '../policy.js';
+import { roleCan } from '../permissions.js';
 import { debtBreakdown, overdueInvoices } from '../debt.js';
 import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
 import { isLoginRequired } from '../guard.js';
@@ -105,7 +107,9 @@ r.get('/sales/:id', (req, res) => {
     WHERE s.id = ?`, [req.params.id]);
   if (!s) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   s.items = all(`
-    SELECT si.*, p.sku, p.base_unit, p.barcode
+    SELECT si.*, p.sku, p.base_unit, p.barcode,
+           /* Vị trí kệ: in lên phiếu soạn hàng cho nhân viên đi lấy (BRD mục 3) */
+           p.location
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?`, [s.id]);
   /* Hàng mua hộ vãng lai: in ra cho khách thì phẳng như hàng của tiệm,
@@ -204,6 +208,12 @@ export function createSale(b) {
      Không trừ kho, không sinh mã hàng. Có chọn chủ hàng thì phần tiền còn
      lại sau hoa hồng là NỢ CHỦ HÀNG, chờ đối soát; không chọn ai thì tiệm
      tự bốc ngoài, trả đứt tại chỗ, giá bốc chính là giá vốn của dòng. */
+  /* Thu ngân CHỈ gõ giá bán cho khách (BRD nâng cấp, mục 5). Hoa hồng và giá tiệm
+     bốc ngoài là phần lãi của tiệm: người không có quyền xem giá vốn thì gõ lên
+     cũng không tính — lấy mức mặc định trong hồ sơ chủ hàng, còn lại để quản lý
+     khai sau khi hoá đơn đã xong. */
+  const seeCost = b._actor === undefined || b._actor === null || roleCan(b._actor?.role, 'cost.view');
+
   const consign = (Array.isArray(b.consign_items) ? b.consign_items : [])
     .map((c) => {
       const name = String(c?.name || '').trim();
@@ -213,21 +223,30 @@ export function createSale(b) {
       const price = Math.max(0, Math.round(Number(c.price) || 0));
       const amount = Math.round(qty * price);
       const partnerId = Number(c.partner_id) || null;
-      const ctype = c.commission_type === 'percent' ? 'percent' : 'amount';
-      const cvalue = Math.max(0, Number(c.commission_value) || 0);
+      const dflt = partnerId && !seeCost
+        ? get('SELECT commission_type, commission_value FROM consign_partners WHERE id = ?', [partnerId])
+        : null;
+      const ctype = (dflt ? dflt.commission_type : c.commission_type) === 'percent' ? 'percent' : 'amount';
+      const cvalue = Math.max(0, Number(dflt ? dflt.commission_value : c.commission_value) || 0);
       /* Hoa hồng chỉ có nghĩa khi hàng của người khác. Tự bốc ngoài thì
          tiệm ăn chênh lệch chứ không "trích hoa hồng của chính mình". */
       const commission = partnerId
         ? Math.min(amount, ctype === 'percent'
           ? Math.round(amount * cvalue / 100) : Math.round(cvalue))
         : 0;
+      /* Cần chủ tiệm / quản lý chốt lại sau (chủ tiệm góp ý 18/09/2026: "mọi tiền
+         hoa hồng, chênh lệch sẽ được chốt lại sau"): MỌI món mua hộ do người không
+         xem được giá vốn bán ra — kể cả khi đã lấy mức hoa hồng mặc định của chủ
+         hàng — và món tiệm tự bốc mà chưa có giá bốc. */
+      const needsReview = !seeCost || (!partnerId && !(Number(c.cost) > 0));
       return {
         partner_id: partnerId,
         name,
+        needs_review: needsReview ? 1 : 0,
         unit_name: String(c.unit_name || '').trim() || null,
         qty,
         price,
-        cost: partnerId ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
+        cost: partnerId || !seeCost ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
         commission_type: ctype,
         commission_value: cvalue,
         commission,
@@ -481,11 +500,11 @@ export function createSale(b) {
       for (const c of consign) {
         run(`INSERT INTO sale_consign_items(sale_id, partner_id, partner_name, name, unit_name,
                                             qty, price, cost, commission_type, commission_value,
-                                            commission, amount, note)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                            commission, amount, note, needs_review)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, c.partner_id, c.partner_name || null, c.name, c.unit_name,
             c.qty, c.price, c.cost, c.commission_type, c.commission_value,
-            c.commission, c.amount, c.note]);
+            c.commission, c.amount, c.note, c.needs_review || 0]);
       }
 
       if (voucherUse > 0) {
@@ -667,6 +686,55 @@ r.post('/sales/:id/cancel', (req, res) => {
     run("UPDATE sales SET status = 'cancelled', paid = 0 WHERE id = ?", [s.id]);
   });
   res.json({ ok: true });
+});
+
+/**
+ * Quản lý khai / sửa hoa hồng và giá tiệm bốc của một dòng hàng mua hộ SAU KHI
+ * hoá đơn đã xong (BRD nâng cấp, mục 5).
+ *
+ * Tiền khách trả không đổi — chỉ đổi phần lãi của tiệm, nên phải tính lại giá vốn
+ * của hoá đơn. Dòng đã vào đợt đối soát thì khoá: sửa nữa là lệch số đã trả chủ hàng.
+ */
+r.put('/sales/:id/consign-items/:itemId', (req, res) => {
+  try {
+    const out = tx(() => {
+      const sale = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
+      if (!sale) throw badRequest('Không tìm thấy hoá đơn', 'SALE_NOT_FOUND');
+      const it = get('SELECT * FROM sale_consign_items WHERE id = ? AND sale_id = ?',
+        [req.params.itemId, sale.id]);
+      if (!it) throw badRequest('Không tìm thấy dòng hàng mua hộ', 'ITEM_NOT_FOUND');
+      if (it.settlement_id) {
+        const st = get('SELECT code FROM consign_settlements WHERE id = ?', [it.settlement_id]);
+        throw badRequest(`Dòng này đã vào đợt đối soát ${st?.code || ''} — sửa nữa là lệch tiền đã trả chủ hàng.`,
+          'SETTLED');
+      }
+      const b = req.body || {};
+      const ctype = b.commission_type === 'amount' ? 'amount' : 'percent';
+      const cvalue = Math.max(0, Number(b.commission_value) || 0);
+      const commission = it.partner_id
+        ? Math.min(it.amount, ctype === 'percent'
+          ? Math.round(it.amount * cvalue / 100) : Math.round(cvalue))
+        : 0;
+      const cost = it.partner_id ? 0 : Math.max(0, Math.round(Number(b.cost) || 0));
+      /* Giá vốn dòng mua hộ: hàng gửi = phần trả lại chủ; tiệm tự bốc = tiền bỏ ra bốc */
+      const oldCogs = it.partner_id ? (it.amount - it.commission) : Math.round(it.qty * it.cost);
+      const newCogs = it.partner_id ? (it.amount - commission) : Math.round(it.qty * cost);
+      run(`UPDATE sale_consign_items SET commission_type = ?, commission_value = ?, commission = ?,
+             cost = ?, needs_review = 0 WHERE id = ?`,
+      [ctype, it.partner_id ? cvalue : 0, commission, cost, it.id]);
+      run('UPDATE sales SET cogs = cogs + ? WHERE id = ?', [newCogs - oldCogs, sale.id]);
+      logActivity(req.user, 'update', 'sale_consign_item', it.id,
+        `Khai lại hàng mua hộ "${it.name}" của hoá đơn ${sale.code}: `
+        + (it.partner_id
+          ? `hoa hồng ${cvalue}${ctype === 'percent' ? '%' : ' đ'} = ${commission.toLocaleString('vi-VN')} đ`
+          : `giá bốc ${cost.toLocaleString('vi-VN')} đ/đơn vị`));
+      return get(`SELECT ci.*, (ci.amount - ci.commission) AS payable
+                  FROM sale_consign_items ci WHERE ci.id = ?`, [it.id]);
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
 });
 
 /* ========================== TRẢ HÀNG KHÁCH ========================= */

@@ -136,7 +136,8 @@ const TABLES = [
   /* Đợt 17 */
   'product_price_tiers',
   /* Đợt 18 */
-  'customer_product_notes', 'consign_partners', 'consign_settlements', 'sale_consign_items',
+  'customer_product_notes', 'consign_partners', 'consign_settlements', 'consign_payments',
+  'sale_consign_items',
   /* Plan 31 đợt 6 — phiếu tiếp nhận gom nhiều món, bảo hành theo bộ phận */
   'warranty_batches', 'product_warranty_parts', 'sale_item_warranty_parts',
   /* Plan 31 đợt 7 — điều chỉnh công nợ, mốc chốt công nợ */
@@ -219,7 +220,7 @@ r.post('/clear-transactions', (req, res) => {
       'payroll_closed_days',
       /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
          (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
-      'sale_consign_items', 'consign_settlements',
+      'sale_consign_items', 'consign_payments', 'consign_settlements',
       /* Hạn bảo hành từng bộ phận chốt theo hoá đơn — chứng từ. Khai báo bộ
          phận trên mặt hàng (product_warranty_parts) là danh mục, giữ lại. */
       'sale_item_warranty_parts',
@@ -280,7 +281,7 @@ r.post('/reset-all', (req, res) => {
     'production_items', 'productions', 'product_boms',
     'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
     /* Hàng mua hộ vãng lai: dòng hàng -> đợt đối soát -> chủ hàng */
-    'sale_consign_items', 'consign_settlements', 'consign_partners',
+    'sale_consign_items', 'consign_payments', 'consign_settlements', 'consign_partners',
     'customer_product_notes',
     'sale_item_warranty_parts',
     'sale_return_items', 'sale_returns', 'sale_items', 'sales',

@@ -13,12 +13,13 @@
    Mỗi loại phiếu một màu và một biểu tượng riêng (mục 3.4), để nhân viên
    kho không nhầm đang nhập hàng vào với đang trả hàng đi.
    ==================================================================== */
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search, Plus, Minus, Trash2, PackagePlus, Undo2, ClipboardList, ShoppingCart,
-  Star, PackageX, ClipboardCheck,
+  Star, PackageX, ClipboardCheck, Lock,
 } from 'lucide-react';
-import { useApp } from '../lib/store';
+import { api } from '../lib/api';
+import { useApp, useFetch, useDebounced } from '../lib/store';
 import { money, n, qty as fq, matchMode } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Modal, Empty, Spinner, Badge, QtyInput, MoneyInput,
@@ -125,16 +126,36 @@ export default function CartPickerModal({
   /* Phiếu nhập NCC (plan 31, hạng mục 5.1b): hộp rộng hết cỡ màn hình, và mỗi
      dòng có ô số lượng + nút giỏ y như hộp chọn hàng của đơn khách đặt */
   wide = false, qtyEntry = false,
+  /* Phiếu nhập hàng (BRD nâng cấp, mục 4): lọc sẵn những món TỪNG MUA của đúng
+     mối đang lập phiếu — chín phần mười là lấy lại đúng mấy món đó. */
+  supplierFilter = null,
 }) {
   const { meta } = useApp();
   const [q, setQ] = useState('');
   const [mode, setMode] = useState('contains');
   const [cat, setCat] = useState('');
   const [want, setWant] = useState({});   // product_id -> số đang gõ, chưa bấm giỏ
+  const [onlyBought, setOnlyBought] = useState(true);
   const t = themeOf(kind);
   const Icon = t.icon;
 
-  useEffect(() => { if (open) { setQ(''); setWant({}); } }, [open]);
+  /* Chọn xong một món là con trỏ nhảy thẳng sang ô số lượng (phiếu kiểm kê là ô
+     "tồn đếm được") của đúng món đó bên giỏ — khỏi rê chuột đi tìm. Chỉ nhảy khi
+     BẤM chọn; quét mã vạch liên tục thì con trỏ ở yên ô tìm để quét tiếp. */
+  const fieldRefs = useRef({});
+  const [focusPid, setFocusPid] = useState(null);
+  useEffect(() => {
+    if (!focusPid) return undefined;
+    const el = fieldRefs.current[focusPid];
+    if (el) {
+      el.focus();
+      el.select?.();
+      setFocusPid(null);
+    }
+    return undefined;
+  }, [focusPid, lines]);
+
+  useEffect(() => { if (open) { setQ(''); setWant({}); setFocusPid(null); } }, [open]);
 
   /* Bấm nút giỏ: chưa có thì thêm đúng số đã gõ; có rồi thì ghi đè số lượng */
   const take = (p, value) => {
@@ -144,13 +165,43 @@ export default function CartPickerModal({
     if (line) onPatch(line.key, { qty: v });
     else onAdd(p, v);
     setWant((m) => { const c = { ...m }; delete c[p.id]; return c; });
+    setFocusPid(p.id);
   };
+
+  /* Món đã có trên phiếu thì KHOÁ lại ở danh sách bên trái: nhìn là biết đã chọn
+     rồi, bấm lần nữa chỉ đưa con trỏ về ô của nó chứ không thêm trùng. Áp dụng
+     cho loại phiếu mà một món chỉ nằm một dòng (kiểm kê, báo hết hàng, hàng ghim). */
+  const lockPicked = ['stock_take', 'requisition', 'featured'].includes(kind);
+  const goToLine = (p) => {
+    setFocusPid(p.id);
+    const el = fieldRefs.current[p.id];
+    el?.scrollIntoView?.({ block: 'nearest' });
+  };
+  /* fields = phiếu có ô số riêng (kiểm kê: "tồn đếm được"): thêm món thì để nơi
+     gọi tự điền số mặc định của nó (tồn hệ thống), đừng ép thành 1. */
+  const addAndFocus = (p, qty) => { onAdd(p, qty); setFocusPid(p.id); };
 
   const branch = useMemo(
     () => (cat ? categoryBranch(meta.categories, cat) : null), [meta.categories, cat]);
 
+  /* Danh sách hàng từng mua của mối này, kèm giá và ngày lấy gần nhất */
+  const filtering = !!supplierFilter?.id && onlyBought;
+  const dq = useDebounced(q, 250);
+  const { data: bought, busy: boughtBusy } = useFetch(
+    () => api.supplierBoughtProducts(supplierFilter.id, { q: dq }),
+    [supplierFilter?.id, dq], { skip: !filtering });
+
+  /* Dòng "từng mua" của máy chủ chỉ có vài cột; ghép lên thẻ hàng đầy đủ
+     (bảng đơn vị, đơn vị mua chính, VAT...) để bấm Thêm là vào phiếu được ngay,
+     kèm theo đơn vị + giá của lần lấy gần nhất. */
+  const boughtFull = useMemo(() => {
+    if (!filtering || !Array.isArray(bought)) return [];
+    const byId = new Map((products || []).map((p) => [p.id, p]));
+    return bought.filter((b) => byId.has(b.id)).map((b) => ({ ...byId.get(b.id), ...b, units: byId.get(b.id).units }));
+  }, [filtering, bought, products]);
+
   const list = useMemo(() => {
-    let l = products || [];
+    let l = filtering ? boughtFull : (products || []);
     if (branch) l = l.filter((p) => branch.has(p.category_id));
     const k = q.trim();
     if (k) {
@@ -158,7 +209,7 @@ export default function CartPickerModal({
         || matchMode(p.sku, k, mode) || barcodeEquals(p, k));
     }
     return l.slice(0, 200);
-  }, [products, q, mode, branch]);
+  }, [products, boughtFull, filtering, q, mode, branch]);
 
   /* Mỗi mặt hàng đang có bao nhiêu trong giỏ — để ô bên trái đổi màu */
   const inCart = useMemo(() => {
@@ -166,6 +217,10 @@ export default function CartPickerModal({
     for (const l of lines) m.set(l.product_id, (m.get(l.product_id) || 0) + Number(l.qty || 0));
     return m;
   }, [lines]);
+  /* ĐÃ CHỌN tính theo việc món có mặt trên phiếu, không theo số lượng: phiếu kiểm
+     kê và phiếu báo hết hàng không có cột số lượng nên cộng qty ra 0, nhìn như
+     chưa chọn (BRD nâng cấp, mục 7). */
+  const pickedIds = useMemo(() => new Set(lines.map((l) => l.product_id)), [lines]);
 
   const total = showPrice && !noQty
     ? lines.reduce((a, l) => a + (amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0))), 0)
@@ -225,7 +280,27 @@ export default function CartPickerModal({
             <Badge tone={lines.length ? 'ok' : 'mute'}>Đã thêm: {n(lines.length)} món</Badge>
           </div>
 
-          {busy && !products ? <Spinner /> : list.length === 0 ? (
+          {/* Ô tích lọc theo mối (BRD nâng cấp, mục 4) */}
+          {supplierFilter?.id && (
+            <label className="flex items-start gap-2 text-[13px] cursor-pointer rounded border border-line px-2 py-1.5">
+              <input
+                type="checkbox"
+                className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+                checked={onlyBought}
+                onChange={(e) => setOnlyBought(e.target.checked)}
+              />
+              <span>
+                Chỉ hiện hàng từng mua của <b>{supplierFilter.name || 'mối này'}</b>
+                <span className="block text-2xs text-muted-ink">
+                  {filtering
+                    ? 'Kèm giá và ngày lấy gần nhất. Bỏ tích để tìm trong toàn bộ danh mục.'
+                    : 'Đang tìm trong toàn bộ danh mục hàng hoá.'}
+                </span>
+              </span>
+            </label>
+          )}
+
+          {(busy && !products) || (filtering && boughtBusy && !bought) ? <Spinner /> : list.length === 0 ? (
             <Empty
               icon={Search}
               title="Không tìm thấy hàng nào"
@@ -257,10 +332,27 @@ export default function CartPickerModal({
                     return (
                       <tr key={p.id} className={c ? 'bg-accent-soft/40' : 'hoverable'}>
                         <td>
-                          <div className="font-semibold">{p.name}</div>
+                          <div className="font-semibold flex items-center gap-1.5">
+                            {p.name}
+                            {pickedIds.has(p.id) && lockPicked && (
+                              <span className="inline-flex items-center gap-0.5 text-2xs font-bold text-emerald-800
+                                               bg-accent-soft border border-accent/40 rounded px-1 py-0.5 whitespace-nowrap">
+                                <Lock size={10} aria-hidden="true" /> Đã chọn
+                              </span>
+                            )}
+                          </div>
                           <div className="text-2xs text-muted-ink">
                             <span className="font-mono">{p.sku}</span>
                             {p.pack_spec && <span> · {p.pack_spec}</span>}
+                            {/* Lần lấy gần nhất của đúng mối này */}
+                            {filtering && p.last_price > 0 && (
+                              <span> · lần trước <b className="text-ink">{money(p.last_price)}</b>/{p.last_unit_name}
+                                {p.times > 1 ? ` · đã lấy ${n(p.times)} lần` : ''}
+                              </span>
+                            )}
+                            {filtering && Number(p.quote_price) > 0 && (
+                              <span className="text-violet-800 font-semibold"> · mối báo {money(p.quote_price)}</span>
+                            )}
                           </div>
                         </td>
                         <td className={`num ${p.track_stock && p.stock <= 0 ? 'text-danger' : 'text-muted-ink'}`}>
@@ -310,11 +402,18 @@ export default function CartPickerModal({
                           </td>
                         ) : (
                           <td className="text-right">
-                            <Button size="sm" variant={c ? 'primary' : 'soft'} icon={Plus}
-                              onClick={() => onAdd(p, 1)}
-                              aria-label={c ? `Thêm 1 ${p.name}, đang có ${fq(c)} trong giỏ` : `Thêm ${p.name}`}>
-                              {c ? fq(c) : 'Thêm'}
-                            </Button>
+                            {pickedIds.has(p.id) && lockPicked ? (
+                              <Button size="sm" variant="outline" icon={Lock} onClick={() => goToLine(p)}
+                                aria-label={`${p.name} đã chọn rồi — về ô nhập số của món này`}>
+                                Đã chọn
+                              </Button>
+                            ) : (
+                              <Button size="sm" variant={c ? 'primary' : 'soft'} icon={Plus}
+                                onClick={() => addAndFocus(p, fields ? undefined : 1)}
+                                aria-label={c ? `Thêm 1 ${p.name}, đang có ${fq(c)} trong giỏ` : `Thêm ${p.name}`}>
+                                {c ? fq(c) : 'Thêm'}
+                              </Button>
+                            )}
                           </td>
                         )}
                       </tr>
@@ -365,7 +464,7 @@ export default function CartPickerModal({
                     <div className="grid gap-1.5 mt-1" style={{
                       gridTemplateColumns: `repeat(${fields.length}, minmax(0, 1fr))`,
                     }}>
-                      {fields.map((f) => (
+                      {fields.map((f, fi) => (
                         <label key={f.key} className="block">
                           <span className="block text-2xs text-muted-ink leading-tight">{f.label}</span>
                           <QtyInput
@@ -373,6 +472,7 @@ export default function CartPickerModal({
                             min={f.min ?? 0}
                             placeholder={f.placeholder}
                             className="!w-full"
+                            inputRef={fi === 0 ? (el) => { fieldRefs.current[l.product_id] = el; } : undefined}
                             onChange={(v) => onPatch(l.key, { [f.key]: v })}
                             aria-label={`${f.label} của ${l.name}`}
                           />
@@ -386,6 +486,7 @@ export default function CartPickerModal({
                           disabled={Number(l.qty) <= 1}
                           onClick={() => onPatch(l.key, { qty: Math.max(1, Number(l.qty) - 1) })} />
                         <QtyInput value={l.qty} min={1} className="!w-16"
+                          inputRef={(el) => { fieldRefs.current[l.product_id] = el; }}
                           onChange={(v) => onPatch(l.key, { qty: Math.max(1, Number(v) || 1) })}
                           aria-label={`Số lượng ${l.name}`} />
                         <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name}`}

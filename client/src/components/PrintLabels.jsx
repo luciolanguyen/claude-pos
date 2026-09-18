@@ -157,17 +157,6 @@ export default function PrintLabels({ open, onClose, products = [] }) {
 
   if (!open) return null;
 
-  const Check = ({ k, label }) => (
-    <label className="flex items-center gap-1.5 text-[13px] cursor-pointer">
-      <input
-        type="checkbox"
-        className="w-4 h-4 accent-emerald-700 cursor-pointer"
-        checked={show[k]}
-        onChange={(e) => setShow((s) => ({ ...s, [k]: e.target.checked }))}
-      />
-      {label}
-    </label>
-  );
 
   const breakdown = items.filter((p) => Number(p.count) > 0)
     .map((p) => `${n(p.count)} tem ${p.name} (${unitOf(p)?.unit_name || p.base_unit})`);
@@ -214,11 +203,11 @@ export default function PrintLabels({ open, onClose, products = [] }) {
           <div>
             <span className="label">Nội dung in trên tem</span>
             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              <Check k="store" label="Tên cửa hàng" />
-              <Check k="name" label="Tên hàng" />
-              <Check k="price" label="Giá bán" />
-              <Check k="unit" label="Đơn vị tính" />
-              <Check k="sku" label="Mã hàng" />
+              <LabelCheck checked={!!show['store']} onChange={(v) => setShow((x) => ({ ...x, store: v }))} label="Tên cửa hàng" />
+              <LabelCheck checked={!!show['name']} onChange={(v) => setShow((x) => ({ ...x, name: v }))} label="Tên hàng" />
+              <LabelCheck checked={!!show['price']} onChange={(v) => setShow((x) => ({ ...x, price: v }))} label="Giá bán" />
+              <LabelCheck checked={!!show['unit']} onChange={(v) => setShow((x) => ({ ...x, unit: v }))} label="Đơn vị tính" />
+              <LabelCheck checked={!!show['sku']} onChange={(v) => setShow((x) => ({ ...x, sku: v }))} label="Mã hàng" />
             </div>
           </div>
 
@@ -452,5 +441,21 @@ function LabelBox({ p, unitName, size, show, store, code, price, forPrint }) {
         <div style={{ fontSize: '5.5pt', fontFamily: 'monospace' }}>{p.sku}</div>
       )}
     </div>
+  );
+}
+
+/* Khai ngoài thân component (BRD nâng cấp, mục 8) — bên trong thì mỗi lần vẽ lại
+   là ô tích bị dựng lại, bấm xong mất con trỏ. */
+function LabelCheck({ checked, onChange, label }) {
+  return (
+    <label className="flex items-center gap-1.5 text-[13px] cursor-pointer">
+      <input
+        type="checkbox"
+        className="w-4 h-4 accent-emerald-700 cursor-pointer"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      {label}
+    </label>
   );
 }

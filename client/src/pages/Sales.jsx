@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
-  Receipt, Printer, Undo2, XCircle, Eye, Filter, Download, ShoppingCart, HandCoins,
-  ShieldCheck, Handshake,
+  Receipt, Printer, Undo2, XCircle, Filter, Download, ShoppingCart, HandCoins,
+  ShieldCheck, Handshake, ArrowLeft, ClipboardList, Pencil,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
@@ -16,6 +16,8 @@ import InvoicePrint from '../components/InvoicePrint';
 import SaleReturnForm from '../components/SaleReturnForm';
 import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
 import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
+import PickingSlipPrint from '../components/PickingSlipPrint';
+import ConsignFixModal from '../components/ConsignFixModal';
 
 export default function Sales() {
   const { store, settings, toast, meta, user } = useApp();
@@ -38,9 +40,12 @@ export default function Sales() {
   } = usePaged((pg) => api.sales({ ...filters, ...pg }), [filters], { key: 'sales' });
 
   const [detail, setDetail] = useState(null);
+  const [selId, setSelId] = useState(null);       // hoá đơn đang xem ở khung phải
   const [wHistory, setWHistory] = useState(null);   // dòng thời gian bảo hành đang xem
   const [printing, setPrinting] = useState(null);
   const [warrantyCard, setWarrantyCard] = useState(null);   // in lại phiếu bảo hành
+  const [pickSlip, setPickSlip] = useState(null);           // phiếu soạn hàng cho nhân viên
+  const [fixConsign, setFixConsign] = useState(null);       // khai lại hoa hồng / giá bốc
   const [returning, setReturning] = useState(null);
   const [cancelling, setCancelling] = useState(null);
   const [paying, setPaying] = useState(null);
@@ -51,9 +56,11 @@ export default function Sales() {
   const totals = extra?.totals || null;
 
   const openDetail = async (id) => {
+    setSelId(id);
     try { setDetail(await api.sale(id)); }
     catch (e) { toast(e.message, 'bad'); }
   };
+  const closeDetail = () => { setSelId(null); setDetail(null); };
 
   const doCancel = async () => {
     setBusyAction(true);
@@ -61,7 +68,7 @@ export default function Sales() {
       await api.post(`/sales/${cancelling.id}/cancel`);
       toast(`Đã huỷ hoá đơn ${cancelling.code}, hàng đã nhập lại kho.`, 'ok');
       setCancelling(null);
-      setDetail(null);
+      closeDetail();
       reload();
     } catch (e) {
       toast(e.message, 'bad', 6000);
@@ -153,33 +160,29 @@ export default function Sales() {
                 message={q ? `Không tìm thấy hoá đơn khớp "${q}" trong khoảng thời gian này.` : 'Chưa phát sinh hoá đơn trong khoảng thời gian đã chọn.'}
               />
             ) : (
-              <div className="card">
+              /* Hai khung: danh sách bên trái, chi tiết hoá đơn bên phải (BRD mục 3) —
+                 cùng một mẫu với màn hình "Hoá đơn trong ngày" ở quầy. */
+              <div className="grid gap-3 lg:grid-cols-[minmax(340px,520px)_1fr] lg:items-start">
+              <div className={`card ${selId ? 'hidden lg:block' : ''}`}>
               <div className="table-wrap table-scroll !border-0 !rounded-none">
                 <table className="data">
                   <thead>
                     <tr>
-                      <th>Mã hoá đơn</th>
-                      <th>Thời gian</th>
+                      {/* Giờ bán nằm ngay dưới mã: khung danh sách hẹp, bớt một cột là đủ chỗ cho tiền */}
+                      <th>Mã hoá đơn · giờ</th>
                       <th>Khách hàng</th>
-                      <th className="text-right">Số mặt</th>
                       <th className="text-right">Tổng tiền</th>
-                      <th className="text-right">Đã trả</th>
-                      <th className="text-right">Còn nợ</th>
-                      <th>Thanh toán</th>
-                      <th>Thu ngân</th>
-                      <th className="text-right">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.map((s) => (
-                      <tr key={s.id} className={`hoverable ${s.status === 'cancelled' ? 'opacity-55' : ''}`}>
+                      <tr key={s.id}
+                        onClick={() => openDetail(s.id)}
+                        aria-current={selId === s.id}
+                        className={`hoverable clickable ${s.status === 'cancelled' ? 'opacity-55' : ''}
+                                    ${selId === s.id ? 'bg-accent-soft/60' : ''}`}>
                         <td>
-                          <button
-                            onClick={() => openDetail(s.id)}
-                            className="font-mono font-semibold text-accent hover:underline cursor-pointer"
-                          >
-                            {s.code}
-                          </button>
+                          <span className="font-mono font-semibold text-accent whitespace-nowrap">{s.code}</span>
                           {s.is_vat_invoice === 1 && <Badge tone="info" className="ml-1">GTGT</Badge>}
                           {s.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
                           <WarrantyFlag count={s.warranty_count} compact className="ml-1"
@@ -200,8 +203,10 @@ export default function Sales() {
                               Mua hộ {s.consign_count}
                             </span>
                           )}
+                          <span className="block text-2xs text-muted-ink">
+                            <span className="whitespace-nowrap">{datetime(s.ts)}</span>{s.user_name ? ` · ${s.user_name}` : ''}
+                          </span>
                         </td>
-                        <td className="whitespace-nowrap text-muted-ink">{datetime(s.ts)}</td>
                         <td>
                           <div className="truncate max-w-[180px]">{s.customer_name || 'Khách lẻ'}</div>
                           {s.customer_phone && <div className="text-2xs text-muted-ink">{s.customer_phone}</div>}
@@ -211,68 +216,15 @@ export default function Sales() {
                             </div>
                           )}
                         </td>
-                        <td className="num">
-                          {s.item_count + (s.consign_count || 0)}
-                          {s.consign_count > 0 && (
-                            <span className="block text-2xs text-violet-700">
-                              {s.item_count} hàng tiệm · {s.consign_count} mua hộ
-                            </span>
+                        <td className="num font-semibold whitespace-nowrap">
+                          {money(s.total)}
+                          <span className="block text-2xs font-normal text-muted-ink">
+                            {s.item_count + (s.consign_count || 0)} món · {PAYMENT_LABEL[s.payment_method] || s.payment_method}
+                          </span>
+                          {/* Còn nợ gộp vào đây (chữ đỏ) thay cho một cột riêng */}
+                          {s.remaining > 0 && (
+                            <span className="block text-2xs text-danger">Nợ {money(s.remaining)}</span>
                           )}
-                        </td>
-                        <td className="num font-semibold">{money(s.total)}</td>
-                        <td className="num">{money(s.paid)}</td>
-                        <td className={`num ${s.remaining > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}`}>
-                          {s.remaining > 0 ? money(s.remaining) : '—'}
-                        </td>
-                        <td>
-                          <Badge tone={s.payment_method === 'debt' ? 'warn' : 'mute'}>
-                            {PAYMENT_LABEL[s.payment_method] || s.payment_method}
-                          </Badge>
-                        </td>
-                        <td className="text-muted-ink truncate max-w-[110px]">{s.user_name || '—'}</td>
-                        <td>
-                          <div className="flex items-center justify-end gap-0.5">
-                            <IconButton icon={Eye} label={`Xem chi tiết ${s.code}`} onClick={() => openDetail(s.id)} size={14} />
-                            <IconButton
-                              icon={Printer}
-                              label={`In hoá đơn ${s.code}`}
-                              onClick={async () => setPrinting(await api.sale(s.id))}
-                              size={14}
-                            />
-                            {/* In lại phiếu bảo hành: chọn gộp hay tách từng
-                                món ngay trong hộp in (tài liệu 16, mục 5) */}
-                            <IconButton
-                              icon={ShieldCheck}
-                              label={`In lại phiếu bảo hành của ${s.code}`}
-                              onClick={async () => {
-                                const full = await api.sale(s.id);
-                                if (!warrantyItemsOf(full).length) {
-                                  toast(`Hoá đơn ${s.code} không có món nào bảo hành.`, 'warn');
-                                  return;
-                                }
-                                setWarrantyCard(full);
-                              }}
-                              size={14}
-                              className="!text-emerald-700"
-                            />
-                            {s.status === 'done' && s.remaining > 0 && (
-                              <IconButton
-                                icon={HandCoins}
-                                label={`Thu tiền hoá đơn ${s.code}`}
-                                onClick={() => setPaying(s)}
-                                size={14}
-                                className="!text-warn"
-                              />
-                            )}
-                            {s.status === 'done' && (
-                              <IconButton
-                                icon={Undo2}
-                                label={`Nhận trả hàng cho ${s.code}`}
-                                onClick={async () => setReturning(await api.sale(s.id))}
-                                size={14}
-                              />
-                            )}
-                          </div>
                         </td>
                       </tr>
                     ))}
@@ -287,157 +239,36 @@ export default function Sales() {
                 onPageSize={setPageSize}
               />
               </div>
+
+              {/* --------------------- Chi tiết hoá đơn đang chọn -------------------- */}
+              <div className={`card p-3 ${selId ? '' : 'hidden lg:block'}`}>
+                {!selId ? (
+                  <Empty icon={Receipt} title="Chưa chọn hoá đơn"
+                    message="Bấm một hoá đơn bên trái để xem chi tiết, in lại, thu tiền hay nhận trả hàng." />
+                ) : !detail ? <Spinner label="Đang mở hoá đơn..." /> : (
+                  <SaleDetail
+                    detail={detail}
+                    onBack={closeDetail}
+                    onPrint={() => setPrinting(detail)}
+                    onPay={() => setPaying(detail)}
+                    onReturn={() => setReturning(detail)}
+                    onCancel={() => setCancelling(detail)}
+                    onPickSlip={() => setPickSlip(detail)}
+                    onFixConsign={(item) => setFixConsign({ sale: detail, item })}
+                    onWarrantyCard={() => {
+                      if (!warrantyItemsOf(detail).length) {
+                        toast(`Hoá đơn ${detail.code} không có món nào bảo hành.`, 'warn');
+                        return;
+                      }
+                      setWarrantyCard(detail);
+                    }}
+                    onHistory={(query, subtitle) => setWHistory({ query, subtitle })}
+                  />
+                )}
+              </div>
+              </div>
             )}
       </Page>
-
-      {/* -------------------------- Chi tiết hoá đơn ------------------------- */}
-      <Modal
-        open={!!detail}
-        onClose={() => setDetail(null)}
-        title={detail ? `Hoá đơn ${detail.code}` : ''}
-        subtitle={detail ? `${datetime(detail.ts)} · ${detail.user_name || ''}` : ''}
-        size="lg"
-        footer={detail && <>
-          {detail.status === 'done' && (
-            <Button variant="danger" icon={XCircle} onClick={() => setCancelling(detail)}>
-              Huỷ hoá đơn
-            </Button>
-          )}
-          <div className="flex-1" />
-          <Button onClick={() => setDetail(null)}>Đóng</Button>
-          <Button variant="primary" icon={Printer} onClick={() => { setPrinting(detail); setDetail(null); }}>
-            In hoá đơn
-          </Button>
-        </>}
-      >
-        {detail && (
-          <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 text-[13px]">
-              <div className="card p-2.5">
-                <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Khách hàng</div>
-                <div className="font-semibold">{detail.customer_name || 'Khách lẻ'}</div>
-                {detail.customer_phone && <div className="text-muted-ink">{detail.customer_phone}</div>}
-                {detail.buyer_name && (
-                  <div className="text-violet-700 mt-0.5">
-                    Người mua hộ: <b>{detail.buyer_name}</b>{detail.buyer_phone ? ` · ${detail.buyer_phone}` : ''}
-                  </div>
-                )}
-                {detail.customer_address && <div className="text-muted-ink">{detail.customer_address}</div>}
-                {detail.customer_tax_code && <div className="text-muted-ink">MST: {detail.customer_tax_code}</div>}
-              </div>
-              <div className="card p-2.5">
-                <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Thông tin đơn</div>
-                <div>Kho xuất: {detail.warehouse_name}</div>
-                <div>Bảng giá: {detail.price_list_name || 'Giá lẻ'}</div>
-                <div>Thanh toán: {PAYMENT_LABEL[detail.payment_method]}</div>
-                {detail.is_vat_invoice === 1 && <Badge tone="info">Có hoá đơn GTGT</Badge>}
-                {detail.cod_amount > 0 && (
-                  <div>
-                    Thu hộ COD: {money(detail.cod_amount)}
-                    {detail.cod_status === 'collected' ? ' — đã đối soát' : detail.cod_status === 'pending' ? ' — chờ đối soát' : ''}
-                  </div>
-                )}
-                {detail.voucher_amount > 0 && <div>Trừ phiếu đổi hàng: {money(detail.voucher_amount)}</div>}
-                {detail.salary_amount > 0 && (
-                  <div>
-                    Trừ vào lương <b>{detail.salary_employee_name || 'nhân viên'}</b>: {money(detail.salary_amount)}
-                    {detail.salary_refunded > 0 ? ` (đã hoàn vào lương ${money(detail.salary_refunded)})` : ''}
-                  </div>
-                )}
-                {detail.approval_note && (
-                  <div className="text-2xs text-muted-ink">Quản lý đã duyệt: {detail.approval_note}</div>
-                )}
-              </div>
-            </div>
-
-            <div className="table-wrap">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Tên hàng</th>
-                    <th>ĐVT</th>
-                    <th className="text-right">SL</th>
-                    <th className="text-right">Đơn giá</th>
-                    <th className="text-right">Thành tiền</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detail.items.map((it) => (
-                    <tr key={it.id}>
-                      <td>
-                        <div className="font-semibold">{it.name_snapshot}</div>
-                        <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
-                        {(it.warranty_months > 0 || it.serial || it.warranty_count > 0) && (
-                          <div className="flex flex-wrap items-center gap-1 mt-0.5">
-                            {it.warranty_months > 0 && (
-                              <Badge tone="ok">BH {it.warranty_months} tháng{it.warranty_until ? ` · tới ${date(it.warranty_until)}` : ''}</Badge>
-                            )}
-                            {it.serial && <span className="text-2xs text-muted-ink font-mono">SN {it.serial}</span>}
-                            <WarrantyFlag count={it.warranty_count}
-                              onClick={() => setWHistory({ query: { sale_id: detail.id, product_id: it.product_id }, subtitle: `${it.name_snapshot} · ${detail.code}` })} />
-                          </div>
-                        )}
-                      </td>
-                      <td>{it.unit_name}</td>
-                      <td className="num">{fq(it.qty)}</td>
-                      <td className="num">{money(it.price)}</td>
-                      <td className="num font-semibold">{money(it.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex justify-end">
-              <div className="w-full sm:w-72 space-y-1 text-[13px]">
-                <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
-                {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Giảm giá</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
-                {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
-                <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
-                  <span>Tổng cộng</span><span className="tabular font-mono text-accent">{money(detail.total)}</span>
-                </div>
-                <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
-                {detail.total - detail.paid > 0 && (
-                  <div className="flex justify-between font-semibold text-danger">
-                    <span>Còn nợ</span><span className="tabular font-mono">{money(detail.total - detail.paid)}</span>
-                  </div>
-                )}
-                {/* Không có quyền xem giá vốn thì máy chủ không gửi cogs — đừng hiện
-                    "Giá vốn 0 đ" và "Lợi nhuận NaN" cho nhân viên (plan 31, 1.1d) */}
-                {detail.cogs !== undefined && (
-                  <>
-                    <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
-                      <span>Giá vốn</span><span className="tabular font-mono">{money(detail.cogs)}</span>
-                    </div>
-                    <div className="flex justify-between font-semibold text-emerald-700">
-                      <span>Lợi nhuận</span>
-                      <span className="tabular font-mono">{money(detail.total - detail.vat_amount - detail.cogs)}</span>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {detail.note && (
-              <div className="card p-2.5 text-[13px]">
-                <span className="font-semibold">Ghi chú: </span>{detail.note}
-              </div>
-            )}
-
-            {detail.returns?.length > 0 && (
-              <div className="card p-2.5">
-                <div className="text-2xs font-bold text-muted-ink uppercase mb-1.5">Phiếu trả hàng liên quan</div>
-                {detail.returns.map((rt) => (
-                  <div key={rt.id} className="flex justify-between text-[13px] py-0.5">
-                    <span className="font-mono">{rt.code} · {date(rt.ts)}</span>
-                    <span className="tabular font-mono">{money(rt.total)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
 
       {/* --------------------------- Thu tiền nợ --------------------------- */}
       <PayModal
@@ -488,6 +319,25 @@ export default function Sales() {
           sale={warrantyCard}
           store={store}
           onClose={() => setWarrantyCard(null)}
+        />
+      )}
+
+      {/* Phiếu soạn hàng in lại: không giá tiền, có vị trí kệ (BRD nâng cấp, mục 3) */}
+      {pickSlip && (
+        <PickingSlipPrint sale={pickSlip} store={store} onClose={() => setPickSlip(null)} />
+      )}
+
+      {/* Quản lý khai lại hoa hồng / giá bốc sau khi hoá đơn xong (BRD mục 5) */}
+      {fixConsign && (
+        <ConsignFixModal
+          sale={fixConsign.sale}
+          item={fixConsign.item}
+          onClose={() => setFixConsign(null)}
+          onSaved={async () => {
+            setFixConsign(null);
+            try { setDetail(await api.sale(selId)); } catch { /* mở lại sau */ }
+            reload();
+          }}
         />
       )}
 
@@ -577,5 +427,226 @@ function PayModal({ sale, accounts, onClose, onDone }) {
         </div>
       )}
     </Modal>
+  );
+}
+
+/* ==================================================================== *
+ * CHI TIẾT MỘT HOÁ ĐƠN — khung bên phải (BRD nâng cấp, mục 3)
+ *
+ * Trước đây là hộp thoại che cả bảng; giờ nằm cạnh danh sách để vừa dò
+ * hoá đơn vừa xem nội dung. Hàng mua hộ tách thành khối riêng: tiền gộp
+ * chung vào tổng, nhưng phải nhìn ra món nào của tiệm, món nào mua giùm.
+ * ==================================================================== */
+function SaleDetail({
+  detail, onBack, onPrint, onPay, onReturn, onCancel, onWarrantyCard, onPickSlip, onFixConsign, onHistory,
+}) {
+  const { can } = useApp();
+  const consign = detail.consign_items || [];
+  const owed = detail.total - detail.paid;
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start gap-2">
+        <Button size="sm" className="lg:hidden" icon={ArrowLeft} onClick={onBack}>Danh sách</Button>
+        {/* Khung chi tiết hẹp thì hàng nút rớt xuống dòng dưới, đừng ép mã hoá đơn gãy chữ */}
+        <div className="min-w-[14rem] flex-1">
+          <div className="font-bold">
+            Hoá đơn <span className="font-mono whitespace-nowrap">{detail.code}</span>
+            {detail.is_vat_invoice === 1 && <Badge tone="info" className="ml-1">GTGT</Badge>}
+            {detail.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
+          </div>
+          <div className="text-2xs text-muted-ink">{datetime(detail.ts)} · {detail.user_name || ''}</div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button size="sm" icon={Printer} onClick={onPrint}>In hoá đơn</Button>
+          <Button size="sm" icon={ClipboardList} onClick={onPickSlip}>Phiếu soạn hàng</Button>
+          <Button size="sm" icon={ShieldCheck} className="!text-emerald-700" onClick={onWarrantyCard}>Phiếu bảo hành</Button>
+          {detail.status === 'done' && owed > 0 && (
+            <Button size="sm" icon={HandCoins} onClick={onPay}>Thu tiền</Button>
+          )}
+          {detail.status === 'done' && <Button size="sm" icon={Undo2} onClick={onReturn}>Trả hàng</Button>}
+          {detail.status === 'done' && (
+            <Button size="sm" variant="danger" icon={XCircle} onClick={onCancel}>Huỷ</Button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 text-[13px]">
+        <div className="card p-2.5">
+          <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Khách hàng</div>
+          <div className="font-semibold">{detail.customer_name || 'Khách lẻ'}</div>
+          {detail.customer_phone && <div className="text-muted-ink">{detail.customer_phone}</div>}
+          {detail.buyer_name && (
+            <div className="text-violet-700 mt-0.5">
+              Người mua hộ: <b>{detail.buyer_name}</b>{detail.buyer_phone ? ` · ${detail.buyer_phone}` : ''}
+            </div>
+          )}
+          {detail.customer_address && <div className="text-muted-ink">{detail.customer_address}</div>}
+          {detail.customer_tax_code && <div className="text-muted-ink">MST: {detail.customer_tax_code}</div>}
+        </div>
+        <div className="card p-2.5">
+          <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Thông tin đơn</div>
+          <div>Kho xuất: {detail.warehouse_name}</div>
+          <div>Bảng giá: {detail.price_list_name || 'Giá lẻ'}</div>
+          <div>Thanh toán: {PAYMENT_LABEL[detail.payment_method]}</div>
+          {detail.cod_amount > 0 && (
+            <div>
+              Thu hộ COD: {money(detail.cod_amount)}
+              {detail.cod_status === 'collected' ? ' — đã đối soát' : detail.cod_status === 'pending' ? ' — chờ đối soát' : ''}
+            </div>
+          )}
+          {detail.voucher_amount > 0 && <div>Trừ phiếu đổi hàng: {money(detail.voucher_amount)}</div>}
+          {detail.salary_amount > 0 && (
+            <div>
+              Trừ vào lương <b>{detail.salary_employee_name || 'nhân viên'}</b>: {money(detail.salary_amount)}
+              {detail.salary_refunded > 0 ? ` (đã hoàn vào lương ${money(detail.salary_refunded)})` : ''}
+            </div>
+          )}
+          {detail.approval_note && (
+            <div className="text-2xs text-muted-ink">Quản lý đã duyệt: {detail.approval_note}</div>
+          )}
+        </div>
+      </div>
+
+      {/* Hoá đơn chỉ có hàng mua hộ thì khỏi hiện bảng hàng tiệm trống trơn */}
+      {(detail.items.length > 0 || consign.length === 0) && (
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Tên hàng</th>
+              <th>ĐVT</th>
+              <th className="text-right">SL</th>
+              <th className="text-right">Đơn giá</th>
+              <th className="text-right">Thành tiền</th>
+            </tr>
+          </thead>
+          <tbody>
+            {detail.items.map((it) => (
+              <tr key={it.id}>
+                <td>
+                  <div className="font-semibold">{it.name_snapshot}</div>
+                  <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
+                  {(it.warranty_months > 0 || it.serial || it.warranty_count > 0) && (
+                    <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                      {it.warranty_months > 0 && (
+                        <Badge tone="ok">BH {it.warranty_months} tháng{it.warranty_until ? ` · tới ${date(it.warranty_until)}` : ''}</Badge>
+                      )}
+                      {it.serial && <span className="text-2xs text-muted-ink font-mono">SN {it.serial}</span>}
+                      <WarrantyFlag count={it.warranty_count}
+                        onClick={() => onHistory({ sale_id: detail.id, product_id: it.product_id }, `${it.name_snapshot} · ${detail.code}`)} />
+                    </div>
+                  )}
+                </td>
+                <td>{it.unit_name}</td>
+                <td className="num">{fq(it.qty)}</td>
+                <td className="num">{money(it.price)}</td>
+                <td className="num font-semibold">{money(it.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      )}
+
+      {/* Hàng mua hộ trong hoá đơn (BRD nâng cấp, mục 3) */}
+      {consign.length > 0 && (
+        <div className="table-wrap border-violet-200">
+          <div className="px-2.5 py-1.5 bg-violet-50 border-b border-violet-200 text-2xs font-bold text-violet-900
+                          flex items-center gap-1.5">
+            <Handshake size={12} aria-hidden="true" /> Hàng mua hộ ({n(consign.length)} món)
+          </div>
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Tên món</th>
+                <th>ĐVT</th>
+                <th className="text-right">SL</th>
+                <th className="text-right">Đơn giá</th>
+                <th className="text-right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody>
+              {consign.map((c) => (
+                <tr key={c.id}>
+                  <td>
+                    <div className="font-semibold flex items-center gap-1.5">
+                      {c.name}
+                      {/* Thu ngân bán xong mà chưa ai khai hoa hồng / giá bốc (BRD mục 5) */}
+                      {c.needs_review === 1 && <Badge tone="warn">Chờ khai hoa hồng</Badge>}
+                    </div>
+                    <div className="text-2xs text-violet-800">
+                      {c.partner_name ? `Hàng gửi của ${c.partner_name}` : 'Tiệm tự bốc ngoài'}
+                      {c.settlement_code ? ` · đã đối soát ${c.settlement_code}` : c.partner_name ? ' · chờ đối soát' : ''}
+                      {/* Hoa hồng và tiền phải trả chủ hàng chỉ hiện với người xem được giá vốn */}
+                      {c.commission !== undefined && ` · hoa hồng ${money(c.commission)}`}
+                      {c.payable !== undefined && ` · trả chủ ${money(c.payable)}`}
+                    </div>
+                    {c.note && <div className="text-2xs text-muted-ink italic">{c.note}</div>}
+                    {can('cost.view') && !c.settlement_code && detail.status === 'done' && (
+                      <Button size="sm" variant="ghost" className="!px-1 mt-0.5" icon={Pencil}
+                        onClick={() => onFixConsign(c)}>
+                        {c.partner_name ? 'Khai lại hoa hồng' : 'Khai giá tiệm bốc'}
+                      </Button>
+                    )}
+                  </td>
+                  <td>{c.unit_name || '—'}</td>
+                  <td className="num">{fq(c.qty)}</td>
+                  <td className="num">{money(c.price)}</td>
+                  <td className="num font-semibold">{money(c.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <div className="w-full sm:w-72 space-y-1 text-[13px]">
+          <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
+          {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Giảm giá</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
+          {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
+          <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
+            <span>Tổng cộng</span><span className="tabular font-mono text-accent">{money(detail.total)}</span>
+          </div>
+          <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
+          {owed > 0 && (
+            <div className="flex justify-between font-semibold text-danger">
+              <span>Còn nợ</span><span className="tabular font-mono">{money(owed)}</span>
+            </div>
+          )}
+          {/* Không có quyền xem giá vốn thì máy chủ không gửi cogs — đừng hiện
+              "Giá vốn 0 đ" và "Lợi nhuận NaN" cho nhân viên (plan 31, 1.1d) */}
+          {detail.cogs !== undefined && (
+            <>
+              <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
+                <span>Giá vốn</span><span className="tabular font-mono">{money(detail.cogs)}</span>
+              </div>
+              <div className="flex justify-between font-semibold text-emerald-700">
+                <span>Lợi nhuận</span>
+                <span className="tabular font-mono">{money(detail.total - detail.vat_amount - detail.cogs)}</span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {detail.note && (
+        <div className="card p-2.5 text-[13px]">
+          <span className="font-semibold">Ghi chú: </span>{detail.note}
+        </div>
+      )}
+
+      {detail.returns?.length > 0 && (
+        <div className="card p-2.5">
+          <div className="text-2xs font-bold text-muted-ink uppercase mb-1.5">Phiếu trả hàng liên quan</div>
+          {detail.returns.map((rt) => (
+            <div key={rt.id} className="flex justify-between text-[13px] py-0.5">
+              <span className="font-mono">{rt.code} · {date(rt.ts)}</span>
+              <span className="tabular font-mono">{money(rt.total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

@@ -1049,6 +1049,20 @@ CREATE TABLE IF NOT EXISTS barcodes (
 );
 CREATE INDEX IF NOT EXISTS idx_barcodes_owner ON barcodes(owner_type, owner_id);
 
+-- Moi lan tra tien cho chu hang vang lai (BRD nang cap, muc 4): tra lam nhieu lan
+-- thi moi lan mot dong, tong lai la so da tra cua dot chot do.
+CREATE TABLE IF NOT EXISTS consign_payments (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  settlement_id INTEGER NOT NULL REFERENCES consign_settlements(id) ON DELETE CASCADE,
+  ts            TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  amount        INTEGER NOT NULL,
+  account_id    INTEGER REFERENCES cash_accounts(id) ON DELETE SET NULL,
+  cash_tx_id    INTEGER REFERENCES cash_transactions(id) ON DELETE SET NULL,
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_consign_pay ON consign_payments(settlement_id);
+
 -- ================= Plan 28: luong nhan vien theo lich Am =================
 -- Nhan vien an luong la bang rieng, KHONG dung users: nguoi phu ban co the
 -- khong bao gio dang nhap, con tai khoan quan ly co the chinh la chu tiem.

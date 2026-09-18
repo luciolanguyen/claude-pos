@@ -62,11 +62,19 @@ r.get('/consign-partners', (req, res) => {
   res.json(rows);
 });
 
+/** Mức hoa hồng mặc định của chủ hàng (BRD nâng cấp, mục 5) — thu ngân không gõ nữa. */
+const commissionOf = (b, cur = null) => [
+  (b?.commission_type ?? cur?.commission_type) === 'amount' ? 'amount' : 'percent',
+  Math.max(0, Number(b?.commission_value ?? cur?.commission_value) || 0),
+];
+
 r.post('/consign-partners', (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Bắt buộc nhập tên chủ hàng.' });
-  const info = run('INSERT INTO consign_partners(name, phone, note) VALUES(?, ?, ?)',
-    [name, String(req.body.phone || '').trim() || null, req.body.note || null]);
+  const [ctype, cvalue] = commissionOf(req.body);
+  const info = run(`INSERT INTO consign_partners(name, phone, note, commission_type, commission_value)
+                    VALUES(?, ?, ?, ?, ?)`,
+    [name, String(req.body.phone || '').trim() || null, req.body.note || null, ctype, cvalue]);
   res.json(get('SELECT * FROM consign_partners WHERE id = ?', [Number(info.lastInsertRowid)]));
 });
 
@@ -75,9 +83,11 @@ r.put('/consign-partners/:id', (req, res) => {
   if (!p) return res.status(404).json({ error: 'Không tìm thấy chủ hàng' });
   const name = String(req.body?.name ?? p.name).trim();
   if (!name) return res.status(400).json({ error: 'Bắt buộc nhập tên chủ hàng.' });
-  run('UPDATE consign_partners SET name = ?, phone = ?, note = ?, active = ? WHERE id = ?',
+  const [ctype, cvalue] = commissionOf(req.body, p);
+  run(`UPDATE consign_partners SET name = ?, phone = ?, note = ?, active = ?,
+         commission_type = ?, commission_value = ? WHERE id = ?`,
     [name, String(req.body.phone ?? p.phone ?? '').trim() || null,
-      req.body.note ?? p.note, req.body.active === 0 ? 0 : 1, p.id]);
+      req.body.note ?? p.note, req.body.active === 0 ? 0 : 1, ctype, cvalue, p.id]);
   res.json(get('SELECT * FROM consign_partners WHERE id = ?', [p.id]));
 });
 
@@ -300,12 +310,16 @@ r.get('/consign-settlements', (req, res) => {
   const sql = `FROM consign_settlements st ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`;
   const total = get(`SELECT COUNT(*) AS n ${sql}`, params).n;
   const rows = all(`
-    SELECT st.*, ct.code AS cash_code, u.full_name AS user_name
+    SELECT st.*, ct.code AS cash_code, u.full_name AS user_name,
+           (st.payout - st.paid) AS owing
     ${sql.replace('FROM consign_settlements st', `FROM consign_settlements st
       LEFT JOIN cash_transactions ct ON ct.id = st.cash_tx_id
       LEFT JOIN users u ON u.id = st.user_id`)}
     ORDER BY st.ts DESC, st.id DESC LIMIT ? OFFSET ?`, [...params, size, offset]);
-  res.json({ rows, total, page, page_size: size });
+  /* Tổng còn nợ chủ hàng của các đợt đang xem — chủ tiệm hay hỏi "còn thiếu ai bao nhiêu" */
+  const sums = get(`SELECT COALESCE(SUM(st.payout), 0) AS payout, COALESCE(SUM(st.paid), 0) AS paid,
+                           COALESCE(SUM(st.payout - st.paid), 0) AS owing ${sql}`, params);
+  res.json({ rows, total, page, page_size: size, sums });
 });
 
 r.get('/consign-settlements/:id', (req, res) => {
@@ -322,30 +336,47 @@ r.get('/consign-settlements/:id', (req, res) => {
     SELECT ci.*, s.code AS sale_code, s.ts AS sale_ts, (ci.amount - ci.commission) AS payable
     FROM sale_consign_items ci JOIN sales s ON s.id = ci.sale_id
     WHERE ci.settlement_id = ? ORDER BY s.ts, ci.id`, [st.id]);
+  /* Các lần đã trả (BRD mục 4): trả một phần thì mỗi lần một dòng */
+  st.payments = all(`
+    SELECT pm.*, ct.code AS cash_code, a.name AS account_name, u.full_name AS user_name
+    FROM consign_payments pm
+    LEFT JOIN cash_transactions ct ON ct.id = pm.cash_tx_id
+    LEFT JOIN cash_accounts a ON a.id = pm.account_id
+    LEFT JOIN users u ON u.id = pm.user_id
+    WHERE pm.settlement_id = ? ORDER BY pm.id`, [st.id]);
+  st.owing = st.payout - st.paid;
   res.json(st);
 });
 
 /**
- * Chi tiền cho một đợt đã chốt mà lúc chốt chọn "chỉ ghi sổ, trả sau".
- * Trước đây không có chỗ nào làm việc này — đợt đó nằm "Chưa chi tiền" mãi.
+ * Chi tiền cho một đợt đã chốt.
+ *
+ * Trả được NHIỀU LẦN (BRD nâng cấp, mục 4): tiệm gom tiền tới đâu trả tới đó,
+ * mỗi lần một phiếu chi và một dòng trong consign_payments. Bỏ trống số tiền thì
+ * hiểu là trả nốt phần còn lại.
  */
 r.post('/consign-settlements/:id/pay', (req, res) => {
   try {
     const out = tx(() => {
       const st = get('SELECT * FROM consign_settlements WHERE id = ?', [req.params.id]);
       if (!st) throw Object.assign(new Error('Không tìm thấy phiếu đối soát'), { status: 404 });
-      if (st.cash_tx_id) {
-        const done = get('SELECT code FROM cash_transactions WHERE id = ?', [st.cash_tx_id]);
-        throw badRequest(`Đợt ${st.code} đã chi tiền rồi${done ? ` (phiếu ${done.code})` : ''}.`, 'ALREADY_PAID');
+      const owing = Math.max(0, st.payout - st.paid);
+      if (!(owing > 0)) throw badRequest(`Đợt ${st.code} đã trả đủ cho chủ hàng rồi.`, 'ALREADY_PAID');
+      const asked = req.body?.amount === undefined || req.body?.amount === null || req.body?.amount === ''
+        ? owing : Math.round(Number(req.body.amount) || 0);
+      if (!(asked > 0)) throw badRequest('Số tiền trả phải lớn hơn 0.');
+      if (asked > owing) {
+        throw badRequest(`Đợt ${st.code} chỉ còn nợ ${owing.toLocaleString('vi-VN')} đ — không trả quá số đó.`,
+          'OVER_PAY');
       }
-      if (!(st.payout > 0)) throw badRequest('Đợt này không còn số tiền nào phải trả.');
       const accountId = Number(req.body?.account_id) || defaultCashAccount();
       if (!accountId) throw badRequest('Chưa thiết lập quỹ tiền để chi trả.');
       const partner = st.partner_id ? get('SELECT name FROM consign_partners WHERE id = ?', [st.partner_id]) : null;
+      const left = owing - asked;
       const cashTx = addCashTx({
         accountId,
         direction: 'out',
-        amount: st.payout,
+        amount: asked,
         category: 'consign_out',
         partnerType: 'consign',
         partnerId: st.partner_id,
@@ -354,10 +385,20 @@ r.post('/consign-settlements/:id/pay', (req, res) => {
         refId: st.id,
         refCode: st.code,
         userId: req.body?.user_id || req.user?.id || null,
-        note: `Trả tiền hàng gửi bán ${st.code} — ${st.item_count} món (trả sau khi chốt)`,
+        note: `Trả tiền hàng gửi bán ${st.code} — ${st.item_count} món`
+          + (left > 0 ? ` (trả một phần, còn ${left.toLocaleString('vi-VN')} đ)` : ''),
       });
-      run('UPDATE consign_settlements SET cash_tx_id = ? WHERE id = ?', [cashTx.id, st.id]);
-      return { id: st.id, code: st.code, payout: st.payout, cash_tx_id: cashTx.id, cash_code: cashTx.code };
+      run(`INSERT INTO consign_payments(settlement_id, amount, account_id, cash_tx_id, user_id, note)
+           VALUES(?, ?, ?, ?, ?, ?)`,
+      [st.id, asked, accountId, cashTx.id, req.body?.user_id || req.user?.id || null,
+        String(req.body?.note || '').trim() || null]);
+      /* cash_tx_id trên đợt giữ phiếu chi ĐẦU TIÊN, để mẫu in cũ vẫn có số phiếu */
+      run('UPDATE consign_settlements SET paid = paid + ?, cash_tx_id = COALESCE(cash_tx_id, ?) WHERE id = ?',
+        [asked, cashTx.id, st.id]);
+      return {
+        id: st.id, code: st.code, payout: st.payout, paid: st.paid + asked, owing: left,
+        cash_tx_id: cashTx.id, cash_code: cashTx.code,
+      };
     });
     res.json(out);
   } catch (e) { fail(res, e); }

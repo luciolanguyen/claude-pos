@@ -356,6 +356,38 @@ addColumns('sales', {
 /* Trả hàng của hoá đơn trừ lương: hoàn lại vào lương, không chi tiền, không trừ nợ */
 addColumns('sale_returns', { salary_refund: 'INTEGER NOT NULL DEFAULT 0' });
 
+/* Chốt lương sớm theo ngày làm thực tế (BRD nâng cấp, mục 6): kỳ bị cắt làm hai,
+   phần còn lại của kỳ mang sẵn số tiền phải trả nốt để cả kỳ vẫn đủ lương tháng. */
+addColumns('payroll_cycles', { base_override: 'INTEGER', split_of: 'INTEGER' });
+
+/* Mức hoa hồng mặc định của từng chủ hàng (BRD nâng cấp, mục 5): thu ngân không
+   được thấy và không gõ hoa hồng nữa, nên máy chủ lấy mức đã thoả thuận sẵn ở
+   hồ sơ chủ hàng; quản lý sửa lại sau nếu cần. */
+addColumns('consign_partners', {
+  commission_type: "TEXT NOT NULL DEFAULT 'percent'",
+  commission_value: 'REAL NOT NULL DEFAULT 0',
+});
+/* Dòng hàng mua hộ còn CHỜ QUẢN LÝ khai hoa hồng / giá bốc — thu ngân bán xong
+   là dòng này sáng đèn ở màn hình Hoá đơn và Đối tác vãng lai. */
+addColumns('sale_consign_items', { needs_review: 'INTEGER NOT NULL DEFAULT 0' });
+
+/* Đối tác vãng lai: trả tiền nhiều lần (BRD nâng cấp, mục 4). Trước đây mỗi đợt
+   chốt chỉ có MỘT phiếu chi, trả thiếu là không ghi được. paid là tổng đã trả,
+   cộng dồn từ bảng consign_payments. */
+addColumns('consign_settlements', { paid: 'INTEGER NOT NULL DEFAULT 0' });
+/* Đợt cũ đã chi đủ một lần: coi như đã trả hết, để số "còn nợ chủ hàng" không sai */
+db.exec(`UPDATE consign_settlements SET paid = payout WHERE cash_tx_id IS NOT NULL AND paid = 0`);
+
+/* Đơn đặt hàng: món thiếu tồn phải đặt thêm của NCC (BRD nâng cấp, mục 2).
+   po_qty là số ĐÃ ĐẶT của mối, tính theo đúng đơn vị của dòng đơn — đặt được
+   một phần thì ghi đúng phần đó, đơn vẫn nằm ở nhóm "còn thiếu". */
+addColumns('sale_order_items', {
+  po_qty: 'REAL NOT NULL DEFAULT 0',
+  po_at: 'TEXT',
+  po_note: 'TEXT',
+  po_user_id: 'INTEGER',
+});
+
 /* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
 addColumns('sale_order_deposits', { payer_name: 'TEXT' });
 addColumns('sale_order_deliveries', { mode: "TEXT NOT NULL DEFAULT 'pickup'" });

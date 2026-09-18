@@ -22,6 +22,7 @@ import {
   solarToLunar, lunarText, cycleContaining, cycleAfter, addDays, daysBetween, lunarYearRange,
 } from '../client/src/lib/lunar.js';
 
+
 const httpError = (message, status = 400, code) => Object.assign(new Error(message), { status, code });
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 export const today = () => new Date().toLocaleDateString('sv-SE');
@@ -753,15 +754,20 @@ export function computeCycle(cycle, emp) {
   const isPartial = workDays < cycle.days;
   /* Kỳ tròn luôn trả đủ 100% lương tháng, bất kể tháng Âm 29 hay 30 ngày.
      Kỳ lẻ (vào làm / nghỉ việc giữa kỳ) tính theo ngày thực tế, mẫu số 30. */
+  /* base_override: phần còn lại của một kỳ đã chốt sớm theo ngày làm thực tế
+     (BRD nâng cấp, mục 6) — trả nốt cho đủ lương tháng, không tính lại theo ngày. */
   const base = emp.pay_mode === 'daily' ? 0
-    : isPartial ? Math.round(cycle.monthly_wage * workDays / 30) : cycle.monthly_wage;
+    : cycle.base_override !== null && cycle.base_override !== undefined ? cycle.base_override
+      : isPartial ? Math.round(cycle.monthly_wage * workDays / 30) : cycle.monthly_wage;
   const net = base + entries.filter(countsInNet).reduce((a, e) => a + e.amount, 0);
   return {
     ...cycle, entries, summary: summarize(entries),
     work_days: workDays, is_partial: isPartial ? 1 : 0, work_from_date: start, work_to_date: end,
     base, net,
     /* Dòng "chủ tặng thêm 1 ngày công" chỉ in cho kỳ tròn rơi vào tháng thiếu (§7.4) */
-    gift_day: emp.pay_mode !== 'daily' && !isPartial && cycle.days === 29,
+    /* Kỳ bị cắt đôi vì chốt sớm thì không in dòng "chủ tặng" ở cả hai nửa */
+    gift_day: emp.pay_mode !== 'daily' && !isPartial && cycle.days === 29
+      && cycle.base_override === null && !cycle.split_of,
     day_rate: dayRateOf(cycle.monthly_wage),
     hour_rate: Math.round(hourRateOf(cycle.monthly_wage, cycle.hours_per_day)),
     ended: cycle.date_to < today() || (!!emp.end_date && emp.end_date < today() && cycle.date_from <= emp.end_date),
@@ -808,6 +814,40 @@ export function settleCycles(empId, b, user) {
     if (early.length && b.allow_early !== true) {
       throw httpError(`Kỳ ${early[0].label} chưa hết (tới ${vn(early[0].date_to)}). Chốt sớm thì bấm xác nhận chốt sớm.`,
         409, 'CYCLE_NOT_ENDED');
+    }
+    /* Chốt sớm theo NGÀY LÀM THỰC TẾ (BRD nâng cấp, mục 6): cắt kỳ đang chạy làm
+       hai — phần đã làm trả bây giờ, phần còn lại thành một kỳ mới trả vào lần
+       chốt sau, mang sẵn số tiền còn thiếu để cộng lại vẫn đủ lương tháng. */
+    if (early.length && b.early_mode === 'worked') {
+      const c = early[early.length - 1];
+      if (early.length > 1) {
+        throw httpError('Chỉ kỳ cuối cùng đang chọn mới được chốt theo ngày làm thực tế.', 400, 'EARLY_MANY');
+      }
+      const upTo = String(b.up_to || t).slice(0, 10);
+      if (upTo < c.date_from || upTo >= c.date_to) {
+        throw httpError(`Ngày chốt sớm phải nằm trong kỳ ${vn(c.date_from)} – ${vn(c.date_to)}.`, 400, 'BAD_UPTO');
+      }
+      const startWork = maxIso(c.date_from, emp.track_from, emp.start_date);
+      const workDays = Math.max(0, daysBetween(startWork, upTo) + 1);
+      const baseNow = Math.round(c.monthly_wage * workDays / 30);
+      const rest = cycleAfter(upTo, emp.cycle_day);        // chỉ để lấy ngày Âm cho phần còn lại
+      const restFrom = addDays(upTo, 1);
+      const lunarRest = lunarText(solarToLunar(restFrom), true);
+      void rest;
+      const info = run(`
+        INSERT INTO payroll_cycles(employee_id, label, lunar_month, lunar_year, lunar_leap, lunar_from, lunar_to,
+                                   date_from, date_to, days, monthly_wage, hours_per_day, base_override, split_of)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [emp.id, `${c.label} (phần còn lại)`, c.lunar_month, c.lunar_year, c.lunar_leap,
+        lunarRest, c.lunar_to, restFrom, c.date_to, c.days, c.monthly_wage, c.hours_per_day,
+        Math.max(0, c.monthly_wage - baseNow), c.id]);
+      const restId = Number(info.lastInsertRowid);
+      /* Khoản đã ghi vào những ngày sau ngày chốt phải theo sang kỳ mới */
+      run('UPDATE payroll_entries SET cycle_id = ? WHERE cycle_id = ? AND work_date > ?', [restId, c.id, upTo]);
+      /* Kỳ đang chốt co lại tới ngày chốt; tiền nền tính theo ngày làm thực tế */
+      run('UPDATE payroll_cycles SET date_to = ?, lunar_to = ?, base_override = ? WHERE id = ?',
+        [upTo, lunarText(solarToLunar(upTo), true), baseNow, c.id]);
+      chosen[chosen.length - 1] = get('SELECT * FROM payroll_cycles WHERE id = ?', [c.id]);
     }
     const comps = chosen.map((c) => computeCycle(c, emp));
     const carryIn = lastCarry(emp.id);

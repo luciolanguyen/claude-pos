@@ -294,22 +294,6 @@ export function GridSortPanel({
   if (pinOn && pinnedCount > 0) parts.push(`hàng ghim (${n(pinnedCount)})`);
   const summary = parts.length ? `Lên trước: ${parts.join(' · ')}` : 'Xếp theo tên hàng';
 
-  const Row = ({ on, onChange, label, hint, disabled = false }) => (
-    <label className={`flex items-start gap-2 px-2.5 py-1.5 text-[13px]
-                       ${disabled ? 'opacity-55' : 'cursor-pointer hover:bg-muted/60'}`}>
-      <input
-        type="checkbox"
-        className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5 shrink-0"
-        checked={on}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span className="min-w-0">
-        {label}
-        {hint && <span className="block text-2xs text-muted-ink leading-snug">{hint}</span>}
-      </span>
-    </label>
-  );
 
   return (
     <div className="relative shrink-0" ref={ref}>
@@ -425,5 +409,26 @@ export function LazyGrid({ items, renderItem, rootRef, resetKey, step = 60, clas
         </div>
       )}
     </>
+  );
+}
+
+/* Một dòng tích chọn của bảng "Sắp xếp lưới". Khai ngoài thân component cha (BRD mục 8):
+   khai bên trong thì mỗi lần vẽ lại là React thay cả khối, ô tích mất con trỏ. */
+function Row({ on, onChange, label, hint, disabled = false }) {
+  return (
+    <label className={`flex items-start gap-2 px-2.5 py-1.5 text-[13px]
+                       ${disabled ? 'opacity-55' : 'cursor-pointer hover:bg-muted/60'}`}>
+      <input
+        type="checkbox"
+        className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5 shrink-0"
+        checked={on}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="min-w-0">
+        {label}
+        {hint && <span className="block text-2xs text-muted-ink leading-snug">{hint}</span>}
+      </span>
+    </label>
   );
 }
