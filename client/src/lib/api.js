@@ -11,11 +11,33 @@ function currentUserId() {
   }
 }
 
+/* Phiên mở bảng lương bằng mã PIN (plan 28). Giữ trong sessionStorage: đóng
+   thẻ trình duyệt là phải gõ PIN lại, và không bao giờ nằm lâu trên máy. */
+const SS_PAYROLL = 'thpos.payroll';
+export function payrollToken() {
+  try { return sessionStorage.getItem(SS_PAYROLL) || ''; } catch { return ''; }
+}
+export function setPayrollToken(token) {
+  try {
+    if (token) sessionStorage.setItem(SS_PAYROLL, token);
+    else sessionStorage.removeItem(SS_PAYROLL);
+  } catch { /* trình duyệt chặn bộ nhớ phiên — lần sau hỏi PIN lại */ }
+}
+/** Đường dẫn ảnh phiếu ứng: thẻ <img> không gửi được header nên kèm id và phiên trên địa chỉ */
+export function payrollPhotoUrl(file) {
+  const q = new URLSearchParams({ uid: String(currentUserId() || ''), pt: payrollToken() });
+  return `${BASE}/payroll/photo/${encodeURIComponent(file)}?${q}`;
+}
+
 async function request(method, path, body) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
   const uid = currentUserId();
   if (uid) headers['x-user-id'] = String(uid);
+  if (path.startsWith('/payroll')) {
+    const pt = payrollToken();
+    if (pt) headers['x-payroll-token'] = pt;
+  }
 
   const res = await fetch(BASE + path, {
     method,
@@ -25,6 +47,12 @@ async function request(method, path, body) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  /* Báo cho cả giao diện biết vừa có gì đổi trên máy chủ. Chuông đơn đặt hàng,
+     danh sách đang mở... nghe sự kiện này để cập nhật ngay, khỏi đợi hết chu kỳ
+     làm mới hay phải chuyển trang. */
+  if (res.ok && method !== 'GET' && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('thpos:changed', { detail: { path, method } }));
+  }
   if (!res.ok) {
     const err = new Error(data?.error || `Lỗi ${res.status}`);
     err.status = res.status;
@@ -120,6 +148,7 @@ export const api = {
   /* --- Bảo hành --- */
   warranty: (params) => request('GET', '/warranty' + qs(params)),
   warrantyTicket: (id) => request('GET', `/warranty/${id}`),
+  warrantyBatch: (id) => request('GET', `/warranty-batches/${id}`),
   warrantyMeta: () => request('GET', '/warranty/meta'),
   warrantySummary: () => request('GET', '/warranty-summary'),
   warrantyLookup: (q) => request('GET', '/warranty-lookup' + qs({ q })),
@@ -132,6 +161,8 @@ export const api = {
 
   /* --- Đặt hàng --- */
   orders: (params) => request('GET', '/orders' + qs(params)),
+  /* Đánh dấu đã đặt hàng của NCC cho phần còn thiếu của đơn (BRD mục 2) */
+  orderSupply: (id, body) => request('POST', `/orders/${id}/supply`, body),
   order: (id) => request('GET', `/orders/${id}`),
   ordersSummary: () => request('GET', '/orders-summary'),
   ordersShortage: () => request('GET', '/orders-shortage'),
@@ -182,6 +213,9 @@ export const api = {
   consignSettlements: (params) => request('GET', '/consign-settlements' + qs(params)),
   consignSettlement: (id) => request('GET', `/consign-settlements/${id}`),
   settleConsign: (body) => request('POST', '/consign-settlements', body),
+  payConsignSettlement: (id, body) => request('POST', `/consign-settlements/${id}/pay`, body),
+  consignStatement: (params) => request('GET', '/consign-statement' + qs(params)),
+  consignSuggest: (params) => request('GET', '/consign-suggest' + qs(params)),
 
   /* --- Lọc hàng từng mua của một mối, ma trận giá đa NCC (tài liệu 24, 5.2) --- */
   supplierBoughtProducts: (id, params) =>

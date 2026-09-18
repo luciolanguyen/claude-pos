@@ -7,7 +7,7 @@ import { api } from '../lib/api';
 import { useFetch, useApp } from '../lib/store';
 import { money, n, short, qty as fq, pct, date, range, RANGES } from '../lib/format';
 import {
-  Button, Select, Spinner, Empty, ErrorBox, Stat, Tabs, SearchInput,
+  Button, Select, Spinner, Empty, ErrorBox, Stat, Tabs, SearchInput, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { PurchaseHistory, SaleHistory } from './ReportHistory';
@@ -113,14 +113,16 @@ function SalesReport({ r }) {
           </button>
         ))}
         <div className="flex-1" />
-        <Button size="sm" icon={Download} disabled={!data.rows.length}
-          onClick={() => downloadCsv(
-            `baocao-banhang-${r.from}-${r.to}.csv`,
-            [data.group_label, 'Số đơn', 'Tiền hàng', 'Giảm giá', 'Thuế', 'Doanh thu', 'Giá vốn', 'Lợi nhuận', 'Còn nợ'],
-            data.rows.map((x) => [x.label, x.orders, x.subtotal, x.discount, x.vat, x.revenue, x.cogs, x.profit, x.unpaid])
-          )}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!data.rows.length}
+            onClick={() => downloadCsv(
+              `baocao-banhang-${r.from}-${r.to}.csv`,
+              [data.group_label, 'Số đơn', 'Tiền hàng', 'Giảm giá', 'Thuế', 'Doanh thu', 'Giá vốn', 'Lợi nhuận', 'Còn nợ'],
+              data.rows.map((x) => [x.label, x.orders, x.subtotal, x.discount, x.vat, x.revenue, x.cogs, x.profit, x.unpaid])
+            )}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {chart.length > 1 && (
@@ -233,14 +235,16 @@ function ProductsReport({ r }) {
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput value={q} onChange={setQ} placeholder="Tìm mặt hàng..." className="w-full sm:w-72" />
         <div className="flex-1" />
-        <Button size="sm" icon={Download} disabled={!rows.length}
-          onClick={() => downloadCsv(
-            `baocao-mathang-${r.from}-${r.to}.csv`,
-            ['Mã hàng', 'Tên hàng', 'Nhóm', 'ĐVT', 'SL bán', 'Số đơn', 'Doanh thu', 'Giá vốn', 'Lợi nhuận', 'Tỷ suất %'],
-            rows.map((x) => [x.sku, x.name, x.category_name, x.base_unit, x.qty_base, x.orders, x.revenue, x.cogs, x.profit, x.margin.toFixed(1)])
-          )}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!rows.length}
+            onClick={() => downloadCsv(
+              `baocao-mathang-${r.from}-${r.to}.csv`,
+              ['Mã hàng', 'Tên hàng', 'Nhóm', 'ĐVT', 'SL bán', 'Số đơn', 'Doanh thu', 'Giá vốn', 'Lợi nhuận', 'Tỷ suất %'],
+              rows.map((x) => [x.sku, x.name, x.category_name, x.base_unit, x.qty_base, x.orders, x.revenue, x.cogs, x.profit, x.margin.toFixed(1)])
+            )}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {!rows.length ? (
@@ -308,18 +312,6 @@ function PnlReport({ r }) {
     transport: 'Vận chuyển, xăng xe', tax: 'Thuế, lệ phí', other_out: 'Chi khác',
   };
 
-  const Row = ({ label, value, bold, indent, tone, hint }) => (
-    <div className={`flex items-baseline justify-between gap-3 py-1.5 ${indent ? 'pl-5' : ''} ${bold ? 'border-t border-line pt-2' : ''}`}>
-      <span className={bold ? 'font-bold' : 'text-muted-ink text-[13px]'}>
-        {label}
-        {hint && <span className="text-2xs block text-muted-ink font-normal">{hint}</span>}
-      </span>
-      <span className={`tabular font-mono ${bold ? 'text-base font-bold' : 'text-[13px]'} ${
-        tone === 'bad' ? 'text-danger' : tone === 'good' ? 'text-emerald-700' : ''}`}>
-        {money(value)}
-      </span>
-    </div>
-  );
 
   return (
     <div className="space-y-3">
@@ -384,25 +376,27 @@ function PnlReport({ r }) {
         </div>
       </div>
 
-      <Button icon={Download}
-        onClick={() => downloadCsv(
-          `ketqua-kinhdoanh-${r.from}-${r.to}.csv`,
-          ['Chỉ tiêu', 'Số tiền'],
-          [
-            ['Tổng tiền hàng bán ra', data.gross_sales],
-            ['Giảm giá', -data.discount],
-            ['Thuế GTGT', -data.vat],
-            ['Hàng trả lại', -data.returns],
-            ['Doanh thu thuần', data.net_revenue],
-            ['Giá vốn hàng bán', -data.cogs],
-            ['Lợi nhuận gộp', data.gross_profit],
-            ...data.expenses.map((e) => [EXP_LABEL[e.category] || e.category, -e.amount]),
-            ['Tổng chi phí vận hành', -data.expense_total],
-            ['LỢI NHUẬN THỰC', data.net_profit],
-          ]
-        )}>
-        Xuất Excel
-      </Button>
+      <PermGate perm="data.export">
+        <Button icon={Download}
+          onClick={() => downloadCsv(
+            `ketqua-kinhdoanh-${r.from}-${r.to}.csv`,
+            ['Chỉ tiêu', 'Số tiền'],
+            [
+              ['Tổng tiền hàng bán ra', data.gross_sales],
+              ['Giảm giá', -data.discount],
+              ['Thuế GTGT', -data.vat],
+              ['Hàng trả lại', -data.returns],
+              ['Doanh thu thuần', data.net_revenue],
+              ['Giá vốn hàng bán', -data.cogs],
+              ['Lợi nhuận gộp', data.gross_profit],
+              ...data.expenses.map((e) => [EXP_LABEL[e.category] || e.category, -e.amount]),
+              ['Tổng chi phí vận hành', -data.expense_total],
+              ['LỢI NHUẬN THỰC', data.net_profit],
+            ]
+          )}>
+          Xuất Excel
+        </Button>
+      </PermGate>
     </div>
   );
 }
@@ -436,14 +430,16 @@ function InventoryReport({ r }) {
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput value={q} onChange={setQ} placeholder="Tìm mặt hàng..." className="w-full sm:w-72" />
         <div className="flex-1" />
-        <Button size="sm" icon={Download} disabled={!rows.length}
-          onClick={() => downloadCsv(
-            `xuat-nhap-ton-${r.from}-${r.to}.csv`,
-            ['Mã hàng', 'Tên hàng', 'ĐVT', 'Tồn đầu kỳ', 'Nhập trong kỳ', 'Xuất trong kỳ', 'Tồn cuối kỳ', 'Giá vốn', 'Giá trị tồn'],
-            rows.map((x) => [x.sku, x.name, x.base_unit, x.opening, x.qty_in, x.qty_out, x.closing, x.cost_price, x.value])
-          )}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!rows.length}
+            onClick={() => downloadCsv(
+              `xuat-nhap-ton-${r.from}-${r.to}.csv`,
+              ['Mã hàng', 'Tên hàng', 'ĐVT', 'Tồn đầu kỳ', 'Nhập trong kỳ', 'Xuất trong kỳ', 'Tồn cuối kỳ', 'Giá vốn', 'Giá trị tồn'],
+              rows.map((x) => [x.sku, x.name, x.base_unit, x.opening, x.qty_in, x.qty_out, x.closing, x.cost_price, x.value])
+            )}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {!rows.length ? (
@@ -511,14 +507,16 @@ function PurchasesReport({ r }) {
       </div>
 
       <div className="flex justify-end">
-        <Button size="sm" icon={Download} disabled={!data.rows.length}
-          onClick={() => downloadCsv(
-            `baocao-muahang-${r.from}-${r.to}.csv`,
-            ['Nhà cung cấp', 'Số phiếu', 'Tổng tiền', 'Đã trả', 'Còn nợ'],
-            data.rows.map((x) => [x.label, x.bills, x.total, x.paid, x.unpaid])
-          )}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download} disabled={!data.rows.length}
+            onClick={() => downloadCsv(
+              `baocao-muahang-${r.from}-${r.to}.csv`,
+              ['Nhà cung cấp', 'Số phiếu', 'Tổng tiền', 'Đã trả', 'Còn nợ'],
+              data.rows.map((x) => [x.label, x.bills, x.total, x.paid, x.unpaid])
+            )}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {!data.rows.length ? (
@@ -563,6 +561,22 @@ function PurchasesReport({ r }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/* Một dòng "nhãn — số tiền" của bảng lãi lỗ. Khai ngoài thân component cha (BRD mục 8). */
+function Row({ label, value, bold, indent, tone, hint }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-3 py-1.5 ${indent ? 'pl-5' : ''} ${bold ? 'border-t border-line pt-2' : ''}`}>
+      <span className={bold ? 'font-bold' : 'text-muted-ink text-[13px]'}>
+        {label}
+        {hint && <span className="text-2xs block text-muted-ink font-normal">{hint}</span>}
+      </span>
+      <span className={`tabular font-mono ${bold ? 'text-base font-bold' : 'text-[13px]'} ${
+        tone === 'bad' ? 'text-danger' : tone === 'good' ? 'text-emerald-700' : ''}`}>
+        {money(value)}
+      </span>
     </div>
   );
 }

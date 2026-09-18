@@ -1,4 +1,5 @@
 import express from 'express';
+import https from 'node:https';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,6 +20,13 @@ import requisitions from './routes/requisitions.js';
 import drafts from './routes/drafts.js';
 import posExtras from './routes/pos-extras.js';
 import consign from './routes/consign.js';
+import debts from './routes/debts.js';
+import barcodes from './routes/barcodes.js';
+import payroll from './routes/payroll.js';
+import { cleanupPayrollPhotos } from './payroll.js';
+import phone from './phone.js';
+import { ensureTls, lanChoices } from './tls.js';
+import { DB_FILE } from './db.js';
 import { permFor } from './access-map.js';
 import { whoami, isLoginRequired } from './guard.js';
 import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
@@ -26,6 +34,14 @@ import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 5175;
+/* Cổng HTTPS cho điện thoại quét mã bằng camera: mặc định cổng thường +1000
+   (5175 → 6175), để máy chủ thử ở 5176, 5177 không giành cổng của tiệm.
+   HTTPS_PORT=0 là tắt hẳn. */
+const HTTPS_PORT = process.env.HTTPS_PORT !== undefined && process.env.HTTPS_PORT !== ''
+  ? Number(process.env.HTTPS_PORT) : PORT + 1000;
+/* Chứng chỉ nằm cạnh file dữ liệu, tức trong data/ — không bao giờ lên git */
+const TLS_DIR = process.env.POS_TLS_DIR || path.join(path.dirname(DB_FILE), 'tls');
+const tlsState = { enabled: false, port: HTTPS_PORT, info: null, error: '' };
 
 const app = express();
 app.use(express.json({ limit: '80mb' }));
@@ -34,7 +50,7 @@ app.use(express.json({ limit: '80mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-payroll-token');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -59,6 +75,10 @@ app.get('/api/me', (req, res) => {
     role_labels: ROLE_LABEL,
   });
 });
+
+/* Trang cài chứng chỉ cho điện thoại — đứng TRƯỚC phép chặn quyền, vì điện
+   thoại phải cài được chứng chỉ rồi mới vào https để đăng nhập. */
+app.use(phone(tlsState));
 
 /* Chặn quyền cho toàn bộ API. Giao diện đã ẩn menu, nhưng ẩn menu chỉ cho
    gọn mắt — chặn thật phải nằm ở đây, không thì gõ thẳng địa chỉ là qua. */
@@ -90,7 +110,24 @@ app.use('/api', (req, res, next) => {
    thấy, mà thợ phụ biết giá vốn thì chủ tiệm mất thế khi trả giá với mối. */
 /* Giá nhập gần nhất cũng là giá vốn — lộ ra thì thu ngân biết tiệm lời bao nhiêu */
 const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
-  'last_purchase_price'];
+  'last_purchase_price',
+  /* Cột tên trơn "cost": giá tiệm bốc hàng mua hộ vãng lai (tài liệu 24),
+     chi phí lắp ráp, tiền linh kiện thay khi sửa bảo hành. Ba chỗ đó đều
+     là giá vốn thật, trước đây lọt ra ngoài vì tên cột không có hậu tố. */
+  'cost',
+  /* Hoa hồng hàng mua hộ chính là lãi của tiệm trên món đó; "payable" là
+     số trả chủ hàng = tiền bán − hoa hồng, lộ ra thì trừ ngược ra hoa hồng
+     (plan 31, 1.1d). Thu ngân vẫn khai mức hoa hồng lúc bán — khoá đó tên
+     commission_value, không bị cắt. */
+  'commission', 'payable', 'consign_commission',
+  /* Mức hoa hồng thoả thuận (BRD nâng cấp, mục 5): thu ngân không được thấy nữa —
+     thấy mức là suy ra ngay tiệm ăn bao nhiêu trên mỗi món */
+  'commission_value', 'commission_type',
+  /* Ngày cập nhật giá vốn / ngày nhập gần nhất (plan 31, 1.4b) đi kèm con số, chủ tiệm chốt
+     chỉ người xem được giá vốn mới thấy */
+  'cost_updated_at', 'last_purchase_at',
+  /* Giá vốn từng dòng phiếu nhập đã vào kho (plan 31, 5.1d) */
+  'cost_unit'];
 
 /* Cắt cả ở phản hồi của lệnh ghi, không chỉ lệnh đọc: lưu giỏ linh kiện sửa
    chữa hay sửa giá xong, máy chủ trả lại nguyên phiếu kèm giá vốn từng dòng. */
@@ -116,7 +153,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
+app.use('/api', payroll, debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));
@@ -146,10 +183,52 @@ function lanAddresses() {
 
 // Dọn ảnh bảo hành quá hạn: chạy lúc khởi động rồi mỗi 24 giờ một lần.
 // Máy chủ trong tiệm thường bật cả ngày nên không cần lịch phức tạp.
-try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
-setInterval(() => {
+/* Ảnh phiếu ứng lương của kỳ đã chốt: xoá sau số tháng chủ tiệm đặt (plan 28, §7.3) */
+const cleanupAll = () => {
   try { cleanupOldPhotos(); } catch (e) { console.error('[dọn ảnh] lỗi:', e.message); }
-}, 24 * 60 * 60 * 1000).unref();
+  try { cleanupPayrollPhotos(); } catch (e) { console.error('[dọn ảnh lương] lỗi:', e.message); }
+};
+cleanupAll();
+setInterval(cleanupAll, 24 * 60 * 60 * 1000).unref();
+
+/* ------------------------------ HTTPS nội bộ ------------------------------ */
+let httpsServer = null;
+if (HTTPS_PORT > 0) {
+  try {
+    tlsState.info = ensureTls(TLS_DIR);
+    httpsServer = https.createServer({ key: tlsState.info.key, cert: tlsState.info.cert }, app);
+    httpsServer.on('error', (e) => {
+      /* Lỗi HTTPS không được kéo sập máy chủ chính: máy tính trong tiệm vẫn
+         bán bình thường qua http, chỉ điện thoại mất camera quét mã. */
+      tlsState.enabled = false;
+      tlsState.error = e.code === 'EADDRINUSE'
+        ? `Cổng ${HTTPS_PORT} đang có chương trình khác dùng.` : e.message;
+      console.error('[HTTPS] không mở được:', tlsState.error);
+    });
+    httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => { tlsState.enabled = true; });
+
+    /* Máy chủ đổi IP (cắm mạng khác, modem cấp lại) thì cấp lại chứng chỉ
+       máy chủ bằng CÙNG chứng chỉ gốc và nạp nóng — không phải khởi động lại,
+       điện thoại cũng không phải cài lại. */
+    setInterval(() => {
+      try {
+        const next = ensureTls(TLS_DIR);
+        if (next.reissued) {
+          httpsServer.setSecureContext({ key: next.key, cert: next.cert });
+          console.log(`[HTTPS] đã cấp lại chứng chỉ máy chủ (${next.reissued})`);
+        }
+        tlsState.info = next;
+      } catch (e) {
+        console.error('[HTTPS] soát chứng chỉ lỗi:', e.message);
+      }
+    }, 5 * 60 * 1000).unref();
+  } catch (e) {
+    tlsState.error = `Không tạo được chứng chỉ: ${e.message}`;
+    console.error('[HTTPS]', tlsState.error);
+  }
+} else {
+  tlsState.error = 'HTTPS đang tắt (HTTPS_PORT=0).';
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   const hasUI = fs.existsSync(DIST);
@@ -161,6 +240,15 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Máy này:      http://localhost:${PORT}`);
   for (const ip of lanAddresses()) {
     console.log(`  Máy trong tiệm: http://${ip}:${PORT}`);
+  }
+  if (tlsState.info) {
+    const phoneIp = lanChoices().find((a) => !a.virtual)?.ip;
+    console.log('');
+    if (tlsState.info.createdCA) console.log('  Đã tạo chứng chỉ nội bộ mới của tiệm.');
+    if (phoneIp) {
+      console.log(`  Điện thoại quét mã bằng camera: https://${phoneIp}:${HTTPS_PORT}`);
+      console.log(`  Cài chứng chỉ lần đầu tại:       http://${phoneIp}:${PORT}/dien-thoai`);
+    }
   }
   if (!hasUI) {
     console.log('');

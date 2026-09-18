@@ -23,7 +23,7 @@ import { useApp, useFetch, usePaged, useDebounced, fetchAllPages, useSearchMode 
 import { money, n, short, qty as fq, datetime, date, MOVE_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager,
+  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CategoryTree, { CategorySelect } from '../components/CategoryTree';
@@ -260,10 +260,17 @@ export default function Products() {
           : ''}
         actions={<>
           <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
-          <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
-          <Button icon={Download} onClick={() => exportCsv(false)} disabled={!rowCount}>
-            Xuất Excel
-          </Button>
+          {/* Nhập / xuất hàng loạt tách thành quyền riêng (plan 31, hạng mục
+              7a): nhập sai một file là hỏng cả danh mục hàng hoá, còn xuất
+              file là mang dữ liệu tiệm ra ngoài. Chặn thật ở access-map. */}
+          <PermGate perm="data.import">
+            <Button icon={Upload} onClick={() => setImportOpen(true)}>Nhập từ Excel</Button>
+          </PermGate>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={() => exportCsv(false)} disabled={!rowCount}>
+              Xuất Excel
+            </Button>
+          </PermGate>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
         </>}
       >

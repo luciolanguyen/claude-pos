@@ -36,11 +36,16 @@ import {
 import { CategorySelect, categoryBranch } from './CategoryTree';
 import InvoicePrint from './InvoicePrint';
 import { PinApprovalModal } from './PosApproval';
+import { findByCode, barcodeIncludes } from '../lib/codeMatch';
 import {
   ConditionToggle, FeeField, RefundMethodPicker, VoucherCard, VoucherPrint, feeOf,
 } from './ReturnParts';
 
-export default function ExchangeModal({ open, onClose, products, policy, onQuickReturn, onDone }) {
+/**
+ * @param sale  hoá đơn mở sẵn — bấm "Đổi - Trả hàng" trong danh sách hoá đơn
+ *              trong ngày thì vào thẳng hoá đơn đó, khỏi tìm lại (plan 31, 1.1f)
+ */
+export default function ExchangeModal({ open, onClose, sale: preset = null, products, policy, onQuickReturn, onDone }) {
   const { user, meta, toast, defaultWarehouse, defaultPriceList, store, settings } = useApp();
   const [q, setQ] = useState('');
   const [sale, setSale] = useState(null);
@@ -79,8 +84,9 @@ export default function ExchangeModal({ open, onClose, products, policy, onQuick
     setRefundMethod('cash'); setPayMethod('cash');
     setPaid(0); setPaidTouched(false); setAccountId('');
     setReason(''); setErr(''); setDone(null); setScanA(''); setScanB('');
+    if (preset?.id) openSale(preset.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, preset?.id]);
 
   const priceListId = sale?.price_list_id || defaultPriceList;
   const hasCustomer = !!sale?.customer_id;
@@ -185,7 +191,7 @@ export default function ExchangeModal({ open, onClose, products, policy, onQuick
     e.preventDefault();
     const term = scanB.trim();
     if (!term) return;
-    const exact = products.find((p) => p.barcode === term || (p.sku || '').toLowerCase() === term.toLowerCase());
+    const exact = findByCode(products, term)?.product;
     const list = exact ? [exact] : products.filter((p) => match(p.name, term) || match(p.alias || '', term));
     if (list.length === 1) { addSwap(list[0]); setScanB(''); }
     else if (!list.length) toast(`Không tìm thấy hàng nào khớp "${term}"`, 'warn');
@@ -680,7 +686,7 @@ function SwapProductPicker({ open, onClose, products, onPick, priceListId, initi
     }
     if (q.trim()) {
       l = l.filter((p) => match(p.name, q) || match(p.alias || '', q) || match(p.sku, q)
-        || (p.barcode || '').includes(q.trim()));
+        || barcodeIncludes(p, q));
     }
     return l.slice(0, 300);
   }, [products, q, cat, meta.categories]);

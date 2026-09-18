@@ -25,8 +25,17 @@ export const ACCESS_RULES = [
   ['GET',  /^\/product-image\//,          null],
   ['GET',  /^\/pos-featured$/,            null],
 
+  /* --- Bảng lương (plan 28): đặt trước mọi luật rộng. Thu ngân bấm "Trừ vào
+     lương" ở quầy chỉ đọc được TÊN nhân viên để chọn — không thấy lương,
+     không thấy số dư. Mọi đường khác còn phải mở bằng PIN (routes/payroll.js). --- */
+  ['GET',  /^\/payroll\/employee-names$/,  'sale.pos'],
+  ['*',    /^\/payroll/,                   'payroll.manage'],
+
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],
+  /* Khai lại hoa hồng / giá bốc của hàng mua hộ sau khi bán (BRD nâng cấp, mục 5):
+     chỉ người được xem giá vốn — tức chủ và quản lý — mới đụng tới phần lãi này */
+  ['PUT',  /^\/sales\/\d+\/consign-items\/\d+$/, 'cost.view'],
   ['POST', /^\/sales$/,                   'sale.pos'],
   ['POST', /^\/sales\/\d+\/pay$/,         'sale.pos'],
   ['PUT',  /^\/sales\/\d+\/delivery$/,    'sale.pos'],
@@ -74,6 +83,13 @@ export const ACCESS_RULES = [
      gọi món đó là gì, nhưng khai thì phải người quản danh mục khách. */
   ['GET',  /^\/customers\/\d+\/product-notes$/, 'sale.pos'],
   ['*',    /^\/product-notes/,            'customer.manage'],
+  /* Sửa công nợ và chốt sổ (plan 31, 6b / 6c): đặt TRƯỚC luật /customers,
+     /suppliers chung — để sau thì luật rộng nuốt mất, ai quản khách cũng sửa
+     được nợ. Xem sổ và lịch sử sửa thì vẫn theo quyền khách / mua hàng. */
+  ['POST', /^\/(customers|suppliers)\/\d+\/debt-(adjustments|closings)$/, 'debt.adjust'],
+  ['DELETE', /^\/(customers|suppliers)\/\d+\/debt-closings\/\d+$/, 'debt.adjust'],
+  ['*',    /^\/debt-closings/,             'debt.adjust'],
+  ['GET',  /^\/suppliers\/\d+\/debt-/,       'purchase.manage'],
   ['*',    /^\/customer-debts/,           'customer.manage'],
   ['*',    /^\/customers/,                'customer.manage'],
   /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá
@@ -82,6 +98,19 @@ export const ACCESS_RULES = [
   ['*',    /^\/warranty/,                 'warranty.manage'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */
+  /* Nhập danh mục hàng loạt từ file: đặt TRƯỚC mọi luật /products, vì
+     access-map đọc từ trên xuống và dừng ở luật khớp đầu tiên — để sau
+     thì luật rộng nuốt mất, quyền mới không có tác dụng mà không ai biết.
+     Một file nhập sai là hỏng cả danh mục, nặng hơn hẳn sửa một mặt hàng. */
+  ['POST', /^\/products\/import$/,        'data.import'],
+  /* Mã vạch (plan 30, §10): tra mã theo quyền xem hàng; đổi tiền tố / số chữ số
+     và xử lý mã trùng đụng tới cả danh mục nên cần quyền thiết lập */
+  ['GET',  /^\/barcodes\/lookup$/,         'product.view'],
+  ['GET',  /^\/barcode-settings$/,          'product.manage'],
+  ['PUT',  /^\/barcode-settings$/,          'settings.manage'],
+  ['POST', /^\/barcode-conflicts\/resolve$/, 'settings.manage'],
+  ['GET',  /^\/products\/import-meta$/,   'data.import'],
+
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
      khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */
   ['GET',  /^\/products\/\d+\/purchase-history$/, 'cost.view'],
@@ -115,6 +144,10 @@ export const ACCESS_RULES = [
   ['*',    /^\/consign-settlements/,       'cash.manage'],
   ['GET',  /^\/consign-items$/,            'cash.manage'],
   ['GET',  /^\/consign-summary$/,          'cash.manage'],
+  /* Phiếu đối chiếu công nợ lộ hoa hồng và số nợ chủ hàng — việc của sổ quỹ */
+  ['GET',  /^\/consign-statement$/,        'cash.manage'],
+  /* Gợi ý món mua hộ dùng ngay tại quầy lúc thêm món */
+  ['GET',  /^\/consign-suggest$/,          'sale.pos'],
   ['*',    /^\/supplier-debts/,           'purchase.manage'],
 
   /* --- Tiền và số liệu --- */

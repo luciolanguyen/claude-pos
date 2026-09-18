@@ -18,6 +18,7 @@ import { money, qty as fq, matchMode } from '../lib/format';
 import { Button, SearchInput, Select, Modal, Empty, QtyInput } from './ui';
 import { CategorySelect, categoryBranch } from './CategoryTree';
 
+import { barcodeEquals, barcodeIncludes } from '../lib/codeMatch';
 /**
  * @param withQty  cho gõ số lượng ngay trên dòng (mặc định có). Chỗ nào
  *                 chỉ chọn đúng MỘT mặt hàng (ví dụ chọn máy để lập phiếu
@@ -57,7 +58,7 @@ export function ProductPicker({
     if (q.trim()) {
       l = l.filter((p) => matchMode(p.name, q, mode) || matchMode(p.sku, q, mode)
         || matchMode(p.alias || '', q, mode)
-        || (mode === 'exact' ? (p.barcode || '') === q.trim() : (p.barcode || '').includes(q.trim())));
+        || (mode === 'exact' ? barcodeEquals(p, q) : barcodeIncludes(p, q)));
     }
     return l.slice(0, 300);
   }, [products, q, mode, cat, meta.categories]);

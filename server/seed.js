@@ -542,10 +542,12 @@ tx(() => {
     const code = `TNCC${ts.slice(2, 4)}${ts.slice(5, 7)}${ts.slice(8, 10)}-000${i + 1}`;
     const rid = Number(run(`
       INSERT INTO purchase_returns(code, ts, purchase_id, supplier_id, warehouse_id, user_id,
-                                   subtotal, total, refunded, reason)
-      VALUES(?,?,?,?,?,1,?,?,?,?)`,
+                                   subtotal, total, refunded, reason,
+                                   sent_at, received_at, settle_method)
+      VALUES(?,?,?,?,?,1,?,?,?,?,?,?,'refund')`,
+      /* NCC đã nhận hàng và hoàn đủ tiền — công nợ NCC chỉ trừ khi NCC nhận (plan 31, đợt 5) */
       [code, ts, pur.id, pur.supplier_id, WH, amount, amount, amount,
-        pick(['Hàng giao bị lỗi', 'Sai quy cách đặt hàng', 'Bao bì hư hỏng'])]).lastInsertRowid);
+        pick(['Hàng giao bị lỗi', 'Sai quy cách đặt hàng', 'Bao bì hư hỏng']), ts, ts]).lastInsertRowid);
     run(`INSERT INTO purchase_return_items(return_id, product_id, unit_name, factor, qty, price, amount)
          VALUES(?,?,?,?,?,?,?)`, [rid, it.product_id, it.unit_name, it.factor, qty, it.price, amount]);
     moveStock({

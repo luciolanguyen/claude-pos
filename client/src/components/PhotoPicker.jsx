@@ -39,7 +39,10 @@ async function shrink(file) {
   return canvas.toDataURL('image/jpeg', QUALITY);
 }
 
-export default function PhotoPicker({ photos, onChange, max = 8, label = 'Ảnh chụp' }) {
+export default function PhotoPicker({
+  photos, onChange, max = 8, label = 'Ảnh chụp',
+  emptyHint = 'Nên chụp vài tấm ghi lại tình trạng máy lúc nhận — sau này khách thắc mắc trầy xước thì có bằng chứng.',
+}) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const fileRef = useRef(null);
@@ -104,8 +107,7 @@ export default function PhotoPicker({ photos, onChange, max = 8, label = 'Ảnh 
           <ImageOff size={22} className="text-muted-ink mx-auto mb-1.5" aria-hidden="true" />
           <p className="text-[13px] font-semibold">Chưa có ảnh nào</p>
           <p className="text-2xs text-muted-ink mt-0.5 max-w-xs mx-auto leading-relaxed">
-            Nên chụp vài tấm ghi lại tình trạng máy lúc nhận — sau này khách thắc mắc
-            trầy xước thì có bằng chứng.
+            {emptyHint}
           </p>
         </button>
       ) : (

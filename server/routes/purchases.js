@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { purchaseMath } from '../../client/src/lib/purchaseMath.js';
 import {
   all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost, overwriteCost,
   addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams, resolveUnitId,
@@ -150,36 +151,35 @@ r.post('/purchases', (req, res) => {
   const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
   if (!warehouseId) return res.status(400).json({ error: 'Chưa thiết lập kho' });
 
+  /* Tiền và giá vốn từng dòng: một công thức dùng chung với màn hình xem trước (plan 31, 5.1d) */
+  const math = purchaseMath(b, items, custom);
+  if (math.vatInCost && math.lines.some((l) => l.unitCost < 0)) {
+    return res.status(400).json({ error: 'Chiết khấu NCC lớn hơn tiền hàng — giá vốn ra số âm. Xem lại số chiết khấu.', code: 'DISCOUNT_TOO_HIGH' });
+  }
+
   try {
     const result = tx(() => {
-      let stockSubtotal = 0;
-      let vatAmount = 0;
-      for (const it of items) {
-        const qty = Number(it.qty);
-        const price = Math.round(Number(it.price) || 0);
-        const disc = Math.round(Number(it.discount) || 0);
-        const amount = Math.round(qty * price - disc);
-        it._amount = amount;
-        stockSubtotal += amount;
-        vatAmount += Math.round(amount * (Number(it.vat_rate) || 0) / 100);
-      }
+      items.forEach((it, i) => { it._amount = math.lines[i].amount; it._m = math.lines[i]; });
       for (const c of custom) c.amount = Math.round(c.qty * c.price);
-      const customTotal = custom.reduce((a, c) => a + c.amount, 0);
-      const subtotal = stockSubtotal + customTotal;
-      const discount = Math.round(Number(b.discount) || 0);
-      const otherCost = Math.round(Number(b.other_cost) || 0);
-      const total = subtotal - discount + vatAmount + otherCost;
+      const { customTotal, subtotal, discount, vatAmount, total } = math;
       const paid = Math.min(Math.round(Number(b.paid) || 0), total);
       const code = b.code?.trim() || nextCode('purchases', 'PN');
 
       const info = run(`
         INSERT INTO purchases(code, ts, supplier_id, warehouse_id, user_id, subtotal, discount,
-                              vat_amount, other_cost, total, paid, status, supplier_invoice, due_date, note)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?)`,
+                              vat_amount, other_cost, total, paid, status, supplier_invoice, due_date, note,
+                              vat_in_cost, discount_mode)
+        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)`,
         [code, b.ts || null, b.supplier_id || null, warehouseId, b.user_id || null,
-          subtotal, discount, vatAmount, otherCost, total, paid,
-          b.supplier_invoice || null, b.due_date || null, b.note || null]);
+          subtotal, discount, vatAmount, math.otherCost, total, paid,
+          b.supplier_invoice || null, b.due_date || null, b.note || null,
+          math.vatInCost ? 1 : 0, math.discountMode]);
       const purchaseId = Number(info.lastInsertRowid);
+      /* Nhớ lựa chọn cho lần nhập sau của mối này */
+      if (b.supplier_id && b.vat_in_cost !== undefined) {
+        run('UPDATE suppliers SET vat_in_cost = ?, vat_discount_mode = ? WHERE id = ?',
+          [math.vatInCost ? 1 : 0, math.discountMode, b.supplier_id]);
+      }
 
       /* Chi phí khác chỉ phân bổ vào hàng thật sự vào kho — hàng giao sai
          không nằm trong kho thì không có giá vốn để gánh phần chi phí đó */
@@ -187,8 +187,7 @@ r.post('/purchases', (req, res) => {
         const qty = Number(it.qty);
         const factor = Number(it.factor) || 1;
         const qtyBase = qty * factor;
-        const share = stockSubtotal > 0 ? (it._amount / stockSubtotal) * otherCost : 0;
-        const unitCostBase = qtyBase > 0 ? Math.round((it._amount + share) / qtyBase) : 0;
+        const unitCostBase = it._m.unitCost;
 
         /* price là giá SAU chiết khấu — chính nó đi vào giá vốn.
            list_price giữ giá mối báo, để mở lại phiếu còn đối chiếu được. */
@@ -199,15 +198,15 @@ r.post('/purchases', (req, res) => {
 
         run(`INSERT INTO purchase_items(purchase_id, product_id, unit_id, unit_name, factor, qty, price,
                                         discount, vat_rate, amount, list_price, discount_percent,
-                                        overwrite_cost)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                        overwrite_cost, line_vat, discount_share, cost_unit)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [purchaseId, it.product_id, resolveUnitId(it.product_id, it.unit_id, it.unit_name),
             it.unit_name, factor, qty,
             Math.round(Number(it.price) || 0), Math.round(Number(it.discount) || 0),
             Number(it.vat_rate) || 0, it._amount,
             Math.round(Number(it.list_price) || Number(it.price) || 0),
             Number(it.discount_percent) || 0,
-            overwrite ? 1 : 0]);
+            overwrite ? 1 : 0, it._m.vat, it._m.discountShare, unitCostBase]);
 
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: qtyBase,
@@ -321,13 +320,59 @@ r.post('/purchases/:id/cancel', (req, res) => {
 
 /* ======================= TRẢ HÀNG NHÀ CUNG CẤP ====================== */
 
+/**
+ * Trạng thái một phiếu trả NCC (plan 31, hạng mục 5.2d), tính từ các mốc đã ghi:
+ *   draft           chưa gửi hàng đi
+ *   sent            đã gửi, chờ NCC nhận — CHƯA trừ công nợ
+ *   offset          NCC đã nhận, đã cấn trừ vào công nợ
+ *   awaiting_refund NCC đã nhận, chờ NCC hoàn tiền mặt
+ *   refunded        NCC đã hoàn đủ tiền
+ */
+export function returnStatus(pr) {
+  if (!pr.sent_at) return 'draft';
+  if (!pr.received_at) return 'sent';
+  if (pr.settle_method === 'refund') return pr.refunded >= pr.total ? 'refunded' : 'awaiting_refund';
+  return 'offset';
+}
+export const RETURN_STATUS_LABEL = {
+  draft: 'Chưa gửi hàng',
+  sent: 'Đã gửi, chờ NCC nhận',
+  offset: 'Đã cấn trừ công nợ',
+  awaiting_refund: 'Chờ NCC hoàn tiền',
+  refunded: 'Đã hoàn tiền',
+};
+const withStatus = (pr) => {
+  const status = returnStatus(pr);
+  return {
+    ...pr, status, status_label: RETURN_STATUS_LABEL[status],
+    has_issue: !!pr.issue_note && !pr.issue_resolved_at ? 1 : 0,
+    expense_supplier: Math.max(0, (pr.expense || 0) - (pr.expense_shop || 0)),
+  };
+};
+const STATUS_WHERE = {
+  draft: 'pr.sent_at IS NULL',
+  sent: 'pr.sent_at IS NOT NULL AND pr.received_at IS NULL',
+  offset: "pr.received_at IS NOT NULL AND pr.settle_method = 'offset'",
+  awaiting_refund: "pr.received_at IS NOT NULL AND pr.settle_method = 'refund' AND pr.refunded < pr.total",
+  refunded: "pr.received_at IS NOT NULL AND pr.settle_method = 'refund' AND pr.refunded >= pr.total",
+  pending: 'pr.received_at IS NULL',
+  issue: 'pr.issue_note IS NOT NULL AND pr.issue_resolved_at IS NULL',
+};
+
 r.get('/purchase-returns', (req, res) => {
-  const { from, to, supplier_id } = req.query;
+  const { from, to, supplier_id: supplierId, q = '', match: mode = 'contains', status = '' } = req.query;
   const where = [];
   const params = [];
-  if (supplier_id) { where.push('pr.supplier_id = ?'); params.push(supplier_id); }
+  if (supplierId) { where.push('pr.supplier_id = ?'); params.push(supplierId); }
+  if (STATUS_WHERE[status]) where.push(STATUS_WHERE[status]);
   if (from) { where.push('date(pr.ts) >= date(?)'); params.push(from); }
   if (to) { where.push('date(pr.ts) <= date(?)'); params.push(to); }
+  /* Gõ tìm theo số phiếu, số phiếu nhập gốc hoặc tên mối (plan 31, 5.2a) */
+  if (String(q).trim()) {
+    const c = searchWhere(['pr.code', 'p.code', 's.name', 'pr.reason'], q, mode);
+    where.push(c.sql);
+    params.push(...c.params);
+  }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);
   const total = get(`
@@ -346,7 +391,7 @@ r.get('/purchase-returns', (req, res) => {
     LEFT JOIN purchases p ON p.id = pr.purchase_id
     LEFT JOIN warehouses w ON w.id = pr.warehouse_id
     ${w}
-    ORDER BY pr.id DESC LIMIT ${size} OFFSET ${offset}`, params);
+    ORDER BY pr.id DESC LIMIT ${size} OFFSET ${offset}`, params).map(withStatus);
   const sums = get(`
     SELECT COUNT(*) AS count,
            COALESCE(SUM(pr.total), 0) AS total,
@@ -354,26 +399,58 @@ r.get('/purchase-returns', (req, res) => {
            COALESCE(SUM(pr.expense), 0) AS expense
     FROM purchase_returns pr
     LEFT JOIN suppliers s ON s.id = pr.supplier_id
+    /* Phải nối luôn bảng phiếu nhập: bộ lọc gõ tìm có tra cả số phiếu nhập
+       gốc (p.code), thiếu chỗ nối này là câu tổng vỡ ngay. */
+    LEFT JOIN purchases p ON p.id = pr.purchase_id
     ${w}`, params);
-  res.json({ rows, total, page, page_size: size, totals: sums });
+  /* Việc còn tồn đọng (5.2d): chỉ lọc theo NCC, KHÔNG theo khoảng ngày hay
+     trạng thái — phiếu gửi từ hai tháng trước mà NCC chưa nhận vẫn phải hiện,
+     và bấm lọc "Có trục trặc" không được làm thẻ "Chờ NCC nhận" về 0. */
+  const open = get(`
+    SELECT /* Hàng đã trả đi mà NCC chưa nhận: tiền này CHƯA trừ vào công nợ */
+           COALESCE(SUM(CASE WHEN received_at IS NULL THEN total ELSE 0 END), 0) AS pending_value,
+           COALESCE(SUM(CASE WHEN received_at IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+           COALESCE(SUM(CASE WHEN received_at IS NOT NULL AND settle_method = 'refund' AND refunded < total
+                             THEN total - refunded ELSE 0 END), 0) AS awaiting_refund,
+           COALESCE(SUM(CASE WHEN received_at IS NOT NULL AND settle_method = 'refund' AND refunded < total
+                             THEN 1 ELSE 0 END), 0) AS awaiting_count,
+           COALESCE(SUM(CASE WHEN issue_note IS NOT NULL AND issue_resolved_at IS NULL
+                             THEN 1 ELSE 0 END), 0) AS issue_count
+    FROM purchase_returns ${supplierId ? 'WHERE supplier_id = ?' : ''}`, supplierId ? [supplierId] : []);
+  res.json({ rows, total, page, page_size: size, totals: { ...sums, ...open } });
 });
 
-r.get('/purchase-returns/:id', (req, res) => {
+/** Chi tiết một phiếu trả NCC, kèm trạng thái và các phiếu quỹ liên quan. */
+function returnDetail(id) {
   const pr = get(`
     SELECT pr.*, s.name AS supplier_name, s.phone AS supplier_phone, s.address AS supplier_address,
-           p.code AS purchase_code, p.ts AS purchase_ts, w.name AS warehouse_name, u.full_name AS user_name
+           p.code AS purchase_code, p.ts AS purchase_ts, w.name AS warehouse_name, u.full_name AS user_name,
+           ec.code AS expense_cash_code
     FROM purchase_returns pr
     LEFT JOIN suppliers s ON s.id = pr.supplier_id
     LEFT JOIN purchases p ON p.id = pr.purchase_id
     LEFT JOIN warehouses w ON w.id = pr.warehouse_id
     LEFT JOIN users u ON u.id = pr.user_id
-    WHERE pr.id = ?`, [req.params.id]);
-  if (!pr) return res.status(404).json({ error: 'Không tìm thấy phiếu trả hàng' });
+    LEFT JOIN cash_transactions ec ON ec.id = pr.expense_cash_tx_id
+    WHERE pr.id = ?`, [id]);
+  if (!pr) return null;
   pr.items = all(`
     SELECT i.*, p.name AS product_name, p.sku
     FROM purchase_return_items i JOIN products p ON p.id = i.product_id
     WHERE i.return_id = ? ORDER BY i.id`, [pr.id]);
   pr.custom_items = all('SELECT * FROM purchase_return_custom_items WHERE return_id = ? ORDER BY id', [pr.id]);
+  /* Các lần NCC hoàn tiền mặt */
+  pr.refunds = all(`
+    SELECT t.id, t.code, t.ts, t.amount, a.name AS account_name
+    FROM cash_transactions t LEFT JOIN cash_accounts a ON a.id = t.account_id
+    WHERE t.ref_type = 'purchase_return' AND t.ref_id = ? AND t.direction = 'in'
+    ORDER BY t.ts, t.id`, [pr.id]);
+  return withStatus(pr);
+}
+
+r.get('/purchase-returns/:id', (req, res) => {
+  const pr = returnDetail(Number(req.params.id));
+  if (!pr) return res.status(404).json({ error: 'Không tìm thấy phiếu trả hàng' });
   res.json(pr);
 });
 
@@ -489,22 +566,64 @@ r.post('/purchase-returns', (req, res) => {
       for (const c of custom) c.amount = Math.round(c.qty * c.price);
       const customValue = custom.reduce((a, c) => a + c.amount, 0);
       const subtotal = stockValue + customValue;
+      /* Chi phí trả hàng (plan 31, hạng mục 5.2c): hai câu hỏi tách bạch —
+         ai đưa tiền trước, ai chịu. Không gửi gì thì như bản cũ: NCC thu phí
+         và trừ vào tiền hoàn, tức tiệm chịu. */
       const expense = Math.max(0, Math.round(Number(b.expense) || 0));
-      if (expense > subtotal) {
-        throw badRequest('Chi phí trả hàng không được lớn hơn giá trị hàng trả.', 'EXPENSE_TOO_HIGH');
+      const payer = b.expense_payer === 'shop' ? 'shop' : 'supplier';
+      const bearer = ['shop', 'supplier', 'split'].includes(b.expense_bearer) ? b.expense_bearer : 'shop';
+      const expenseShop = bearer === 'shop' ? expense
+        : bearer === 'supplier' ? 0
+          : Math.min(expense, Math.max(0, Math.round(Number(b.expense_shop) || 0)));
+      const expenseSupplier = expense - expenseShop;
+      /*   Tiệm trả trước mà NCC chịu phần nào → NCC trả thêm phần đó cho tiệm.
+           NCC trả trước mà tiệm chịu phần nào  → NCC trừ phần đó vào tiền hoàn. */
+      const adjust = payer === 'shop' ? expenseSupplier : -expenseShop;
+      if (-adjust > subtotal) {
+        throw badRequest('Phần chi phí tiệm chịu không được lớn hơn giá trị hàng trả.', 'EXPENSE_TOO_HIGH');
       }
-      const total = subtotal - expense;
+      const total = subtotal + adjust;
       const refunded = Math.min(Math.max(0, Math.round(Number(b.refunded) || 0)), total);
+      /* Trạng thái (plan 31, hạng mục 5.2d). NCC hoàn tiền ngay tức là đã cầm
+         hàng rồi — tự đánh dấu đã gửi, đã nhận. */
+      const received = b.received === true || refunded > 0;
+      const sent = received || b.sent === true;
+      const settleMethod = refunded > 0 || b.settle_method === 'refund' ? 'refund' : 'offset';
       const code = nextCode('purchase_returns', 'TNCC');
 
       const info = run(`
         INSERT INTO purchase_returns(code, ts, purchase_id, supplier_id, warehouse_id, user_id,
-                                     subtotal, total, refunded, reason, note, expense, expense_note, mode)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                     subtotal, total, refunded, reason, note, expense, expense_note, mode,
+                                     expense_payer, expense_bearer, expense_shop, settle_method,
+                                     sent_at, received_at, issue_note)
+        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?,
+               CASE WHEN ? THEN COALESCE(?, datetime('now','localtime')) END,
+               CASE WHEN ? THEN COALESCE(?, datetime('now','localtime')) END, ?)`,
         [code, b.ts || null, purchase?.id || null, supplierId, warehouseId,
           b.user_id || null, subtotal, total, refunded, b.reason || null, b.note || null,
-          expense, String(b.expense_note ?? '').trim() || null, purchase ? 'by_purchase' : 'free']);
+          expense, String(b.expense_note ?? '').trim() || null, purchase ? 'by_purchase' : 'free',
+          payer, bearer, expenseShop, settleMethod,
+          sent ? 1 : 0, b.ts || null, received ? 1 : 0, b.ts || null,
+          String(b.issue_note ?? '').trim() || null]);
       const returnId = Number(info.lastInsertRowid);
+
+      /* Tiệm đưa tiền xe trước thì lập phiếu chi — trừ khi đã chi ở chỗ khác */
+      if (payer === 'shop' && expense > 0 && b.expense_cash !== false) {
+        const accountId = Number(b.expense_account_id) || defaultCashAccount();
+        if (accountId) {
+          const tx1 = addCashTx({
+            accountId, direction: 'out', amount: expense, category: 'transport',
+            partnerName: String(b.expense_note ?? '').trim() || 'Chi phí trả hàng NCC',
+            refType: 'purchase_return', refId: returnId, refCode: code,
+            userId: b.user_id || null,
+            note: `Chi phí trả hàng ${code}`
+              + (expenseSupplier > 0 ? ` — NCC chịu ${expenseSupplier.toLocaleString('vi-VN')}đ, trả lại qua phiếu` : ''),
+            ts: b.ts || null,
+          });
+          if (tx1) run('UPDATE purchase_returns SET expense_cash_tx_id = ? WHERE id = ?', [tx1.id, returnId]);
+        }
+      }
 
       for (const it of items) {
         const factor = Number(it.factor) || 1;
@@ -546,10 +665,98 @@ r.post('/purchase-returns', (req, res) => {
       }
       return {
         id: returnId, code, subtotal, stock_value: stockValue, custom_value: customValue,
-        expense, total, refunded, debt: supplierId ? supplierDebt(supplierId) : null,
+        expense, expense_shop: expenseShop, expense_supplier: expenseSupplier,
+        total, refunded, sent, received, settle_method: settleMethod,
+        debt: supplierId ? supplierDebt(supplierId) : null,
       };
     });
     res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/**
+ * Cập nhật trạng thái phiếu trả NCC (plan 31, hạng mục 5.2d).
+ *   sent / received      true | false — kèm `at` nếu ghi lùi ngày
+ *   settle_method        offset | refund
+ *   issue_note           ghi trục trặc (chuỗi rỗng = xoá)
+ *   issue_resolved       true — đánh dấu đã xử lý xong trục trặc
+ *
+ * Bấm "NCC đã nhận" là LÚC công nợ NCC giảm. Bỏ đánh dấu đã nhận thì nợ trở
+ * lại như cũ — nhưng không cho bỏ khi đã ghi NCC hoàn tiền.
+ */
+r.post('/purchase-returns/:id/status', (req, res) => {
+  const b = req.body || {};
+  try {
+    const out = tx(() => {
+      const pr = get('SELECT * FROM purchase_returns WHERE id = ?', [req.params.id]);
+      if (!pr) throw Object.assign(new Error('Không tìm thấy phiếu trả hàng'), { status: 404 });
+      const at = b.at ? String(b.at) : null;
+      if (b.received === true && !pr.received_at) {
+        run(`UPDATE purchase_returns SET received_at = COALESCE(?, datetime('now','localtime')),
+               sent_at = COALESCE(sent_at, ?, datetime('now','localtime')) WHERE id = ?`, [at, at, pr.id]);
+      } else if (b.received === false && pr.received_at) {
+        if (pr.refunded > 0) {
+          throw badRequest(`Phiếu ${pr.code} đã ghi NCC hoàn ${pr.refunded.toLocaleString('vi-VN')}đ — không bỏ đánh dấu đã nhận được.`, 'HAS_REFUND');
+        }
+        run('UPDATE purchase_returns SET received_at = NULL WHERE id = ?', [pr.id]);
+      }
+      if (b.sent === true && !pr.sent_at) {
+        run("UPDATE purchase_returns SET sent_at = COALESCE(?, datetime('now','localtime')) WHERE id = ?", [at, pr.id]);
+      } else if (b.sent === false && pr.sent_at) {
+        const cur = get('SELECT received_at FROM purchase_returns WHERE id = ?', [pr.id]);
+        if (cur.received_at) throw badRequest('NCC đã nhận hàng thì không bỏ đánh dấu đã gửi được.', 'ALREADY_RECEIVED');
+        run('UPDATE purchase_returns SET sent_at = NULL WHERE id = ?', [pr.id]);
+      }
+      if (b.settle_method === 'offset' || b.settle_method === 'refund') {
+        run('UPDATE purchase_returns SET settle_method = ? WHERE id = ?', [b.settle_method, pr.id]);
+      }
+      if (typeof b.issue_note === 'string') {
+        const note = b.issue_note.trim() || null;
+        run('UPDATE purchase_returns SET issue_note = ?, issue_resolved_at = NULL WHERE id = ?', [note, pr.id]);
+      }
+      if (b.issue_resolved === true) {
+        run("UPDATE purchase_returns SET issue_resolved_at = datetime('now','localtime') WHERE id = ? AND issue_note IS NOT NULL", [pr.id]);
+      }
+      return returnDetail(pr.id);
+    });
+    res.json({ ...out, debt: out.supplier_id ? supplierDebt(out.supplier_id) : null });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
+
+/** Ghi NCC hoàn tiền mặt cho phiếu trả — hoàn một lần hay nhiều đợt đều được. */
+r.post('/purchase-returns/:id/refund', (req, res) => {
+  const b = req.body || {};
+  try {
+    const out = tx(() => {
+      const pr = get('SELECT * FROM purchase_returns WHERE id = ?', [req.params.id]);
+      if (!pr) throw Object.assign(new Error('Không tìm thấy phiếu trả hàng'), { status: 404 });
+      if (!pr.received_at) {
+        throw badRequest('NCC chưa nhận hàng trả thì chưa ghi hoàn tiền được — bấm "NCC đã nhận" trước.', 'NOT_RECEIVED');
+      }
+      const left = pr.total - pr.refunded;
+      const amount = Math.round(Number(b.amount) || 0);
+      if (!(amount > 0)) throw badRequest('Số tiền hoàn phải lớn hơn 0.');
+      if (amount > left) {
+        throw badRequest(`NCC chỉ còn phải hoàn ${left.toLocaleString('vi-VN')}đ cho phiếu ${pr.code}.`, 'REFUND_TOO_HIGH');
+      }
+      const accountId = Number(b.account_id) || defaultCashAccount();
+      if (!accountId) throw badRequest('Chưa thiết lập quỹ tiền.');
+      const sup = pr.supplier_id ? get('SELECT name FROM suppliers WHERE id = ?', [pr.supplier_id]) : null;
+      addCashTx({
+        accountId, direction: 'in', amount, category: 'purchase_return',
+        partnerType: 'supplier', partnerId: pr.supplier_id, partnerName: sup?.name,
+        refType: 'purchase_return', refId: pr.id, refCode: pr.code,
+        userId: b.user_id || req.user?.id || null,
+        note: `NCC hoàn tiền phiếu trả ${pr.code}`,
+      });
+      run("UPDATE purchase_returns SET refunded = refunded + ?, settle_method = 'refund' WHERE id = ?", [amount, pr.id]);
+      return returnDetail(pr.id);
+    });
+    res.json({ ...out, debt: out.supplier_id ? supplierDebt(out.supplier_id) : null });
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message, code: e.code });
   }
@@ -627,12 +834,16 @@ r.get('/suppliers/:id/bought-products', (req, res) => {
   const rows = all(`
     SELECT p.id, p.sku, p.name, p.alias, p.base_unit, p.track_stock, p.cost_price,
            p.category_id, p.pack_spec, p.purchase_note, c.name AS category_name,
-           COALESCE((SELECT SUM(st.qty) FROM stock st WHERE st.product_id = p.id), 0) AS stock
+           COALESCE((SELECT SUM(st.qty) FROM stock st WHERE st.product_id = p.id), 0) AS stock,
+           /* Giá mối này BÁO cho món đó (tài liệu 15, mục 4.3) — khác giá đã
+              nhập lần trước: báo giá là giá mối hứa cho lần tới. */
+           ps.quote_price, ps.quote_at, ps.quote_note, ps.supplier_sku
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
+    LEFT JOIN product_suppliers ps ON ps.product_id = p.id AND ps.supplier_id = ?
     WHERE ${where.join(' AND ')}
     ORDER BY p.name
-    LIMIT 400`, params);
+    LIMIT 400`, [supplierId, ...params]);
 
   for (const row of rows) Object.assign(row, byId.get(row.id));
   /* Lần lấy gần đây nhất lên đầu — món đang lấy đều đặn bao giờ cũng là

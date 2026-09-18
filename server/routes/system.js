@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR } from '../db.js';
+import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR, PAYROLL_DIR, ensureBarcodeRegistry } from '../db.js';
 
 const r = Router();
 
@@ -136,7 +136,19 @@ const TABLES = [
   /* Đợt 17 */
   'product_price_tiers',
   /* Đợt 18 */
-  'customer_product_notes', 'consign_partners', 'consign_settlements', 'sale_consign_items',
+  'customer_product_notes', 'consign_partners', 'consign_settlements', 'consign_payments',
+  'sale_consign_items',
+  /* Plan 31 đợt 6 — phiếu tiếp nhận gom nhiều món, bảo hành theo bộ phận */
+  'warranty_batches', 'product_warranty_parts', 'sale_item_warranty_parts',
+  /* Plan 31 đợt 7 — điều chỉnh công nợ, mốc chốt công nợ */
+  'debt_adjustments', 'debt_closings',
+  /* Plan 30 — bộ đếm và sổ đăng ký mã vạch. Là DANH MỤC: xoá dữ liệu giao dịch
+     KHÔNG được xoá hai bảng này, kẻo mã cũ bị cấp lại cho hàng mới */
+  'barcode_counter', 'barcodes',
+  /* Plan 28 — lương nhân viên. Thứ tự: bảng cha trước bảng con, vì khôi phục
+     chèn theo thứ tự này còn xoá thì đi ngược lại */
+  'employees', 'payroll_settlements', 'payroll_cycles', 'payroll_entries', 'payroll_photos',
+  'payroll_closed_days', 'payroll_awards',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -169,6 +181,8 @@ r.post('/restore', (req, res) => {
       }
     });
     db.exec('PRAGMA foreign_keys = ON');
+    /* File sao lưu từ trước plan 30 không có sổ mã vạch và bộ đếm: dựng lại */
+    ensureBarcodeRegistry();
     res.json({ ok: true, message: 'Khôi phục dữ liệu thành công. Hãy tải lại trang.' });
   } catch (e) {
     db.exec('PRAGMA foreign_keys = ON');
@@ -199,10 +213,17 @@ r.post('/clear-transactions', (req, res) => {
   tx(() => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
-    for (const t of ['voucher_uses', 'vouchers', 'debt_allocations',
+    for (const t of ['voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+      /* Sổ lương, kỳ lương, phiếu lương là chứng từ (nối với phiếu chi quỹ bị xoá
+         bên dưới). Hồ sơ nhân viên là DANH MỤC nên giữ lại (plan 28, §4.5). */
+      'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
+      'payroll_closed_days',
       /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
          (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
-      'sale_consign_items', 'consign_settlements',
+      'sale_consign_items', 'consign_payments', 'consign_settlements',
+      /* Hạn bảo hành từng bộ phận chốt theo hoá đơn — chứng từ. Khai báo bộ
+         phận trên mặt hàng (product_warranty_parts) là danh mục, giữ lại. */
+      'sale_item_warranty_parts',
       'sale_return_items', 'sale_returns', 'sale_items', 'sales',
       'purchase_return_custom_items', 'purchase_custom_items',
       'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
@@ -212,13 +233,17 @@ r.post('/clear-transactions', (req, res) => {
          DANH MỤC (khai mối nào bán món nào) nên giữ lại, như định mức. */
       'requisition_item_suppliers', 'requisition_items', 'requisitions',
       'warranty_custom_parts', 'warranty_fees',
-      'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
+      'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets', 'warranty_batches',
       'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
       'cash_transactions', 'stock_moves', 'stock', 'activity_log']) {
       run(`DELETE FROM ${t}`);
     }
   });
-  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC và nhà xe được giữ nguyên.' });
+  /* Ảnh phiếu ứng có chữ ký nhân viên: dòng sổ đã xoá thì file cũng không được nằm lại */
+  try {
+    for (const name of fs.readdirSync(PAYROLL_DIR)) fs.unlinkSync(path.join(PAYROLL_DIR, name));
+  } catch { /* thư mục trống */ }
+  res.json({ ok: true, message: 'Đã xoá dữ liệu giao dịch. Danh mục hàng hoá, định mức, khách hàng, NCC, nhà xe và hồ sơ nhân viên được giữ nguyên.' });
 });
 
 /* ==================================================================== *
@@ -242,25 +267,30 @@ r.post('/reset-all', (req, res) => {
 
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
-    'voucher_uses', 'vouchers', 'debt_allocations',
+    'voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+    /* Lương: thưởng năm, ảnh -> sổ lương -> kỳ -> phiếu lương -> nhân viên */
+    'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
+    'payroll_closed_days', 'employees',
     'activity_log', 'draft_sales', 'doc_drafts',
     /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
     'requisition_item_suppliers', 'requisition_items', 'requisitions',
     'product_suppliers',
     'sale_order_deposits', 'sale_order_deliveries', 'sale_order_items', 'sale_orders',
     'warranty_custom_parts', 'warranty_fees',
-    'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets',
+    'warranty_parts', 'warranty_logs', 'warranty_photos', 'warranty_tickets', 'warranty_batches',
     'production_items', 'productions', 'product_boms',
     'stock_transfer_items', 'stock_transfers', 'stock_take_items', 'stock_takes',
     /* Hàng mua hộ vãng lai: dòng hàng -> đợt đối soát -> chủ hàng */
-    'sale_consign_items', 'consign_settlements', 'consign_partners',
+    'sale_consign_items', 'consign_payments', 'consign_settlements', 'consign_partners',
     'customer_product_notes',
+    'sale_item_warranty_parts',
     'sale_return_items', 'sale_returns', 'sale_items', 'sales',
     'purchase_return_custom_items', 'purchase_custom_items',
     'purchase_return_items', 'purchase_returns', 'purchase_items', 'purchases',
     'cash_transactions', 'cash_accounts',
     'pos_featured', 'pos_featured_sets', 'product_images',
-    'stock_moves', 'stock', 'product_price_tiers', 'product_prices', 'product_units', 'products',
+    'stock_moves', 'stock', 'product_warranty_parts',
+    'product_price_tiers', 'product_prices', 'product_units', 'products',
     'supplier_phones', 'supplier_bank_accounts',
     'customers', 'suppliers', 'carriers', 'categories', 'price_lists', 'warehouses',
   ];
@@ -276,6 +306,9 @@ r.post('/reset-all', (req, res) => {
     tx(() => {
       db.exec('PRAGMA foreign_keys = OFF');
       for (const t of ORDER) run(`DELETE FROM ${t}`);
+      /* Về như máy mới: sổ mã vạch trống, hai bộ đếm đếm lại từ 1 */
+      run('DELETE FROM barcodes');
+      run('UPDATE barcode_counter SET next_value = 1');
       run("DELETE FROM sqlite_sequence WHERE name NOT IN ('users')");
       db.exec('PRAGMA foreign_keys = ON');
     });
@@ -285,7 +318,7 @@ r.post('/reset-all', (req, res) => {
   }
 
   /* Ảnh bảo hành và ảnh hàng hoá nằm ngoài cơ sở dữ liệu, phải xoá riêng */
-  for (const dir of [WARRANTY_DIR, PRODUCT_DIR]) {
+  for (const dir of [WARRANTY_DIR, PRODUCT_DIR, PAYROLL_DIR]) {
     try {
       for (const name of fs.readdirSync(dir)) {
         fs.unlinkSync(path.join(dir, name));

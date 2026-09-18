@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
-  Users, UserPlus, Pencil, Trash2, HandCoins, ArrowLeft, Download, TrendingUp, AlertTriangle, Clock,
+  Users, UserPlus, Pencil, Trash2, HandCoins, ArrowLeft, Download, TrendingUp, AlertTriangle, Clock, Sigma,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
@@ -9,12 +9,13 @@ import { useLiveReload } from '../lib/useLive';
 import { money, n, short, smartTime, date } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Select, Textarea, Stat,
+  Confirm, Field, MoneyInput, Select, Textarea, Stat, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CustomerForm, { CUSTOMER_TYPES } from '../components/CustomerForm';
 import CustomerProfile, { CustomerTypeBadge } from '../components/CustomerProfile';
 import { DebtCollectModal } from '../components/PosDebt';
+import { DebtSummaryModal } from '../components/DebtTools';
 
 /* Phân hệ khách hàng gộp công nợ (tài liệu 08): không còn trang công nợ
    riêng — lọc "đang nợ", "nợ quá hạn", "vượt hạn mức" ngay trên danh mục. */
@@ -27,6 +28,8 @@ const FILTERS = [
 
 export default function Customers() {
   const { toast } = useApp();
+  const navTo = useNavigate();
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   const filter = FILTERS.some((f) => f.key === params.get('filter')) ? params.get('filter') : '';
   const type = CUSTOMER_TYPES.some((t) => t.key === params.get('type')) ? params.get('type') : '';
@@ -107,7 +110,10 @@ export default function Customers() {
         title="Khách hàng"
         subtitle={totals ? `${n(totals.count)} khách · ${n(totals.debtors)} đang nợ · tổng nợ ${money(totals.debt)}` : ''}
         actions={<>
-          <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          <Button icon={Sigma} onClick={() => setSummaryOpen(true)}>Tổng hợp công nợ</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          </PermGate>
           <Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>
             Thêm khách hàng
           </Button>
@@ -265,6 +271,11 @@ export default function Customers() {
               </div>
             )}
       </Page>
+
+      {summaryOpen && (
+        <DebtSummaryModal type="customer" onClose={() => setSummaryOpen(false)}
+          onOpen={(r) => navTo(`/customers/${r.id}?tab=debt`)} />
+      )}
 
       <CustomerForm
         open={!!editing}

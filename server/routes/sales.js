@@ -1,13 +1,17 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, nextCode, moveStock, costOf, resolveUnitId, searchWhere,
-  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams } from '../db.js';
+  addCashTx, defaultCashAccount, customerDebt, getSettings, pageParams, partUntil,
+  logActivity } from '../db.js';
 import {
   posPolicy, isApproverRole, peekApproval, consumeApproval, discountExposure, listPriceOf,
   maxDebtDaysFor,
 } from '../policy.js';
+import { roleCan } from '../permissions.js';
 import { debtBreakdown, overdueInvoices } from '../debt.js';
 import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
+import { isLoginRequired } from '../guard.js';
+import { salaryEmployee, recordSalePurchase, reverseSalePurchase } from '../payroll.js';
 
 const r = Router();
 
@@ -38,6 +42,10 @@ r.get('/sales', (req, res) => {
   if (user_id) { where.push('s.user_id = ?'); params.push(user_id); }
   if (unpaid === '1') where.push("s.total > s.paid AND s.status = 'done'");
 
+  /* Lọc riêng hoá đơn có hàng mua hộ (plan 31, hạng mục 4d) */
+  if (req.query.consign === '1') {
+    where.push('EXISTS (SELECT 1 FROM sale_consign_items ci WHERE ci.sale_id = s.id)');
+  }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);
   const total = get(`
@@ -54,6 +62,15 @@ r.get('/sales', (req, res) => {
            (s.total - s.paid) AS remaining,
            (s.total - s.vat_amount - s.cogs) AS profit,
            (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
+           /* Hàng mua hộ vãng lai tách riêng (plan 31, hạng mục 4d): nhìn
+              danh sách hoá đơn phải phân biệt được đâu là hàng của tiệm,
+              đâu là hàng bán giùm — hai thứ đó vào lãi theo hai cách khác
+              nhau, mà tổng tiền hoá đơn thì gộp chung. */
+           (SELECT COUNT(*) FROM sale_consign_items ci WHERE ci.sale_id = s.id) AS consign_count,
+           (SELECT COALESCE(SUM(ci.amount), 0) FROM sale_consign_items ci
+             WHERE ci.sale_id = s.id) AS consign_amount,
+           (SELECT COALESCE(SUM(ci.commission), 0) FROM sale_consign_items ci
+             WHERE ci.sale_id = s.id) AS consign_commission,
            (SELECT COUNT(*) FROM warranty_tickets wt
              WHERE wt.sale_id = s.id AND wt.status <> 'cancelled') AS warranty_count
     FROM sales s
@@ -78,16 +95,21 @@ r.get('/sales/:id', (req, res) => {
   const s = get(`
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
            c.code AS customer_code, c.tax_code AS customer_tax_code, c.company_name AS customer_company,
-           u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name
+           u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name,
+           emp.full_name AS salary_employee_name,
+           (SELECT COALESCE(SUM(x.salary_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS salary_refunded
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN employees emp ON emp.id = s.salary_employee_id
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN warehouses w ON w.id = s.warehouse_id
     LEFT JOIN price_lists pl ON pl.id = s.price_list_id
     WHERE s.id = ?`, [req.params.id]);
   if (!s) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   s.items = all(`
-    SELECT si.*, p.sku, p.base_unit, p.barcode
+    SELECT si.*, p.sku, p.base_unit, p.barcode,
+           /* Vị trí kệ: in lên phiếu soạn hàng cho nhân viên đi lấy (BRD mục 3) */
+           p.location
     FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?`, [s.id]);
   /* Hàng mua hộ vãng lai: in ra cho khách thì phẳng như hàng của tiệm,
@@ -103,6 +125,8 @@ r.get('/sales/:id', (req, res) => {
   const returned = returnedByLine(s.id, s.items);
   const policy = posPolicy();
   for (const it of s.items) {
+    it.warranty_parts = all(`SELECT name, duration, unit, until FROM sale_item_warranty_parts
+                             WHERE sale_item_id = ? ORDER BY id`, [it.id]);
     it.net_unit_price = netUnitPrice(s, it);
     it.returned_qty = returned.get(it.id) || 0;
     it.returnable_qty = Math.max(0, it.qty - it.returned_qty);
@@ -184,6 +208,12 @@ export function createSale(b) {
      Không trừ kho, không sinh mã hàng. Có chọn chủ hàng thì phần tiền còn
      lại sau hoa hồng là NỢ CHỦ HÀNG, chờ đối soát; không chọn ai thì tiệm
      tự bốc ngoài, trả đứt tại chỗ, giá bốc chính là giá vốn của dòng. */
+  /* Thu ngân CHỈ gõ giá bán cho khách (BRD nâng cấp, mục 5). Hoa hồng và giá tiệm
+     bốc ngoài là phần lãi của tiệm: người không có quyền xem giá vốn thì gõ lên
+     cũng không tính — lấy mức mặc định trong hồ sơ chủ hàng, còn lại để quản lý
+     khai sau khi hoá đơn đã xong. */
+  const seeCost = b._actor === undefined || b._actor === null || roleCan(b._actor?.role, 'cost.view');
+
   const consign = (Array.isArray(b.consign_items) ? b.consign_items : [])
     .map((c) => {
       const name = String(c?.name || '').trim();
@@ -193,21 +223,30 @@ export function createSale(b) {
       const price = Math.max(0, Math.round(Number(c.price) || 0));
       const amount = Math.round(qty * price);
       const partnerId = Number(c.partner_id) || null;
-      const ctype = c.commission_type === 'percent' ? 'percent' : 'amount';
-      const cvalue = Math.max(0, Number(c.commission_value) || 0);
+      const dflt = partnerId && !seeCost
+        ? get('SELECT commission_type, commission_value FROM consign_partners WHERE id = ?', [partnerId])
+        : null;
+      const ctype = (dflt ? dflt.commission_type : c.commission_type) === 'percent' ? 'percent' : 'amount';
+      const cvalue = Math.max(0, Number(dflt ? dflt.commission_value : c.commission_value) || 0);
       /* Hoa hồng chỉ có nghĩa khi hàng của người khác. Tự bốc ngoài thì
          tiệm ăn chênh lệch chứ không "trích hoa hồng của chính mình". */
       const commission = partnerId
         ? Math.min(amount, ctype === 'percent'
           ? Math.round(amount * cvalue / 100) : Math.round(cvalue))
         : 0;
+      /* Cần chủ tiệm / quản lý chốt lại sau (chủ tiệm góp ý 18/09/2026: "mọi tiền
+         hoa hồng, chênh lệch sẽ được chốt lại sau"): MỌI món mua hộ do người không
+         xem được giá vốn bán ra — kể cả khi đã lấy mức hoa hồng mặc định của chủ
+         hàng — và món tiệm tự bốc mà chưa có giá bốc. */
+      const needsReview = !seeCost || (!partnerId && !(Number(c.cost) > 0));
       return {
         partner_id: partnerId,
         name,
+        needs_review: needsReview ? 1 : 0,
         unit_name: String(c.unit_name || '').trim() || null,
         qty,
         price,
-        cost: partnerId ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
+        cost: partnerId || !seeCost ? 0 : Math.max(0, Math.round(Number(c.cost) || 0)),
         commission_type: ctype,
         commission_value: cvalue,
         commission,
@@ -265,7 +304,20 @@ export function createSale(b) {
   const paid0 = Math.max(0, Math.round(Number(b.paid) || 0));
   const voucherAsked = String(b.voucher_code || '').trim()
     ? Math.max(0, Math.round(Number(b.voucher_amount) || 0)) : 0;
-  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked);
+
+  /* Mua hàng trừ vào lương nhân viên (plan 28, §6). BẮT BUỘC chọn nhân viên,
+     không lấy mặc định người đang đứng quầy — không thì thu ngân tự mua ghi
+     vào lương mình chỉ bằng hai lần bấm mà chẳng ai để ý (PAY-405). */
+  const salaryAsked = Math.max(0, Math.round(Number(b.salary_amount) || 0));
+  let salaryEmp = null;
+  if (salaryAsked > 0) {
+    if (!isLoginRequired()) {
+      throw badRequest('Tiệm đang tắt đăng nhập nên bảng lương đóng — không trừ vào lương được.', 'SALARY_NEEDS_LOGIN');
+    }
+    if (codMode) throw badRequest('Đơn giao thu hộ (COD) không trừ vào lương được.', 'SALARY_COD');
+    salaryEmp = salaryEmployee(b.salary_employee_id);
+  }
+  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked - salaryAsked);
 
   /* 1. Giảm giá quá hạn mức thu ngân tự quyết (tài liệu 06).
         So với BẢNG GIÁ, không so với ô giảm giá — sửa tay đơn giá xuống
@@ -374,7 +426,9 @@ export function createSale(b) {
           || Number.isNaN(Number(b.voucher_amount)) ? v.balance : Math.round(Number(b.voucher_amount));
         voucherUse = Math.max(0, Math.min(asked, v.balance, total - paidMoney));
       }
-      const paid = paidMoney + voucherUse;
+      /* Trừ lương trả vào phần còn thiếu sau tiền mặt và phiếu đổi hàng */
+      const salaryUse = salaryEmp ? Math.max(0, Math.min(salaryAsked, total - paidMoney - voucherUse)) : 0;
+      const paid = paidMoney + voucherUse + salaryUse;
       const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paidMoney);
       const code = b.code?.trim() || nextCode('sales', 'HD');
 
@@ -446,15 +500,24 @@ export function createSale(b) {
       for (const c of consign) {
         run(`INSERT INTO sale_consign_items(sale_id, partner_id, partner_name, name, unit_name,
                                             qty, price, cost, commission_type, commission_value,
-                                            commission, amount, note)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                            commission, amount, note, needs_review)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [saleId, c.partner_id, c.partner_name || null, c.name, c.unit_name,
             c.qty, c.price, c.cost, c.commission_type, c.commission_value,
-            c.commission, c.amount, c.note]);
+            c.commission, c.amount, c.note, c.needs_review || 0]);
       }
 
       if (voucherUse > 0) {
         redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });
+      }
+      /* Không vào quỹ (không đồng nào vào két), không thành nợ khách: ghi một dòng
+         trừ vào sổ lương, cùng giao dịch với hoá đơn */
+      if (salaryUse > 0) {
+        run('UPDATE sales SET salary_amount = ?, salary_employee_id = ? WHERE id = ?', [salaryUse, salaryEmp.id, saleId]);
+        recordSalePurchase({
+          employeeId: salaryEmp.id, amount: salaryUse, saleId, saleCode: code,
+          date: String(b.ts || '').slice(0, 10) || null, userId: b.user_id || null,
+        });
       }
 
       for (const it of items) {
@@ -471,7 +534,7 @@ export function createSale(b) {
            (tài liệu 22) — chốt luôn vào hoá đơn để sau này sửa bảng nấc
            cũng không làm hoá đơn cũ hiện ra mức giảm ảo. */
         const listPrice = listPriceOf(it.product_id, it.unit_name, b.price_list_id, it.qty);
-        run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
+        const itemInfo = run(`INSERT INTO sale_items(sale_id, product_id, name_snapshot, unit_id, unit_name, factor, qty,
                                     price, discount, discount_type, discount_percent,
                                     vat_rate, unit_cost, amount, note,
                                     warranty_months, warranty_until, serial, list_price, warranty_note)
@@ -487,6 +550,18 @@ export function createSale(b) {
             listPrice ?? Math.round(Number(it.price) || 0),
             /* Điều kiện bảo hành in lên phiếu bảo hành — chỉ khi dòng có bảo hành */
             wm > 0 ? (String(it.warranty_note ?? '').trim() || null) : null]);
+        /* Bảo hành riêng từng bộ phận (plan 31, 3e): chốt hạn từng bộ phận vào
+           hoá đơn ngay lúc bán. Thu ngân huỷ bảo hành của dòng (0 tháng) thì
+           không chốt bộ phận nào. */
+        if (wm > 0) {
+          const saleItemId = Number(itemInfo.lastInsertRowid);
+          for (const wp of all(`SELECT name, duration, unit FROM product_warranty_parts
+                                WHERE product_id = ? ORDER BY sort_order, id`, [it.product_id])) {
+            run(`INSERT INTO sale_item_warranty_parts(sale_item_id, name, duration, unit, until)
+                 VALUES(?, ?, ?, ?, ?)`,
+              [saleItemId, wp.name, wp.duration, wp.unit, partUntil(b.ts, wp.duration, wp.unit)]);
+          }
+        }
         moveStock({
           productId: it.product_id, warehouseId, qtyChange: -(Number(it.qty) * factor),
           unitCost: it._unitCost, refType: 'sale', refId: saleId, refCode: code,
@@ -517,7 +592,7 @@ export function createSale(b) {
       }
       return {
         id: saleId, code, total, paid, change_given: changeGiven,
-        cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy,
+        cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy, salary_amount: salaryUse,
       };
   });
 }
@@ -564,6 +639,19 @@ r.post('/sales/:id/cancel', (req, res) => {
   const s = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
   if (!s) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   if (s.status === 'cancelled') return res.status(400).json({ error: 'Hoá đơn này đã bị huỷ' });
+  /* Món mua hộ đã chốt đối soát (có khi đã trả tiền chủ hàng) mà huỷ hoá đơn
+     thì tiệm hoàn tiền khách xong vẫn mất tiền đã trả chủ hàng — chặn lại.
+     Chưa chốt thì huỷ được: dòng mua hộ tự rời danh sách chờ đối soát. */
+  const settled = get(`SELECT COUNT(*) AS n, GROUP_CONCAT(DISTINCT st.code) AS codes
+                       FROM sale_consign_items ci JOIN consign_settlements st ON st.id = ci.settlement_id
+                       WHERE ci.sale_id = ?`, [s.id]);
+  if (settled.n > 0) {
+    return res.status(400).json({
+      error: `Hoá đơn có ${settled.n} món mua hộ đã chốt đối soát với chủ hàng (${settled.codes}) nên không huỷ được. `
+        + 'Khách trả lại hàng thì lập phiếu trả hàng, còn khoản đã trả chủ hàng thì thoả thuận riêng.',
+      code: 'CONSIGN_SETTLED',
+    });
+  }
 
   tx(() => {
     const items = all('SELECT * FROM sale_items WHERE sale_id = ?', [s.id]);
@@ -574,11 +662,22 @@ r.post('/sales/:id/cancel', (req, res) => {
         refType: 'sale', refId: s.id, refCode: s.code, note: `Huỷ hoá đơn ${s.code}`,
       });
     }
-    if (s.paid > 0) {
+    /* Phần trả bằng lương không hoàn tiền mặt — đảo lại vào sổ lương (PAY-403),
+       trừ phần đã hoàn vào lương qua phiếu trả hàng trước đó */
+    const salaryPaid = Math.max(0, Number(s.salary_amount) || 0);
+    if (salaryPaid > 0) {
+      const refunded = get('SELECT COALESCE(SUM(salary_refund), 0) AS n FROM sale_returns WHERE sale_id = ?', [s.id]).n;
+      reverseSalePurchase({
+        employeeId: s.salary_employee_id, amount: salaryPaid - refunded, refType: 'sale_cancel', refId: s.id,
+        refCode: s.code, saleCode: s.code, userId: req.user?.id || null, reason: `Huỷ hoá đơn ${s.code}`,
+      });
+    }
+    const cashBack = s.paid - salaryPaid;
+    if (cashBack > 0) {
       const accountId = defaultCashAccount();
       const cust = s.customer_id ? get('SELECT name FROM customers WHERE id = ?', [s.customer_id]) : null;
       if (accountId) addCashTx({
-        accountId, direction: 'out', amount: s.paid, category: 'sale_return',
+        accountId, direction: 'out', amount: cashBack, category: 'sale_return',
         partnerType: 'customer', partnerId: s.customer_id, partnerName: cust?.name || 'Khách lẻ',
         refType: 'sale', refId: s.id, refCode: s.code,
         note: `Hoàn tiền do huỷ hoá đơn ${s.code}`,
@@ -587,6 +686,55 @@ r.post('/sales/:id/cancel', (req, res) => {
     run("UPDATE sales SET status = 'cancelled', paid = 0 WHERE id = ?", [s.id]);
   });
   res.json({ ok: true });
+});
+
+/**
+ * Quản lý khai / sửa hoa hồng và giá tiệm bốc của một dòng hàng mua hộ SAU KHI
+ * hoá đơn đã xong (BRD nâng cấp, mục 5).
+ *
+ * Tiền khách trả không đổi — chỉ đổi phần lãi của tiệm, nên phải tính lại giá vốn
+ * của hoá đơn. Dòng đã vào đợt đối soát thì khoá: sửa nữa là lệch số đã trả chủ hàng.
+ */
+r.put('/sales/:id/consign-items/:itemId', (req, res) => {
+  try {
+    const out = tx(() => {
+      const sale = get('SELECT * FROM sales WHERE id = ?', [req.params.id]);
+      if (!sale) throw badRequest('Không tìm thấy hoá đơn', 'SALE_NOT_FOUND');
+      const it = get('SELECT * FROM sale_consign_items WHERE id = ? AND sale_id = ?',
+        [req.params.itemId, sale.id]);
+      if (!it) throw badRequest('Không tìm thấy dòng hàng mua hộ', 'ITEM_NOT_FOUND');
+      if (it.settlement_id) {
+        const st = get('SELECT code FROM consign_settlements WHERE id = ?', [it.settlement_id]);
+        throw badRequest(`Dòng này đã vào đợt đối soát ${st?.code || ''} — sửa nữa là lệch tiền đã trả chủ hàng.`,
+          'SETTLED');
+      }
+      const b = req.body || {};
+      const ctype = b.commission_type === 'amount' ? 'amount' : 'percent';
+      const cvalue = Math.max(0, Number(b.commission_value) || 0);
+      const commission = it.partner_id
+        ? Math.min(it.amount, ctype === 'percent'
+          ? Math.round(it.amount * cvalue / 100) : Math.round(cvalue))
+        : 0;
+      const cost = it.partner_id ? 0 : Math.max(0, Math.round(Number(b.cost) || 0));
+      /* Giá vốn dòng mua hộ: hàng gửi = phần trả lại chủ; tiệm tự bốc = tiền bỏ ra bốc */
+      const oldCogs = it.partner_id ? (it.amount - it.commission) : Math.round(it.qty * it.cost);
+      const newCogs = it.partner_id ? (it.amount - commission) : Math.round(it.qty * cost);
+      run(`UPDATE sale_consign_items SET commission_type = ?, commission_value = ?, commission = ?,
+             cost = ?, needs_review = 0 WHERE id = ?`,
+      [ctype, it.partner_id ? cvalue : 0, commission, cost, it.id]);
+      run('UPDATE sales SET cogs = cogs + ? WHERE id = ?', [newCogs - oldCogs, sale.id]);
+      logActivity(req.user, 'update', 'sale_consign_item', it.id,
+        `Khai lại hàng mua hộ "${it.name}" của hoá đơn ${sale.code}: `
+        + (it.partner_id
+          ? `hoa hồng ${cvalue}${ctype === 'percent' ? '%' : ' đ'} = ${commission.toLocaleString('vi-VN')} đ`
+          : `giá bốc ${cost.toLocaleString('vi-VN')} đ/đơn vị`));
+      return get(`SELECT ci.*, (ci.amount - ci.commission) AS payable
+                  FROM sale_consign_items ci WHERE ci.id = ?`, [it.id]);
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
 });
 
 /* ========================== TRẢ HÀNG KHÁCH ========================= */
@@ -712,7 +860,7 @@ function returnedByLine(saleId, lines) {
   return done;
 }
 
-const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher'];
+const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher', 'salary'];
 
 /**
  * Lập phiếu khách trả hàng. Dùng chung cho màn hình Hoá đơn và cho việc
@@ -794,6 +942,10 @@ export function createSaleReturn(b) {
   if (method === 'debt' && !customerId) {
     throw badRequest('Cấn trừ vào công nợ thì phải có khách hàng.', 'DEBT_NEEDS_CUSTOMER');
   }
+  /* Hoàn vào lương (plan 28): chỉ hoá đơn gốc đã trả bằng lương */
+  if (method === 'salary' && !(sale && sale.salary_amount > 0 && sale.salary_employee_id)) {
+    throw badRequest('Chỉ hoá đơn trả bằng cách trừ vào lương mới hoàn lại vào lương được.', 'SALARY_REFUND_NOT_ALLOWED');
+  }
 
   return tx(() => {
     const defectWh = items.some((i) => i.condition === 'defect') ? ensureDefectWarehouse() : null;
@@ -813,7 +965,7 @@ export function createSaleReturn(b) {
 
     /* Tiền mặt / chuyển khoản mới chi ra quỹ. Cấn trừ nợ và phiếu đổi hàng
        thì không đụng tới quỹ. */
-    const moneyBack = method === 'debt' || method === 'voucher'
+    const moneyBack = method === 'debt' || method === 'voucher' || method === 'salary'
       ? 0
       : Math.min(Math.max(0, Math.round(Number(b.refunded) || 0)), Math.max(total, 0));
     const code = nextCode('sale_returns', 'TH');
@@ -865,6 +1017,24 @@ export function createSaleReturn(b) {
         note: `Hoàn tiền trả hàng ${code}`, ts: b.ts || null,
       });
     }
+    /* Hoàn vào lương theo đúng giá khách thực trả của phần hàng trả (PAY-404),
+       không vượt số đã trừ lương của hoá đơn gốc */
+    if (method === 'salary' && total > 0) {
+      const used = get('SELECT COALESCE(SUM(salary_refund), 0) AS n FROM sale_returns WHERE sale_id = ? AND id <> ?',
+        [sale.id, returnId]).n;
+      const room = Math.max(0, sale.salary_amount - used);
+      if (total > room) {
+        const vnd = (v) => Math.round(v).toLocaleString('vi-VN');
+        throw badRequest(`Hoá đơn ${sale.code} trừ lương ${vnd(sale.salary_amount)} đ`
+          + `${used ? `, đã hoàn vào lương ${vnd(used)} đ` : ''} — chỉ hoàn vào lương được tối đa ${vnd(room)} đ.`,
+        'SALARY_REFUND_EXCEEDED');
+      }
+      run('UPDATE sale_returns SET salary_refund = ? WHERE id = ?', [total, returnId]);
+      reverseSalePurchase({
+        employeeId: sale.salary_employee_id, amount: total, refType: 'sale_return', refId: returnId, refCode: code,
+        saleCode: sale.code, userId: b.user_id || null, reason: `Trả hàng ${code} của hoá đơn ${sale.code}`,
+      });
+    }
     if (method === 'voucher' && total > 0) {
       voucher = createVoucher({
         amount: total, customerId, sourceType: 'sale_return', sourceId: returnId, sourceCode: code,
@@ -909,6 +1079,12 @@ r.post('/sale-exchanges', (req, res) => {
     return res.status(400).json({ error: 'Chưa chọn món khách trả lại' });
   }
   const method = REFUND_METHODS.includes(b.refund_method) ? b.refund_method : 'cash';
+  if (method === 'salary') {
+    return res.status(400).json({
+      error: 'Đổi hàng không hoàn vào lương được — lập phiếu trả hàng riêng rồi bán hoá đơn mới.',
+      code: 'SALARY_EXCHANGE',
+    });
+  }
 
   try {
     const out = tx(() => {
@@ -1070,7 +1246,13 @@ r.get('/drafts', (req, res) => {
   res.json(all(`
     SELECT d.id, d.code, d.ts, d.updated_at, d.title, d.tab_no, d.customer_id, d.total, d.item_count,
            d.warehouse_id, d.price_list_id,
-           c.name AS customer_name, u.full_name AS user_name
+           c.name AS customer_name, u.full_name AS user_name,
+           /* Người mua hộ + số món mua hộ nằm trong payload (plan 31, 1.2b) —
+              đọc thẳng bằng json_extract, khỏi thêm cột */
+           CASE WHEN json_valid(d.payload) THEN json_extract(d.payload, '$.buyer.name') END AS buyer_name,
+           CASE WHEN json_valid(d.payload) THEN json_extract(d.payload, '$.buyer.phone') END AS buyer_phone,
+           CASE WHEN json_valid(d.payload)
+                THEN COALESCE(json_array_length(d.payload, '$.consign'), 0) ELSE 0 END AS consign_count
     FROM draft_sales d
     LEFT JOIN customers c ON c.id = d.customer_id
     LEFT JOIN users u ON u.id = d.user_id

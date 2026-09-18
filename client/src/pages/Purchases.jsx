@@ -1,15 +1,15 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Search, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
-  PanelRightOpen, PanelRightClose, BarChart3, Check, X,
+  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
+  BarChart3,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager,
+  Confirm, Field, MoneyInput, Textarea, Stat, Combo, QtyInput, Input, Pager, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
@@ -18,6 +18,7 @@ import { ProductForm } from '../components/ProductForm';
 import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
 import { PurchaseReturnForm } from './Returns';
+import { purchaseMath } from '../lib/purchaseMath';
 
 export default function Purchases() {
   const { toast, meta, user } = useApp();
@@ -256,7 +257,9 @@ export default function Purchases() {
           {detail.status === 'done' && (
             <Button icon={Undo2} onClick={() => setReturnOf(detail)}>Trả hàng NCC</Button>
           )}
-          <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
+          </PermGate>
           <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
           <Button onClick={() => setDetail(null)}>Đóng</Button>
         </>}
@@ -290,6 +293,9 @@ export default function Purchases() {
                     <th className="text-right">CK %</th>
                     <th className="text-right">Giá sau CK</th>
                     <th className="text-right">Thành tiền</th>
+                    {detail.items.some((it) => it.cost_unit != null) && (
+                      <th className="text-right" title="Giá vốn đã đưa vào kho theo đơn vị cơ bản">Giá vốn / ĐVCB</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -317,6 +323,14 @@ export default function Purchases() {
                       </td>
                       <td className="num font-semibold">{money(it.price)}</td>
                       <td className="num font-semibold">{money(it.amount)}</td>
+                      {detail.items.some((x) => x.cost_unit != null) && (
+                        <td className="num">
+                          {it.cost_unit != null ? <>{money(it.cost_unit)}<span className="text-2xs text-muted-ink">/{it.base_unit}</span></> : '—'}
+                          {it.line_vat > 0 && detail.vat_in_cost === 1 && (
+                            <div className="text-2xs text-muted-ink">gồm thuế {money(it.line_vat)}</div>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -386,6 +400,13 @@ export default function Purchases() {
                 <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
                 {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
                 {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
+                {(detail.vat_in_cost === 1 || (detail.discount > 0 && detail.discount_mode === 'before_vat')) && (
+                  <div className="text-2xs text-muted-ink text-right">
+                    {[detail.vat_in_cost === 1 ? 'VAT tính vào giá vốn' : null,
+                      detail.discount > 0 ? (detail.discount_mode === 'before_vat' ? 'NCC chiết khấu trước VAT' : 'NCC chiết khấu sau VAT') : null]
+                      .filter(Boolean).join(' · ')}
+                  </div>
+                )}
                 {detail.other_cost > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chi phí khác</span><span className="tabular font-mono">{money(detail.other_cost)}</span></div>}
                 <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
                   <span>Tổng cộng</span><span className="tabular font-mono">{money(detail.total)}</span>
@@ -415,6 +436,8 @@ export default function Purchases() {
           barcode: it.barcode,
           base_unit: it.base_unit,
           defaultCount: Math.max(1, Math.round(Number(it.qty) || 1)),
+          /* Đơn vị và số lượng vừa nhập: nhập 2 Hộp thì hỏi in 2 tem hộp hay 24 tem lẻ (plan 30, §8.2) */
+          unit_id: it.unit_id, unit_name: it.unit_name, factor: it.factor, qty: it.qty,
         }))}
       />
 
@@ -455,121 +478,6 @@ export default function Purchases() {
         )}
       />
     </>
-  );
-}
-
-/* ==================================================================== *
- * THANH TRƯỢT CHỌN HÀNG BÊN PHẢI (tài liệu 24, mục 5.2)
- *
- * Lập phiếu cho mối nào thì chín phần mười là lấy lại đúng những món đã
- * từng lấy của mối đó. Công tắc "chỉ hiện hàng từng mua của mối này" bật
- * sẵn, danh sách cô lập ngay, kèm giá và ngày lấy gần nhất.
- *
- * Bấm một món là nó nhảy sang giỏ với đúng đơn vị và giá lần trước — một
- * giây một món, khỏi gõ lại.
- * ==================================================================== */
-function SupplierProductDrawer({ supplierId, supplierName, onClose, onPick, inCart }) {
-  const [q, setQ] = useState('');
-  const dq = useDebounced(q, 250);
-  /* Chưa chọn mối thì không lọc được theo mối — công tắc tự tắt và khoá */
-  const [onlyBought, setOnlyBought] = useState(true);
-  const filtering = !!supplierId && onlyBought;
-
-  const { data: bought, busy, error, reload } = useFetch(
-    () => api.supplierBoughtProducts(supplierId, { q: dq }),
-    [supplierId, dq], { skip: !filtering });
-  const { data: all } = useFetch(
-    () => api.posProducts({}), [], { skip: filtering });
-
-  /* Không lọc theo mối thì lọc ngay trên danh mục đã tải, gõ không cần
-     đúng thứ tự từ (match() lo phần đó) */
-  const rows = filtering
-    ? (Array.isArray(bought) ? bought : [])
-    : (Array.isArray(all) ? all : [])
-      .filter((x) => !dq.trim() || match(x.name, dq) || match(x.sku, dq) || match(x.alias || '', dq))
-      .slice(0, 200)
-      .map((x) => ({ ...x, last_price: 0, last_ts: null, times: 0 }));
-
-  return (
-    <aside
-      className="w-[30%] min-w-[260px] max-w-[420px] shrink-0 border border-line rounded-lg
-                 bg-muted/30 flex flex-col max-h-[62vh]"
-      aria-label="Bảng chọn hàng nhập"
-    >
-      <div className="p-2 border-b border-line space-y-1.5 shrink-0">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-bold">Chọn hàng nhập</span>
-          <IconButton icon={X} size={14} label="Đóng bảng chọn hàng" onClick={onClose} />
-        </div>
-        <SearchInput value={q} onChange={setQ} size="sm" autoFocus
-          placeholder="Gõ tên hàng, mã hàng..." />
-        <label
-          className={`flex items-start gap-2 text-2xs ${supplierId ? 'cursor-pointer' : 'opacity-55'}`}
-          title={supplierId
-            ? `Chỉ hiện những món tiệm đã từng lấy của ${supplierName}`
-            : 'Chọn nhà cung cấp ở trên trước thì mới lọc được theo mối'}
-        >
-          <input
-            type="checkbox"
-            className="w-3.5 h-3.5 accent-emerald-700 cursor-pointer mt-0.5"
-            checked={filtering}
-            disabled={!supplierId}
-            onChange={(e) => setOnlyBought(e.target.checked)}
-          />
-          <span>
-            Chỉ hiện hàng từng mua của {supplierName ? <b>{supplierName}</b> : 'mối này'}
-            {filtering && <span className="block text-muted-ink">Kèm giá và ngày lấy gần nhất</span>}
-          </span>
-        </label>
-      </div>
-
-      <div className="flex-1 overflow-y-auto min-h-0 p-1">
-        {filtering && busy && !bought ? <Spinner />
-          : error ? <ErrorBox error={error} onRetry={reload} />
-            : rows.length === 0 ? (
-              <p className="text-2xs text-muted-ink p-2">
-                {filtering
-                  ? `Chưa từng lấy món nào của ${supplierName || 'mối này'}${dq ? ` khớp "${q}"` : ''}. `
-                    + 'Bỏ tích ở trên để tìm trong toàn bộ danh mục.'
-                  : `Không tìm thấy hàng nào khớp "${q}".`}
-              </p>
-            ) : rows.map((x) => (
-              <button
-                key={x.id}
-                type="button"
-                onClick={() => onPick(x)}
-                className={`w-full text-left rounded px-2 py-1.5 mb-0.5 cursor-pointer
-                            transition-colors duration-100 border
-                            ${inCart.has(x.id)
-                              ? 'border-accent bg-accent-soft/40'
-                              : 'border-transparent hover:bg-accent-soft/50'}`}
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-[13px] font-medium truncate">{x.name}</span>
-                  {inCart.has(x.id) && <Check size={12} className="text-accent shrink-0" aria-hidden="true" />}
-                </div>
-                <div className="flex items-baseline justify-between gap-2 text-2xs text-muted-ink">
-                  <span className="font-mono">{x.sku}</span>
-                  {x.last_price > 0 ? (
-                    <span className="tabular whitespace-nowrap">
-                      <b className="text-ink">{money(x.last_price)}</b>/{x.last_unit_name}
-                      {' · '}{date(x.last_ts)}
-                    </span>
-                  ) : (
-                    <span className="tabular">Tồn {fq(x.stock)} {x.base_unit}</span>
-                  )}
-                </div>
-                {filtering && x.times > 1 && (
-                  <div className="text-2xs text-muted-ink">Đã lấy {n(x.times)} lần của mối này</div>
-                )}
-              </button>
-            ))}
-      </div>
-
-      <div className="p-1.5 border-t border-line shrink-0 text-2xs text-muted-ink text-center">
-        Bấm một món là nhảy sang giỏ với giá lần trước
-      </div>
-    </aside>
   );
 }
 
@@ -680,12 +588,14 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   const [warehouseId, setWarehouseId] = useState(defaultWarehouse);
   const [lines, setLines] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  /* Thanh trượt chọn hàng bên phải (tài liệu 24, mục 5.2) */
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [priceMatrixOf, setPriceMatrixOf] = useState(null);   // dòng đang xem giá đa NCC
   const [discount, setDiscount] = useState(0);
   const [otherCost, setOtherCost] = useState(0);
   const [applyVat, setApplyVat] = useState(true);
+  /* Phân bổ VAT vào giá nhập (plan 31, 5.1d): tích trên từng phiếu, NCC nhớ lần trước */
+  const [vatInCost, setVatInCost] = useState(false);
+  const [discountMode, setDiscountMode] = useState('after_vat');
+  const lastSupplierRef = useRef(undefined);
   const [paid, setPaid] = useState(0);
   const [accountId, setAccountId] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
@@ -724,6 +634,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     setCustomLines(p?.custom_lines || []);
     setDiscount(p?.discount || 0);
     setOtherCost(p?.other_cost || 0);
+    setVatInCost(!!p?.vat_in_cost);
+    setDiscountMode(p?.discount_mode === 'before_vat' ? 'before_vat' : 'after_vat');
+    /* Phiếu tạm mở lại giữ đúng lựa chọn đã lưu — không để lựa chọn nhớ theo NCC đè lên */
+    lastSupplierRef.current = p?.supplier_id ?? null;
     setPaid(p?.paid || 0);
     setInvoiceNo(p?.invoice_no || '');
     setDueDate(p?.due_date || '');
@@ -731,6 +645,15 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     setWarehouseId(p?.warehouse_id || defaultWarehouse);
     setAccountId(p?.account_id || meta.accounts?.[0]?.id || '');
   }, [open, draft, defaultWarehouse, meta.accounts]);
+
+  /* Đổi NCC -> tích sẵn "VAT vào giá vốn" và kiểu chiết khấu như lần nhập trước của mối đó */
+  useEffect(() => {
+    if (!suppliers || lastSupplierRef.current === supplierId) return;
+    lastSupplierRef.current = supplierId;
+    const s = suppliers.find((x) => x.id === supplierId);
+    setVatInCost(s?.vat_in_cost === 1);
+    setDiscountMode(s?.vat_discount_mode === 'before_vat' ? 'before_vat' : 'after_vat');
+  }, [supplierId, suppliers]);
 
   /* Chọn NCC -> tự tính hạn thanh toán theo số ngày công nợ đã khai */
   useEffect(() => {
@@ -744,6 +667,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   }, [supplierId, suppliers]);
 
   const addProduct = (p, qty = 1) => {
+    /* Món chọn từ danh sách "hàng từng mua của mối này" (BRD nâng cấp, mục 4):
+       điền đúng đơn vị + giá lần lấy gần nhất như thanh trượt bên cạnh. */
+    if (p.last_ts !== undefined) { addFromHistory(p, qty); return; }
     const add = Number(qty) > 0 ? Number(qty) : 1;
     /* Nhảy sẵn ĐƠN VỊ MUA CHÍNH đã khai ở thẻ hàng hoá (tài liệu 13, mục 1.3):
        hàng bán lẻ theo mét nhưng nhập theo cuộn thì khỏi phải đổi tay mỗi lần. */
@@ -766,11 +692,12 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
   };
 
   /**
-   * Bấm một món trong thanh trượt: nhảy sang giỏ với ĐÚNG đơn vị và GIÁ của
-   * lần lấy gần nhất của chính mối này (tài liệu 24, mục 5.2) — đỡ phải gõ
-   * lại giá cũ, và nhìn là biết mối có tăng giá hay không.
+   * Chọn một món trong danh sách "hàng từng mua của mối này": vào phiếu với
+   * ĐÚNG đơn vị và GIÁ của lần lấy gần nhất của chính mối đó (tài liệu 24,
+   * mục 5.2) — đỡ gõ lại giá cũ, và nhìn là biết mối có tăng giá hay không.
    */
-  const addFromDrawer = (row) => {
+  const addFromHistory = (row, qty = 1) => {
+    const add = Number(qty) > 0 ? Number(qty) : 1;
     const p = (products || []).find((x) => x.id === row.id);
     if (!p) { toast('Chưa tải xong danh mục hàng, thử lại một nhịp.', 'warn'); return; }
     const unit = p.units.find((u) => u.unit_name === row.last_unit_name)
@@ -779,16 +706,25 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
     const key = `${p.id}:${unit.id}`;
     setLines((prev) => {
       if (prev.some((l) => l.key === key)) {
-        return prev.map((l) => (l.key === key ? { ...l, qty: l.qty + 1 } : l));
+        return prev.map((l) => (l.key === key ? { ...l, qty: l.qty + add } : l));
       }
+      /* Giá điền sẵn: ưu tiên BÁO GIÁ của mối nếu nó mới hơn lần nhập gần
+         nhất (plan 31, hạng mục 5.1c) — báo giá là giá mối hứa cho lần tới,
+         còn giá cũ chỉ là chuyện đã qua. Dòng nào lấy từ báo giá thì mang
+         cờ from_quote để hiện dấu hiệu, người lập phiếu biết mà đối chiếu. */
+      const quote = Math.round(Number(row.quote_price) || 0);
+      const quoteNewer = quote > 0
+        && String(row.quote_at || '') > String(row.last_ts || '');
+      const fromLast = row.last_price > 0 && row.last_unit_name === unit.unit_name;
       return [...prev, {
         key, product_id: p.id, sku: p.sku, name: p.name, base_unit: p.base_unit,
         pack_spec: p.pack_spec || null,
         units: p.units, unit_id: unit.id, unit_name: unit.unit_name, factor: unit.factor,
-        qty: 1,
-        price: row.last_price > 0 && row.last_unit_name === unit.unit_name
-          ? Math.round(row.last_price)
-          : Math.round(p.cost_price * unit.factor),
+        qty: add,
+        price: quoteNewer ? quote
+          : fromLast ? Math.round(row.last_price)
+            : Math.round(p.cost_price * unit.factor),
+        from_quote: quoteNewer ? { price: quote, at: row.quote_at, note: row.quote_note } : null,
         discount: 0,
         vat_rate: p.vat_rate, current_stock: p.stock, current_cost: p.cost_price,
         overwrite_cost: false,
@@ -819,20 +755,17 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
    */
   const netPrice = (l) => Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
 
+  /* Một công thức với máy chủ (lib/purchaseMath) — số xem trước ở đây đúng bằng số được lưu */
   const totals = useMemo(() => {
-    let subtotal = 0, vat = 0, saved = 0;
-    for (const l of lines) {
-      const net = Math.round(l.price * (1 - (Number(l.discount_percent) || 0) / 100));
-      saved += Math.round(l.qty * (l.price - net));
-      const amt = Math.round(l.qty * net - (l.discount || 0));
-      subtotal += amt;
-      if (applyVat) vat += Math.round(amt * (l.vat_rate || 0) / 100);
-    }
-    /* Hàng giao sai tính vào tiền phiếu và công nợ NCC — không thuế, không vào kho */
-    const custom = customLines.reduce((a, c) => a + Math.round((Number(c.qty) || 0) * (Number(c.price) || 0)), 0);
-    subtotal += custom;
-    return { subtotal, vat, saved, custom, total: subtotal - discount + vat + otherCost };
-  }, [lines, customLines, discount, otherCost, applyVat]);
+    const saved = lines.reduce((a, l) => a + Math.round(l.qty * (l.price - netPrice(l))), 0);
+    const m = purchaseMath(
+      { discount, other_cost: otherCost, vat_in_cost: applyVat && vatInCost, discount_mode: discountMode },
+      lines.map((l) => ({ qty: l.qty, factor: l.factor, price: netPrice(l), discount: l.discount || 0, vat_rate: applyVat ? l.vat_rate : 0 })),
+      customLines.map((c) => ({ qty: c.qty, price: c.price })));
+    return { subtotal: m.subtotal, vat: m.vatAmount, saved, custom: m.customTotal, total: m.total, lines: m.lines, vatInCost: m.vatInCost };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines, customLines, discount, otherCost, applyVat, vatInCost, discountMode]);
+  const costPreview = (i) => totals.lines?.[i]?.unitCost;
 
   useEffect(() => { setPaid(totals.total); }, [totals.total]);
 
@@ -850,6 +783,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         warehouse_id: warehouseId,
         user_id: user?.id,
         discount, other_cost: otherCost, paid,
+        vat_in_cost: applyVat && vatInCost, discount_mode: discountMode,
         account_id: accountId,
         supplier_invoice: invoiceNo || null,
         due_date: dueDate || null,
@@ -916,6 +850,7 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                 supplier_id: supplierId, warehouse_id: warehouseId, lines, custom_lines: customLines,
                 discount, other_cost: otherCost, paid, account_id: accountId,
                 invoice_no: invoiceNo, due_date: dueDate, note,
+                vat_in_cost: vatInCost, discount_mode: discountMode,
               },
             })}
           />
@@ -927,8 +862,10 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
       >
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-4">
-            <Field label="Nhà cung cấp" className="sm:col-span-2">
+            <Field label="Nhà cung cấp" className="sm:col-span-2" htmlFor="pf-supplier">
               <Combo
+                id="pf-supplier"
+                autoFocus
                 items={suppliers || []}
                 value={supplierId}
                 onChange={setSupplierId}
@@ -950,23 +887,15 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
             </Field>
           </div>
 
-          {/* Giỏ nhập chính 70% | thanh trượt chọn hàng 30% (tài liệu 24, 5.2) */}
           <div className="flex gap-3 items-start">
           <div className="flex-1 min-w-0 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <span className="label !mb-0">Danh sách hàng nhập ({lines.length})</span>
             <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant={drawerOpen ? 'secondary' : 'primary'}
-                icon={drawerOpen ? PanelRightClose : PanelRightOpen}
-                onClick={() => setDrawerOpen((v) => !v)}
-                title={supplierId
-                  ? 'Bảng chọn hàng, lọc sẵn những món từng lấy của mối này'
-                  : 'Bảng chọn hàng — chọn mối trước thì lọc được theo mối'}
-              >
-                {drawerOpen ? 'Đóng bảng chọn' : 'Chọn hàng nhanh'}
-              </Button>
+              {/* Một nút chọn hàng duy nhất, bấm lúc nào cũng mở (chủ tiệm góp ý
+                  18/09/2026: bỏ hẳn nút "Chọn hàng nhanh", và chưa chọn NCC vẫn
+                  chọn hàng được). Đã chọn NCC thì hộp chọn hàng tự lọc sẵn
+                  những món từng lấy của mối đó, kèm giá lần trước. */}
               <CartPickerButton kind="purchase" count={lines.length} onClick={() => setPickerOpen(true)} />
             </div>
           </div>
@@ -975,7 +904,9 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
             <Empty
               icon={FileText}
               title="Chưa chọn hàng nào"
-              message="Bấm Chọn hàng để thêm các mặt hàng lấy về từ nhà cung cấp."
+              message={supplierId
+                ? 'Bấm Chọn hàng để thêm các mặt hàng lấy về từ nhà cung cấp — hộp chọn hàng lọc sẵn những món từng lấy của mối này.'
+                : 'Bấm Chọn hàng để thêm hàng. Chọn nhà cung cấp trước thì hộp chọn hàng lọc sẵn những món từng lấy của mối đó.'}
               action={<CartPickerButton kind="purchase" size="md" onClick={() => setPickerOpen(true)} />}
             />
           ) : (
@@ -991,6 +922,11 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                     <th style={{ width: 130 }} className="text-right">Giá sau CK</th>
                     <th className="text-right">Quy đổi</th>
                     <th className="text-right">Thành tiền</th>
+                    {totals.vatInCost && (
+                      <th className="text-right" title="Giá vốn sẽ vào kho: gồm thuế, đã trừ phần chiết khấu NCC, cộng phần chi phí khác">
+                        Giá vốn / ĐVCB
+                      </th>
+                    )}
                     {/* Ghi đè giá vốn (tài liệu 13, mục 1.2): tích ở đầu cột là
                         tích cả phiếu, hoặc tích lẻ từng dòng bên dưới */}
                     <th style={{ width: 92 }} className="text-center">
@@ -1017,10 +953,25 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l) => (
+                  {lines.map((l, li) => (
                     <tr key={l.key}>
                       <td>
-                        <div className="font-semibold">{l.name}</div>
+                        <div className="font-semibold flex items-center gap-1.5">
+                          {l.name}
+                          {/* Giá đang lấy từ BÁO GIÁ của mối, không phải giá
+                              nhập lần trước (plan 31, hạng mục 5.1c) */}
+                          {l.from_quote && (
+                            <span
+                              title={`Mối báo ${money(l.from_quote.price)} ngày ${date(l.from_quote.at)}`
+                                + (l.from_quote.note ? ` — ${l.from_quote.note}` : '')}
+                              className="inline-flex items-center gap-0.5 rounded border border-violet-300
+                                         bg-violet-50 px-1 text-2xs font-semibold text-violet-800 shrink-0"
+                            >
+                              <Tag size={10} aria-hidden="true" />
+                              Mối báo
+                            </span>
+                          )}
+                        </div>
                         <div className="text-2xs text-muted-ink font-mono">
                           {l.sku} · tồn hiện tại {fq(l.current_stock)} {l.base_unit}
                         </div>
@@ -1073,6 +1024,15 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                           : '—'}
                       </td>
                       <td className="num font-semibold">{money(Math.round(l.qty * netPrice(l)))}</td>
+                      {totals.vatInCost && (
+                        <td className="num">
+                          <b className="text-violet-800">{money(costPreview(li))}</b>
+                          <span className="text-2xs text-muted-ink">/{l.base_unit}</span>
+                          {totals.lines[li]?.vat > 0 && (
+                            <div className="text-2xs text-muted-ink">thuế {money(totals.lines[li].vat)}</div>
+                          )}
+                        </td>
+                      )}
                       <td className="text-center">
                         <input
                           type="checkbox"
@@ -1081,8 +1041,8 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                           onChange={(e) => updateLine(l.key, { overwrite_cost: e.target.checked })}
                           aria-label={`Ghi đè giá vốn của ${l.name} bằng giá nhập lần này`}
                           title={l.current_cost === undefined
-                            ? `Tích để đổi giá vốn thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`
-                            : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
+                            ? `Tích để đổi giá vốn thành ${money(costPreview(li) ?? Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`
+                            : `Giá vốn đang là ${money(l.current_cost)} — tích để đổi thành ${money(costPreview(li) ?? Math.round(netPrice(l) / (l.factor || 1)))} / ${l.base_unit}`}
                         />
                       </td>
                       <td className="whitespace-nowrap">
@@ -1101,15 +1061,6 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
           )}
           </div>
 
-          {drawerOpen && (
-            <SupplierProductDrawer
-              supplierId={supplierId}
-              supplierName={suppliers?.find((x) => x.id === supplierId)?.name || ''}
-              onClose={() => setDrawerOpen(false)}
-              onPick={addFromDrawer}
-              inCart={new Set(lines.map((l) => l.product_id))}
-            />
-          )}
           </div>
 
           {/* ---------- Hàng giao sai / ngoài danh mục (tài liệu 11) ---------- */}
@@ -1226,6 +1177,35 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
                   </div>
                 )}
 
+                {/* Phân bổ VAT vào giá nhập (plan 31, 5.1d) */}
+                {applyVat && discount > 0 && (
+                  <div className="flex items-center justify-between gap-2 text-[13px]">
+                    <span className="text-muted-ink">NCC chiết khấu</span>
+                    <div role="radiogroup" aria-label="NCC chiết khấu trước hay sau thuế" className="inline-flex rounded border border-line overflow-hidden">
+                      {[['after_vat', 'Sau VAT'], ['before_vat', 'Trước VAT']].map(([k, lb]) => (
+                        <button key={k} type="button" role="radio" aria-checked={discountMode === k} onClick={() => setDiscountMode(k)}
+                          className={`px-2.5 h-7 text-2xs font-semibold cursor-pointer transition-colors duration-100
+                                      ${discountMode === k ? 'bg-accent text-white' : 'bg-card text-muted-ink hover:bg-muted'}`}>
+                          {lb}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {applyVat && (
+                  <label className="flex items-start justify-between gap-2 text-[13px] cursor-pointer">
+                    <span>
+                      <span className="text-muted-ink">Tính VAT vào giá vốn</span>
+                      <span className="block text-2xs text-muted-ink">
+                        Giá vốn gồm thuế, trừ phần chiết khấu NCC — cho hộ kinh doanh không khấu trừ thuế.
+                        {vatInCost ? ' Xem cột "Giá vốn / ĐVCB".' : ''}
+                      </span>
+                    </span>
+                    <input type="checkbox" className="w-4 h-4 mt-0.5 accent-emerald-700 cursor-pointer"
+                      checked={vatInCost} onChange={(e) => setVatInCost(e.target.checked)} />
+                  </label>
+                )}
+
                 <div className="flex items-baseline justify-between pt-2 border-t border-line">
                   <span className="font-semibold">Tổng phải trả</span>
                   <span className="text-xl font-display font-bold tabular">{money(totals.total)}</span>
@@ -1284,6 +1264,11 @@ export function PurchaseForm({ open, onClose, onSaved, draft = null }) {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         kind="purchase"
+        wide
+        qtyEntry
+        supplierFilter={supplierId
+          ? { id: supplierId, name: (suppliers || []).find((x) => x.id === supplierId)?.name || '' }
+          : null}
         products={products || []}
         lines={lines}
         onAdd={addProduct}

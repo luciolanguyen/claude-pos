@@ -20,12 +20,13 @@ import {
 import { ProductPicker } from './ProductPicker';
 import { CategorySelect } from './CategoryTree';
 import { ProductImageManager } from './ProductImages';
+import { WarrantyPartsEditor } from './WarrantyParts';
 
 const EMPTY = {
   sku: '', barcode: '', name: '', alias: '', category_id: '', base_unit: 'Cái',
   cost_price: '', vat_rate: 8, track_stock: 1, min_stock: 0, max_stock: 0,
   brand: '', location: '', note: '', active: 1,
-  warranty_months: 0, warranty_note: '',
+  warranty_months: 0, warranty_note: '', warranty_parts: [],
   description: '', pack_spec: '', purchase_note: '',
   opening_qty: 0, opening_warehouse_id: '',
   cost_method: '',        // rỗng = theo thiết lập chung của tiệm
@@ -234,6 +235,25 @@ export function ProductForm({ open, product, onClose, onSaved }) {
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e?.target ? e.target.value : e }));
 
+  /* Tra mã ngay lúc rời ô mã vạch: đang thuộc hàng khác thì báo sớm (lưu cũng sẽ bị
+     từ chối); mã gõ tay rơi vào dải 828… tự sinh thì nhắc — vẫn cho lưu (plan 30, §4.5) */
+  const [codeNote, setCodeNote] = useState(null);
+  const checkCode = async (raw) => {
+    const code = String(raw || '').trim();
+    if (!code) { setCodeNote(null); return; }
+    try {
+      const r = await api.get('/barcodes/lookup', { code });
+      const others = (r?.holders || []).filter((h) => !(h.owner_type === 'product' && h.owner_id === product?.id)
+        && !(h.owner_type === 'product_unit' && h.product_id === product?.id));
+      if (others.length) setCodeNote({ bad: true, text: `Mã này đang thuộc ${others[0].label}.` });
+      else if (r?.status === 'retired' && r.source === 'auto') {
+        setCodeNote({ bad: true, text: 'Đây là mã tự sinh của mặt hàng đã xoá — không cấp lại cho hàng khác.' });
+      } else if (r?.in_auto_range && product?.barcode !== code) {
+        setCodeNote({ bad: false, text: 'Mã này trùng dải mã nội bộ 828… của tiệm, dễ đụng mã tự sinh sau này. Vẫn lưu được.' });
+      } else setCodeNote(null);
+    } catch { setCodeNote(null); }
+  };
+
   /* Đơn vị cơ bản luôn là dòng có hệ số 1 */
   const setUnit = (i, patch) => setUnits((prev) => prev.map((u, j) => j === i ? { ...u, ...patch } : u));
   const setUnitPrice = (i, plId, price) => setUnits((prev) =>
@@ -423,9 +443,29 @@ export function ProductForm({ open, product, onClose, onSaved }) {
               <Field label="Mã hàng hoá" hint={product ? 'Không đổi được' : 'Bỏ trống để tự đặt'} htmlFor="pf-sku">
                 <Input id="pf-sku" value={form.sku} onChange={set('sku')} disabled={!!product} />
               </Field>
-              <Field label="Mã vạch" hint="Quét thẳng bằng máy quét" htmlFor="pf-barcode">
-                <Input id="pf-barcode" value={form.barcode || ''} onChange={set('barcode')}
-                  placeholder="Quét mã vạch vào đây" />
+              {/* Mã vạch (plan 30): bỏ trống lúc tạo thì cấp mã 828… tự sinh; gõ / quét
+                  mã nhà sản xuất thì giữ nguyên, trùng thì báo ngay lúc rời ô */}
+              <Field label="Mã vạch"
+                hint={product
+                  ? (form.barcode ? 'Quét mã khác để đổi — mã cũ bị thu hồi' : 'Hàng chưa có mã vạch')
+                  : 'Bỏ trống để tự cấp mã 828…'}
+                htmlFor="pf-barcode">
+                <div className="flex gap-1.5">
+                  <Input id="pf-barcode" className="font-mono" value={form.barcode || ''}
+                    onChange={(e) => { setForm((f) => ({ ...f, barcode: e.target.value, auto_barcode: false })); setCodeNote(null); }}
+                    onBlur={() => checkCode(form.barcode)}
+                    placeholder={product ? 'Quét mã vạch vào đây' : 'Tự cấp khi lưu'} />
+                  {product && !String(form.barcode || '').trim() && (
+                    <Button size="sm" variant={form.auto_barcode ? 'soft' : 'outline'} className="shrink-0"
+                      aria-pressed={!!form.auto_barcode}
+                      onClick={() => setForm((f) => ({ ...f, auto_barcode: !f.auto_barcode }))}>
+                      {form.auto_barcode ? 'Cấp khi lưu' : 'Cấp mã tự động'}
+                    </Button>
+                  )}
+                </div>
+                {codeNote && (
+                  <p role="status" className={`text-2xs mt-0.5 ${codeNote.bad ? 'text-danger font-semibold' : 'text-warn'}`}>{codeNote.text}</p>
+                )}
               </Field>
             </div>
 
@@ -583,6 +623,25 @@ export function ProductForm({ open, product, onClose, onSaved }) {
                           aria-label={`Tên đơn vị dòng ${i + 1}`}
                         />
                         {isBase && <span className="text-2xs text-emerald-800 font-semibold">Đơn vị cơ bản</span>}
+                        {/* Mã vạch riêng cho đơn vị lớn (plan 30, §4.6): tem dán cuộn, dán thùng —
+                            quét là ra đúng đơn vị, đúng giá. Đơn vị cơ bản dùng chung mã của hàng. */}
+                        {!isBase && (
+                          <div className="mt-1 flex items-center gap-1">
+                            <Input size="sm" className="font-mono !text-2xs min-w-0" value={u.barcode || ''}
+                              placeholder={u.auto_barcode ? 'Cấp khi lưu' : 'Mã vạch riêng'}
+                              disabled={off || u.auto_barcode}
+                              onChange={(e) => setUnit(i, { barcode: e.target.value, auto_barcode: false })}
+                              aria-label={`Mã vạch riêng của ${u.unit_name || `dòng ${i + 1}`}`} />
+                            {!String(u.barcode || '').trim() && !off && (
+                              <button type="button" aria-pressed={!!u.auto_barcode}
+                                title="Cấp mã 828… riêng cho đơn vị này khi lưu"
+                                onClick={() => setUnit(i, { auto_barcode: !u.auto_barcode })}
+                                className={`btn btn-sm shrink-0 !px-1.5 ${u.auto_barcode ? 'btn-soft' : 'btn-outline'}`}>
+                                {u.auto_barcode ? 'Bỏ' : 'Cấp mã'}
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {off && <Badge tone="mute" className="mt-0.5">Ngừng hoạt động</Badge>}
                         {!isBase && !off && u.used && (
                           <span className="block text-2xs text-muted-ink">đã có chứng từ dùng</span>
@@ -767,8 +826,17 @@ export function ProductForm({ open, product, onClose, onSaved }) {
             </Field>
             <Field label="Điều kiện bảo hành" hint="In lên phiếu bảo hành khi bán" htmlFor="pf-wn">
               <Input id="pf-wn" value={form.warranty_note || ''} onChange={set('warranty_note')}
-                disabled={!(Number(form.warranty_months) > 0)} placeholder="VD: không bảo hành cháy nổ do điện áp" />
+                disabled={!(Number(form.warranty_months) > 0) && !(form.warranty_parts?.length > 0)}
+                placeholder="VD: không bảo hành cháy nổ do điện áp" />
             </Field>
+            {/* Bảo hành riêng từng bộ phận (plan 31, 3e). Chỉ gửi lên khi form
+                có sẵn danh sách — mở từ bản ghi đầy đủ của máy chủ */}
+            {Array.isArray(form.warranty_parts) && (
+              <div className="sm:col-span-2">
+                <WarrantyPartsEditor value={form.warranty_parts}
+                  onChange={(list) => setForm((f) => ({ ...f, warranty_parts: list }))} />
+              </div>
+            )}
 
             {!product && (
               <>

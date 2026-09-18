@@ -13,9 +13,11 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ClipboardList, Plus, Minus, Eye, Search, Clock, AlertTriangle, Printer, XCircle,
   PackageCheck, HandCoins, Truck, ShoppingBag, Phone, CheckCircle2, Trash2, ShoppingCart,
-  Store, MapPin, History,
+  Store, MapPin, History, PackagePlus,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { DUE, DueBadge, SupplyBadge } from '../components/PosOrders';
+import { useLiveReload, useChangeReload } from '../lib/useLive';
 import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
 import { money, n, qty as fq, date, datetime, isoDate, match, matchMode, readMoney, ROLE_LABEL } from '../lib/format';
 import {
@@ -26,8 +28,9 @@ import {
 import { PageHeader, Page } from '../components/Layout';
 import { themeOf } from '../components/CartPickerModal';
 import { CategorySelect } from '../components/CategoryTree';
-import { EMPTY_DELIVERY, deliveryBody } from '../components/PosDeliveryForm';
+import DeliveryInfoModal, { EMPTY_DELIVERY, deliveryBody, normalizeDelivery } from '../components/PosDeliveryForm';
 
+import { barcodeEquals, barcodeIncludes } from '../lib/codeMatch';
 const STATUS = {
   open: { label: 'Chờ giao', tone: 'info', icon: Clock },
   partial: { label: 'Giao một phần', tone: 'warn', icon: PackageCheck },
@@ -85,19 +88,25 @@ function OrderList() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [late, setLate] = useState(false);
+  /* Lọc theo nguồn hàng: need = còn thiếu, chưa đặt đủ của mối (BRD mục 2) */
+  const [supply, setSupply] = useState('');
   const [openId, setOpenId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [printJob, setPrintJob] = useState(null);   // phiếu đặt hàng vừa lập, tự in
   const dq = useDebounced(q, 300);
 
   const list = usePaged(
-    (pg) => api.orders({ q: dq, status, late: late ? 1 : '', ...pg }),
-    [dq, status, late],
+    (pg) => api.orders({ q: dq, status, late: late ? 1 : '', supply, ...pg }),
+    [dq, status, late, supply],
     { key: 'orders' }
   );
   const { data: sum, reload: reloadSum } = useFetch(() => api.ordersSummary(), []);
 
   const refresh = () => { list.reload(); reloadSum(); };
+  /* Máy khác vừa lưu đơn / giao hàng thì bảng này cũng phải đổi theo, khỏi phải
+     chuyển trang mới thấy (BRD mục 2) */
+  useChangeReload(refresh, ['/orders']);
+  useLiveReload(refresh, { interval: 60000 });
 
   return (
     <div className="space-y-3">
@@ -113,6 +122,34 @@ function OrderList() {
           onClick={() => { setLate(true); setStatus(''); }}
         />
       </div>
+
+      {/* Nguồn hàng: đơn nào còn thiếu hàng phải đi đặt mối (BRD nâng cấp, mục 2) */}
+      {sum?.open_count > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {[['', `Tất cả (${n(sum.open_count)})`],
+            ['need', `Chờ đặt NCC (${n((sum.short_count || 0) + (sum.partial_po_count || 0))})`],
+            ['ordered', `Đã đặt NCC — chưa về (${n(sum.ordered_count || 0)})`],
+            ['ready', `Đủ hàng — chờ giao (${n(sum.ready_count || 0)})`]].map(([k, label]) => (
+            <button key={k || 'all'} type="button" onClick={() => setSupply(k)} aria-pressed={supply === k}
+              className={`btn btn-sm ${supply === k ? 'btn-secondary' : 'btn-outline'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Đèn hạn giao của các đơn còn chờ (plan 31, 1.5b) */}
+      {sum?.open_count > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] px-1" aria-label="Hạn giao các đơn đang chờ">
+          {['late', 'today', 'soon', 'later'].map((k) => (
+            <span key={k} className={`inline-flex items-center gap-1.5 ${sum?.[`${k}_count`] ? '' : 'text-muted-ink'}`}>
+              <span className={`w-2.5 h-2.5 rounded-full ${DUE[k].dot}`} aria-hidden="true" />
+              <b className="tabular">{n(sum?.[`${k}_count`] || 0)}</b> {DUE[k].label.toLowerCase()}
+            </span>
+          ))}
+          <span className="text-2xs text-muted-ink">Gần hạn: còn tối đa 1 ngày làm việc, không tính Thứ 7 và Chủ nhật</span>
+        </div>
+      )}
 
       <div className="card">
         <div className="p-3 flex flex-wrap items-center gap-2 border-b border-line">
@@ -151,7 +188,7 @@ function OrderList() {
                     <thead>
                       <tr>
                         <th>Mã đơn</th><th>Ngày nhận</th><th>Khách hàng</th>
-                        <th>Hẹn giao</th><th className="text-right">Tổng tiền</th>
+                        <th>Hẹn giao</th><th>Nguồn hàng</th><th className="text-right">Tổng tiền</th>
                         <th className="text-right">Cọc còn</th>
                         <th className="text-center">Còn phải giao</th>
                         <th>Trạng thái</th><th style={{ width: 48 }} />
@@ -174,12 +211,19 @@ function OrderList() {
                           </td>
                           <td className="whitespace-nowrap">
                             {o.promised_at ? (
-                              <span className={o.is_late ? 'text-danger font-semibold' : ''}>
-                                {date(o.promised_at)}
-                                {/* is_late là 0/1 của SQLite; thiếu !! thì React in ra số 0 */}
-                                {!!o.is_late && <span className="ml-1 text-2xs">(trễ)</span>}
-                              </span>
+                              <div className="flex flex-col items-start gap-0.5">
+                                <span className={o.due_state === 'late' ? 'text-danger font-semibold' : ''}>
+                                  {date(o.promised_at)}
+                                </span>
+                                {/* Đèn hạn giao (plan 31, 1.5b) — gần hạn không tính T7, CN */}
+                                <DueBadge state={o.due_state} />
+                              </div>
                             ) : <span className="text-muted-ink">—</span>}
+                          </td>
+                          <td>
+                            {o.supply
+                              ? <SupplyBadge supply={o.supply} showReady />
+                              : <span className="text-muted-ink">—</span>}
                           </td>
                           <td className="text-right tabular font-semibold">{money(o.total)}</td>
                           <td className="text-right tabular">
@@ -603,7 +647,7 @@ function OrderProductPicker({
     if (q.trim()) {
       l = l.filter((p) => matchMode(p.name, q, mode) || matchMode(p.alias || '', q, mode)
         || matchMode(p.sku, q, mode)
-        || (mode === 'exact' ? (p.barcode || '') === q.trim() : (p.barcode || '').includes(q.trim())));
+        || (mode === 'exact' ? barcodeEquals(p, q) : barcodeIncludes(p, q)));
     }
     return l.slice(0, 300);
   }, [products, q, mode, cat]);
@@ -786,6 +830,7 @@ function OrderDetail({ id, onClose, onChanged }) {
   const [cancelling, setCancelling] = useState(false);
   const [editing, setEditing] = useState(false);
   const [printing, setPrinting] = useState(null);   // { kind, refId }
+  const [marking, setMarking] = useState(false);   // hộp đánh dấu đã đặt hàng của mối
 
   const changed = () => { reload(); onChanged?.(); };
   const openOrder = o && (o.status === 'open' || o.status === 'partial');
@@ -869,12 +914,38 @@ function OrderDetail({ id, onClose, onChanged }) {
               />
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge s={o.status} />
+              <SupplyBadge supply={o.supply} showReady />
               {openOrder && can('order.manage') && (
                 <Button size="sm" onClick={() => setEditing(true)}>Sửa đơn</Button>
               )}
+              {openOrder && can('order.manage') && o.supply?.state && o.supply.state !== 'ready' && (
+                <Button size="sm" variant={o.supply.state === 'short' ? 'primary' : 'outline'} icon={PackagePlus}
+                  onClick={() => setMarking(true)}>
+                  {o.supply.state === 'ordered' ? 'Sửa số đã đặt mối' : 'Đánh dấu đã đặt mối'}
+                </Button>
+              )}
             </div>
+
+            {/* Nhắc rõ đơn đang chờ ai làm gì: chờ đi đặt mối hay chờ hàng về (BRD mục 2) */}
+            {openOrder && o.supply?.state === 'short' && (
+              <div className="card-pad bg-rose-50 border-danger/30 text-[13px] flex gap-2.5">
+                <PackagePlus size={16} className="text-danger shrink-0 mt-0.5" aria-hidden="true" />
+                <p className="text-rose-900">
+                  Đơn này còn <b>{n(o.supply.short_lines)} món thiếu hàng</b> và chưa đặt của mối nào.
+                  Đặt xong nhớ bấm <b>Đánh dấu đã đặt mối</b> để cả tiệm biết đơn đang chờ hàng về.
+                </p>
+              </div>
+            )}
+            {openOrder && o.supply?.state === 'partial' && (
+              <div className="card-pad bg-violet-50 border-violet-300 text-[13px] flex gap-2.5">
+                <PackagePlus size={16} className="text-violet-700 shrink-0 mt-0.5" aria-hidden="true" />
+                <p className="text-violet-900">
+                  Đã đặt mối <b>{n(o.supply.done_lines)}/{n(o.supply.short_lines)} món</b> — vẫn còn món đặt thiếu.
+                </p>
+              </div>
+            )}
 
             <div>
               <h3 className="font-bold text-sm mb-1.5">Hàng khách đặt</h3>
@@ -887,6 +958,7 @@ function OrderDetail({ id, onClose, onChanged }) {
                       <th className="text-right">Đã giao</th>
                       <th className="text-right">Còn thiếu</th>
                       <th className="text-right">Tồn kho</th>
+                      <th className="text-right">Đặt mối</th>
                       <th className="text-right">Đơn giá</th>
                       <th className="text-right">Thành tiền</th>
                     </tr>
@@ -911,6 +983,17 @@ function OrderDetail({ id, onClose, onChanged }) {
                           <td className={`text-right tabular ${shortStock && i.remaining_qty > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}`}>
                             {fq(i.stock_qty)}
                             {shortStock && i.remaining_qty > 0 && <span className="ml-1 text-2xs">thiếu</span>}
+                          </td>
+                          {/* Món thiếu tồn: đã đặt mối bao nhiêu, còn phải đặt bao nhiêu (BRD mục 2) */}
+                          <td className="text-right tabular whitespace-nowrap">
+                            {i.short_qty > 0 ? (
+                              i.po_qty > 0 ? (
+                                <span className={i.po_left > 0 ? 'text-violet-800' : 'text-sky-800'}>
+                                  đã đặt {fq(i.po_qty)}/{fq(i.short_qty)}
+                                  {i.po_user_name && <span className="block text-2xs text-muted-ink">{i.po_user_name}</span>}
+                                </span>
+                              ) : <Badge tone="bad">chưa đặt {fq(i.short_qty)}</Badge>
+                            ) : <span className="text-muted-ink">—</span>}
                           </td>
                           <td className="text-right tabular">{money(i.price)}</td>
                           <td className="text-right tabular font-semibold">{money(i.amount)}</td>
@@ -947,6 +1030,11 @@ function OrderDetail({ id, onClose, onChanged }) {
           </div>
         )}
       </Modal>
+
+      {marking && (
+        <SupplyModal order={o} onClose={() => setMarking(false)}
+          onDone={() => { setMarking(false); changed(); }} />
+      )}
 
       {delivering && o && (
         <DeliverModal order={o} onClose={() => setDelivering(false)}
@@ -1056,6 +1144,97 @@ const fromOrder = (o) => ({
   carrierName: o.carrier_name || '',
 });
 
+/* ==================================================================== *
+ * ĐÃ ĐẶT HÀNG CỦA MỐI (BRD nâng cấp, mục 2)
+ *
+ * Người đi đặt hàng ghi lại đã đặt được bao nhiêu cho từng món còn thiếu.
+ * Đặt đủ thì đơn chuyển sang "chờ hàng về"; đặt một phần thì đơn vẫn nằm ở
+ * nhóm "cần đặt mối" để không ai quên phần còn lại.
+ * ==================================================================== */
+function SupplyModal({ order, onClose, onDone }) {
+  const { user, toast } = useApp();
+  const short = (order.items || []).filter((i) => i.short_qty > 0.0001);
+  const [qty, setQty] = useState(() => Object.fromEntries(short.map((i) => [i.id, i.po_qty || 0])));
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const save = async (mode) => {
+    setBusy(true);
+    setErr('');
+    try {
+      await api.orderSupply(order.id, mode === 'all'
+        ? { all: true, note, user_id: user?.id || null }
+        : mode === 'clear'
+          ? { clear: true, user_id: user?.id || null }
+          : { items: short.map((i) => ({ item_id: i.id, po_qty: Number(qty[i.id]) || 0 })), note, user_id: user?.id || null });
+      toast(mode === 'clear' ? 'Đã bỏ đánh dấu đặt mối' : 'Đã ghi nhận số hàng đã đặt của mối', 'ok');
+      onDone?.();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="md"
+      title={`Đặt hàng của mối — đơn ${order.code}`}
+      subtitle="Ghi đúng số đã đặt được. Đặt thiếu thì đơn vẫn nằm ở nhóm cần đặt mối."
+      footer={<>
+        <Button className="mr-auto" onClick={() => save('clear')} disabled={busy}>Bỏ đánh dấu</Button>
+        <Button onClick={onClose}>Đóng</Button>
+        <Button onClick={() => save('all')} loading={busy}>Đã đặt đủ tất cả</Button>
+        <Button variant="primary" onClick={() => save('items')} loading={busy}>Lưu số đã đặt</Button>
+      </>}
+    >
+      <div className="space-y-3">
+        {short.length === 0 ? (
+          <p className="text-[13px] text-muted-ink">Đơn này đủ tồn để giao, không phải đặt thêm.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Tên hàng</th>
+                  <th className="text-right">Còn thiếu</th>
+                  <th style={{ width: 130 }} className="text-right">Đã đặt mối</th>
+                </tr>
+              </thead>
+              <tbody>
+                {short.map((i) => (
+                  <tr key={i.id}>
+                    <td>
+                      <div className="font-semibold">{i.name_snapshot}</div>
+                      <div className="text-2xs text-muted-ink">
+                        {i.unit_name} · khách đặt {fq(i.qty)} · tồn {fq(i.stock_qty)}
+                      </div>
+                    </td>
+                    <td className="text-right tabular">{fq(i.short_qty)} {i.unit_name}</td>
+                    <td>
+                      <QtyInput value={qty[i.id] ?? 0} min={0}
+                        onChange={(v) => setQty((m) => ({ ...m, [i.id]: Math.min(Number(v) || 0, i.short_qty) }))}
+                        aria-label={`Số đã đặt mối của ${i.name_snapshot}`} className="!w-full" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <Field label="Ghi chú (đặt của mối nào, hẹn ngày nào về)" htmlFor="po-note">
+          <Input id="po-note" value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder="VD: đặt anh Tư Cái Bè, hẹn thứ Năm có hàng" />
+        </Field>
+        {err && <p role="alert" className="text-[13px] text-danger font-semibold">{err}</p>}
+      </div>
+    </Modal>
+  );
+}
+
 function DeliverModal({ order, onClose, onDone }) {
   const { user, meta, toast } = useApp();
   const pending = order.items.filter((i) => i.remaining_qty > 0.0001);
@@ -1069,6 +1248,7 @@ function DeliverModal({ order, onClose, onDone }) {
     return m;
   });
   const [d, setD] = useState(() => fromOrder(order));
+  const [editDelivery, setEditDelivery] = useState(false);
   const [paid, setPaid] = useState(0);
   const [method, setMethod] = useState('cash');
   const [accountId, setAccountId] = useState('');
@@ -1155,6 +1335,17 @@ function DeliverModal({ order, onClose, onDone }) {
       }
     >
       <div className="space-y-3">
+        <DeliveryInfoModal
+          open={editDelivery}
+          onClose={() => setEditDelivery(false)}
+          value={d}
+          customer={{ name: order.customer_display, phone: order.phone_display, address: order.customer_address }}
+          carriers={carriers || []}
+          goodsTotal={saleTotal}
+          canPay={false}
+          onSave={(v) => { setD(normalizeDelivery(v)); setEditDelivery(false); setErr(''); }}
+          onClear={() => { setD(EMPTY_DELIVERY); setEditDelivery(false); }}
+        />
         <div role="tablist" aria-label="Hình thức giao" className="grid grid-cols-2 gap-1.5">
           {[['pickup', 'Khách tự lấy', Store, 'Khách tới quầy nhận hàng'],
             ['ship', 'Giao hàng', Truck, 'Giao tận nơi, người giao thu hộ']].map(([k, label, Icon, hint]) => (
@@ -1216,96 +1407,29 @@ function DeliverModal({ order, onClose, onDone }) {
 
         <div className="grid lg:grid-cols-[1fr_300px] gap-3">
           <div className="space-y-2.5">
+            {/* Thông tin giao hàng dùng CHUNG một mẫu với màn hình bán hàng (BRD mục 1):
+                một chỗ sửa, mọi nơi giao hàng đổi theo — khỏi mỗi màn hình một kiểu. */}
             {mode === 'ship' && (
-              <>
-                <section className="space-y-2.5" aria-labelledby="dl-h-recv">
-                  <h3 id="dl-h-recv" className="text-[13px] font-bold">Người nhận</h3>
-                  <div className="grid gap-2.5 sm:grid-cols-2">
-                    <Field label="Tên người nhận" htmlFor="dl-name">
-                      <Input id="dl-name" value={d.name} onChange={(e) => setDv('name', e.target.value)} />
-                    </Field>
-                    <Field label="Số điện thoại" htmlFor="dl-phone">
-                      <Input id="dl-phone" value={d.phone} onChange={(e) => setDv('phone', e.target.value)} inputMode="tel" />
-                    </Field>
-                  </div>
-                  <Field label="Địa chỉ giao hàng" htmlFor="dl-addr">
-                    <Textarea id="dl-addr" rows={2} value={d.address} onChange={(e) => setDv('address', e.target.value)}
-                      placeholder="Số nhà, ấp/khu phố, xã/phường, huyện/tỉnh" />
-                  </Field>
-                </section>
-
-                <section className="space-y-2.5 border-t border-line pt-3" aria-labelledby="dl-h-ship">
-                  <h3 id="dl-h-ship" className="text-[13px] font-bold">Vận chuyển</h3>
-                  <div className="grid gap-2.5 sm:grid-cols-2">
-                    <Field label="Đơn vị vận chuyển" htmlFor="dl-carrier">
-                      <Select id="dl-carrier" value={d.carrierId || ''}
-                        onChange={(e) => {
-                          const cid = e.target.value ? Number(e.target.value) : null;
-                          setErr('');
-                          setD((p) => ({ ...p, carrierId: cid, carrierName: (carriers || []).find((c) => c.id === cid)?.name || '' }));
-                        }}>
-                        <option value="">— Không qua đối tác —</option>
-                        {(carriers || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </Select>
-                    </Field>
-                    <Field label="Mã vận đơn" htmlFor="dl-track">
-                      <Input id="dl-track" value={d.trackingCode} onChange={(e) => setDv('trackingCode', e.target.value)} />
-                    </Field>
-                  </div>
-                  <div>
-                    <span className="label" id="dl-shipper">Người giao trực tiếp</span>
-                    <div className="grid grid-cols-3 rounded border border-line overflow-hidden" role="radiogroup" aria-labelledby="dl-shipper">
-                      {[['none', 'Không có'], ['staff', 'Nhân viên cửa hàng'], ['free', 'Shipper tự do']].map(([k, lb]) => (
-                        <button key={k} type="button" role="radio" aria-checked={d.shipperMode === k}
-                          onClick={() => setDv('shipperMode', k)}
-                          className={`h-9 px-2 text-[13px] font-semibold transition-colors duration-100 cursor-pointer
-                                      ${d.shipperMode === k ? 'bg-primary text-white' : 'bg-card hover:bg-muted'}`}>
-                          {lb}
-                        </button>
-                      ))}
+              <section className="card p-2.5 space-y-1.5" aria-label="Thông tin giao hàng">
+                <div className="flex items-start gap-2">
+                  <Truck size={16} className="text-muted-ink shrink-0 mt-0.5" aria-hidden="true" />
+                  <div className="min-w-0 flex-1 text-[13px]">
+                    <div className="font-semibold">
+                      {d.name || order.customer_display || 'Chưa ghi người nhận'}
+                      {d.phone ? ` · ${d.phone}` : ''}
+                    </div>
+                    <div className="text-muted-ink">{d.address || 'Chưa ghi địa chỉ giao'}</div>
+                    <div className="text-2xs text-muted-ink">
+                      {[d.carrierName && `hãng ${d.carrierName}`,
+                        d.shipperMode === 'staff' && d.shipperUserName && `người giao: ${d.shipperUserName}`,
+                        d.shipperMode === 'free' && (d.shipperName || d.shipperPhone) && `shipper: ${[d.shipperName, d.shipperPhone].filter(Boolean).join(' ')}`,
+                        Number(d.shipFee) > 0 && `phí ${money(d.shipFee)}${d.shopPaysShip ? ' (tiệm chịu)' : ''}`,
+                        d.note].filter(Boolean).join(' · ') || 'Chưa có người giao — bấm Sửa để điền'}
                     </div>
                   </div>
-                  {d.shipperMode === 'staff' && (
-                    <Field label="Nhân viên đi giao" htmlFor="dl-staff">
-                      <Select id="dl-staff" value={d.shipperUserId || ''}
-                        onChange={(e) => {
-                          const uid = e.target.value ? Number(e.target.value) : null;
-                          setErr('');
-                          setD((p) => ({ ...p, shipperUserId: uid, shipperUserName: staff.find((u) => u.id === uid)?.full_name || '' }));
-                        }}>
-                        <option value="">— Chọn nhân viên —</option>
-                        {staff.map((u) => (
-                          <option key={u.id} value={u.id}>{u.full_name}{ROLE_LABEL[u.role] ? ` · ${ROLE_LABEL[u.role]}` : ''}</option>
-                        ))}
-                      </Select>
-                    </Field>
-                  )}
-                  {d.shipperMode === 'free' && (
-                    <div className="grid gap-2.5 sm:grid-cols-2">
-                      <Field label="Tên shipper" htmlFor="dl-sname">
-                        <Input id="dl-sname" value={d.shipperName} onChange={(e) => setDv('shipperName', e.target.value)} />
-                      </Field>
-                      <Field label="Số điện thoại shipper" htmlFor="dl-sphone">
-                        <Input id="dl-sphone" value={d.shipperPhone} onChange={(e) => setDv('shipperPhone', e.target.value)} inputMode="tel" />
-                      </Field>
-                    </div>
-                  )}
-                  <div className="grid gap-2.5 sm:grid-cols-2">
-                    <Field label="Phí vận chuyển" htmlFor="dl-fee">
-                      <MoneyInput id="dl-fee" value={d.shipFee} onChange={(v) => setDv('shipFee', Math.max(0, v))} />
-                      <label className="flex items-center gap-1.5 mt-1.5 text-2xs cursor-pointer">
-                        <input type="checkbox" className="w-3.5 h-3.5 accent-emerald-700 cursor-pointer"
-                          checked={d.shopPaysShip} onChange={(e) => setDv('shopPaysShip', e.target.checked)} />
-                        Cửa hàng chịu phí (không cộng vào hoá đơn)
-                      </label>
-                    </Field>
-                    <Field label="Ghi chú giao hàng" htmlFor="dl-dnote">
-                      <Input id="dl-dnote" value={d.note} onChange={(e) => setDv('note', e.target.value)}
-                        placeholder="VD: gọi trước khi giao" />
-                    </Field>
-                  </div>
-                </section>
-              </>
+                  <Button size="sm" icon={MapPin} onClick={() => setEditDelivery(true)}>Sửa thông tin giao</Button>
+                </div>
+              </section>
             )}
 
             <div className="grid gap-2.5 sm:grid-cols-3">

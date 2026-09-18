@@ -119,6 +119,8 @@ export const RANGES = [
 export const PAYMENT_LABEL = {
   cash: 'Tiền mặt', transfer: 'Chuyển khoản', card: 'Quẹt thẻ',
   debt: 'Ghi nợ', mixed: 'Kết hợp', cod: 'Thu hộ COD',
+  /* Nhân viên mua hàng trừ vào lương (plan 28) */
+  salary: 'Trừ lương',
 };
 
 /* Hai cách tính giá vốn. Nói bằng lời người bán hàng hiểu, không dùng
@@ -138,6 +140,7 @@ export const COST_METHOD_HINT = {
 export const ROLE_LABEL = {
   owner: 'Chủ cửa hàng', manager: 'Quản lý',
   cashier: 'Thu ngân', stock: 'Nhân viên kho',
+  warranty: 'Nhân viên bảo hành',
 };
 
 export const MOVE_LABEL = {
@@ -148,7 +151,8 @@ export const MOVE_LABEL = {
 export const CASH_LABEL = {
   sale: 'Bán hàng', debt_in: 'Thu nợ khách', purchase: 'Mua hàng',
   debt_out: 'Trả nợ NCC', sale_return: 'Hoàn tiền khách', purchase_return: 'NCC hoàn tiền',
-  salary: 'Lương nhân viên', rent: 'Thuê mặt bằng', utility: 'Điện nước internet',
+  salary: 'Lương nhân viên', salary_advance: 'Ứng lương nhân viên', salary_bonus: 'Thưởng nhân viên',
+  rent: 'Thuê mặt bằng', utility: 'Điện nước internet',
   transport: 'Vận chuyển', tax: 'Thuế, lệ phí', capital_in: 'Góp vốn',
   capital_out: 'Rút vốn', transfer_in: 'Nhận chuyển quỹ', transfer_out: 'Chuyển quỹ đi',
   warranty_in: 'Thu sửa chữa / bảo hành', custom_parts_in: 'Doanh thu linh kiện ngoài hệ thống',

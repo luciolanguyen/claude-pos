@@ -27,6 +27,11 @@ export const PRODUCT_DIR = path.join(
   DATA_DIR, DB_NAME === 'pos' ? 'products' : `products-${DB_NAME}`);
 if (!fs.existsSync(PRODUCT_DIR)) fs.mkdirSync(PRODUCT_DIR, { recursive: true });
 
+/* Ảnh phiếu ứng lương có chữ ký (plan 28, §7.2) — cùng cách bám tên CSDL */
+export const PAYROLL_DIR = path.join(
+  DATA_DIR, DB_NAME === 'pos' ? 'payroll' : `payroll-${DB_NAME}`);
+if (!fs.existsSync(PAYROLL_DIR)) fs.mkdirSync(PAYROLL_DIR, { recursive: true });
+
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
@@ -213,6 +218,174 @@ addColumns('purchase_returns', {
   expense: 'INTEGER NOT NULL DEFAULT 0',
   expense_note: 'TEXT',
   mode: "TEXT NOT NULL DEFAULT 'free'",             // by_purchase | free
+});
+
+/* Trả hàng NCC — ai trả / ai chịu chi phí, và trạng thái theo dõi (plan 31, đợt 5).
+ *
+ * Chủ tiệm chốt: công nợ NCC CHỈ giảm khi NCC đã nhận hàng trả. Phiếu lập
+ * trước đợt này coi như đã gửi và NCC đã nhận — đánh dấu MỘT LẦN lúc thêm
+ * cột, để số nợ NCC đang có không nhảy sau khi nâng cấp. */
+{
+  const hadStatus = db.prepare('PRAGMA table_info(purchase_returns)').all()
+    .some((c) => c.name === 'received_at');
+  addColumns('purchase_returns', {
+    expense_payer: "TEXT NOT NULL DEFAULT 'supplier'",  // ai đưa tiền trước: shop | supplier
+    expense_bearer: "TEXT NOT NULL DEFAULT 'shop'",     // ai chịu: shop | supplier | split
+    expense_shop: 'INTEGER NOT NULL DEFAULT 0',         // phần tiệm chịu (phần còn lại NCC chịu)
+    expense_cash_tx_id: 'INTEGER',                      // phiếu chi tiền xe khi tiệm trả trước
+    settle_method: "TEXT NOT NULL DEFAULT 'offset'",    // offset: cấn trừ công nợ · refund: NCC hoàn tiền
+    sent_at: 'TEXT',                                    // đã gửi hàng đi
+    received_at: 'TEXT',                                // NCC xác nhận đã nhận — từ lúc này mới trừ nợ
+    issue_note: 'TEXT',                                 // trục trặc: NCC chê hàng, thiếu, hỏng thêm…
+    issue_resolved_at: 'TEXT',
+  });
+  if (!hadStatus) {
+    db.exec(`UPDATE purchase_returns
+             SET sent_at = ts, received_at = ts, expense_shop = expense,
+                 settle_method = CASE WHEN refunded > 0 THEN 'refund' ELSE 'offset' END`);
+  }
+}
+
+/* Ngày cập nhật giá vốn gần nhất (plan 31, hạng mục 1.4b). Giá vốn đổi ở sáu
+   chỗ (bình quân khi nhập, trả NCC, sửa tay, sản xuất, nhập Excel…) nên ghi
+   bằng trigger — không đường nào lọt, khỏi vá từng chỗ. */
+{
+  const hadCostDate = db.prepare('PRAGMA table_info(products)').all().some((c) => c.name === 'cost_updated_at');
+  addColumns('products', { cost_updated_at: 'TEXT' });
+  /* Nâng cấp lần đầu: hàng có sẵn chưa có ngày nào. Lấy tạm ngày nhập hàng gần
+     nhất — giá vốn bình quân được tính lại đúng lúc đó; chưa nhập lần nào thì
+     để trống, thà không hiện còn hơn hiện một ngày bịa. */
+  if (!hadCostDate) {
+    db.exec(`UPDATE products SET cost_updated_at = (
+               SELECT MAX(pu.ts) FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+               WHERE pi.product_id = products.id AND pu.status = 'done')
+             WHERE cost_price > 0`);
+  }
+}
+db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_upd
+         AFTER UPDATE OF cost_price ON products
+         WHEN NEW.cost_price IS NOT OLD.cost_price
+         BEGIN
+           UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
+         END`);
+db.exec(`CREATE TRIGGER IF NOT EXISTS trg_products_cost_ins
+         AFTER INSERT ON products
+         WHEN NEW.cost_updated_at IS NULL AND NEW.cost_price > 0
+         BEGIN
+           UPDATE products SET cost_updated_at = datetime('now','localtime') WHERE id = NEW.id;
+         END`);
+
+/* ------------------------------------------------------------------ */
+/* Mã vạch tự sinh (plan 30, P1)                                        */
+/* ------------------------------------------------------------------ */
+/**
+ * Dựng sổ đăng ký mã vạch và hai bộ đếm. Chạy mỗi lần khởi động, và chạy lại
+ * sau khi khôi phục một file sao lưu cũ chưa có hai bảng này — thiếu bộ đếm
+ * là tạo hàng mới hỏng ngay.
+ */
+export function ensureBarcodeRegistry() {
+  /* Mã vạch có dấu cách thừa hai đầu thì máy quét không bao giờ khớp; ô trống
+     thì coi như không có mã */
+  db.exec(`UPDATE products SET barcode = NULLIF(TRIM(barcode), '') WHERE barcode IS NOT NULL AND barcode <> TRIM(barcode) OR barcode = ''`);
+  db.exec(`UPDATE product_units SET barcode = NULLIF(TRIM(barcode), '') WHERE barcode IS NOT NULL AND barcode <> TRIM(barcode) OR barcode = ''`);
+
+  /* Bộ đếm mã tự sinh: máy mới đếm từ 1. Dựng lại sau khi khôi phục một file sao
+     lưu thiếu bộ đếm thì phải nối tiếp SAU mã 828… lớn nhất đang có, kẻo cấp đè */
+  db.exec(`INSERT OR IGNORE INTO barcode_counter(name, next_value, prefix, width)
+           SELECT 'product', COALESCE(MAX(CAST(SUBSTR(code, 4) AS INTEGER)), 0) + 1, '828', 7
+           FROM (SELECT barcode AS code FROM products UNION ALL SELECT barcode FROM product_units
+                 UNION ALL SELECT code FROM barcodes)
+           WHERE code GLOB '828[0-9][0-9][0-9][0-9][0-9][0-9][0-9]'`);
+  /* Mã hàng SP… tự đặt: bắt đầu sau số lớn nhất đang có, từ đó chỉ tiến */
+  db.exec(`INSERT OR IGNORE INTO barcode_counter(name, next_value, prefix, width)
+           SELECT 'sku', COALESCE(MAX(CAST(SUBSTR(sku, 3) AS INTEGER)), 0) + 1, 'SP', 5
+           FROM products WHERE sku GLOB 'SP[0-9]*' AND SUBSTR(sku, 3) NOT GLOB '*[^0-9]*'`);
+
+  /* Nạp mọi mã đang có vào sổ đăng ký. Mã đang bị HAI chỗ cùng giữ thì KHÔNG
+     nạp và không tự chọn giữ cái nào — chủ tiệm xem danh sách ở Thiết lập rồi
+     quyết từng mã (plan 30, §11.1, chủ tiệm chốt). Chạy mỗi lần khởi động
+     nhưng INSERT OR IGNORE nên vô hại. */
+  const heldBy = `(SELECT COUNT(*) FROM products x WHERE x.barcode = c.code)
+                + (SELECT COUNT(*) FROM product_units y WHERE y.barcode = c.code)`;
+  db.exec(`INSERT OR IGNORE INTO barcodes(code, owner_type, owner_id, last_owner_id, source, note)
+           SELECT c.code, 'product', c.id, c.id, 'manual', 'nạp từ dữ liệu có sẵn'
+           FROM (SELECT barcode AS code, id FROM products WHERE barcode IS NOT NULL) c
+           WHERE ${heldBy} = 1`);
+  db.exec(`INSERT OR IGNORE INTO barcodes(code, owner_type, owner_id, last_owner_id, source, note)
+           SELECT c.code, 'product_unit', c.id, c.id, 'manual', 'nạp từ dữ liệu có sẵn'
+           FROM (SELECT barcode AS code, id FROM product_units WHERE barcode IS NOT NULL) c
+           WHERE ${heldBy} = 1`);
+
+  /* Chặn trùng ngay ở cơ sở dữ liệu — chỉ tạo được khi dữ liệu đã sạch trùng */
+  const dup = (table) => db.prepare(`SELECT COUNT(*) AS n FROM (SELECT barcode FROM ${table}
+                                     WHERE barcode IS NOT NULL GROUP BY barcode HAVING COUNT(*) > 1)`).get().n;
+  if (!dup('products')) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_products_barcode ON products(barcode) WHERE barcode IS NOT NULL');
+  }
+  if (!dup('product_units')) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_units_barcode ON product_units(barcode) WHERE barcode IS NOT NULL');
+  }
+}
+ensureBarcodeRegistry();
+
+/* Bảo hành (plan 31, đợt 6): món thuộc phiếu tiếp nhận gom nào (3a), và
+   khách báo hư bộ phận nào khi mặt hàng bảo hành riêng từng bộ phận (3e) */
+addColumns('warranty_tickets', { batch_id: 'INTEGER', component_name: 'TEXT' });
+db.exec('CREATE INDEX IF NOT EXISTS idx_wt_batch ON warranty_tickets(batch_id)');
+
+/* Phân bổ VAT vào giá nhập (plan 31, 5.1d). Chỉ phiếu nhập MỚI có tích mới
+   tính khác — phiếu cũ mặc định 0 / after_vat, đúng như cách đã tính xưa nay,
+   không phiếu nào bị tính lại. Mỗi dòng ghi luôn thuế, phần chiết khấu và giá
+   vốn đã đi vào kho, để mở lại phiếu còn đối chiếu được. NCC nhớ lựa chọn lần
+   trước để lần sau nhập của mối đó tự tích sẵn. */
+addColumns('purchases', {
+  vat_in_cost: 'INTEGER NOT NULL DEFAULT 0',
+  discount_mode: "TEXT NOT NULL DEFAULT 'after_vat'",   // after_vat | before_vat
+});
+addColumns('purchase_items', { line_vat: 'INTEGER', discount_share: 'INTEGER', cost_unit: 'INTEGER' });
+addColumns('suppliers', { vat_in_cost: 'INTEGER NOT NULL DEFAULT 0', vat_discount_mode: 'TEXT' });
+
+/* Mua hàng trừ vào lương nhân viên (plan 28, §6). Là TIỀN TRẢ BẰNG CÁCH KHÁC,
+   không phải giảm giá: ghi vào discount thì sai căn cứ tính VAT và thổi phồng
+   báo cáo giảm giá. Phần này cộng vào paid nên không thành nợ của khách, và
+   không sinh phiếu thu vì không có đồng nào vào két. */
+addColumns('sales', {
+  salary_amount: 'INTEGER NOT NULL DEFAULT 0',
+  salary_employee_id: 'INTEGER',
+});
+/* Trả hàng của hoá đơn trừ lương: hoàn lại vào lương, không chi tiền, không trừ nợ */
+addColumns('sale_returns', { salary_refund: 'INTEGER NOT NULL DEFAULT 0' });
+
+/* Chốt lương sớm theo ngày làm thực tế (BRD nâng cấp, mục 6): kỳ bị cắt làm hai,
+   phần còn lại của kỳ mang sẵn số tiền phải trả nốt để cả kỳ vẫn đủ lương tháng. */
+addColumns('payroll_cycles', { base_override: 'INTEGER', split_of: 'INTEGER' });
+
+/* Mức hoa hồng mặc định của từng chủ hàng (BRD nâng cấp, mục 5): thu ngân không
+   được thấy và không gõ hoa hồng nữa, nên máy chủ lấy mức đã thoả thuận sẵn ở
+   hồ sơ chủ hàng; quản lý sửa lại sau nếu cần. */
+addColumns('consign_partners', {
+  commission_type: "TEXT NOT NULL DEFAULT 'percent'",
+  commission_value: 'REAL NOT NULL DEFAULT 0',
+});
+/* Dòng hàng mua hộ còn CHỜ QUẢN LÝ khai hoa hồng / giá bốc — thu ngân bán xong
+   là dòng này sáng đèn ở màn hình Hoá đơn và Đối tác vãng lai. */
+addColumns('sale_consign_items', { needs_review: 'INTEGER NOT NULL DEFAULT 0' });
+
+/* Đối tác vãng lai: trả tiền nhiều lần (BRD nâng cấp, mục 4). Trước đây mỗi đợt
+   chốt chỉ có MỘT phiếu chi, trả thiếu là không ghi được. paid là tổng đã trả,
+   cộng dồn từ bảng consign_payments. */
+addColumns('consign_settlements', { paid: 'INTEGER NOT NULL DEFAULT 0' });
+/* Đợt cũ đã chi đủ một lần: coi như đã trả hết, để số "còn nợ chủ hàng" không sai */
+db.exec(`UPDATE consign_settlements SET paid = payout WHERE cash_tx_id IS NOT NULL AND paid = 0`);
+
+/* Đơn đặt hàng: món thiếu tồn phải đặt thêm của NCC (BRD nâng cấp, mục 2).
+   po_qty là số ĐÃ ĐẶT của mối, tính theo đúng đơn vị của dòng đơn — đặt được
+   một phần thì ghi đúng phần đó, đơn vẫn nằm ở nhóm "còn thiếu". */
+addColumns('sale_order_items', {
+  po_qty: 'REAL NOT NULL DEFAULT 0',
+  po_at: 'TEXT',
+  po_note: 'TEXT',
+  po_user_id: 'INTEGER',
 });
 
 /* Đặt hàng (tài liệu 12): ai đưa cọc, đợt giao là khách tự lấy hay giao đi */
@@ -720,6 +893,33 @@ export function nextCode(table, prefix) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bảo hành theo từng bộ phận (plan 31, hạng mục 3e)                   */
+/* ------------------------------------------------------------------ */
+
+/** Làm sạch danh sách bộ phận gửi lên: bỏ dòng trống, thời hạn phải > 0. */
+export function normWarrantyParts(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((x) => ({
+      name: String(x?.name ?? '').trim(),
+      duration: Math.round(Number(x?.duration) || 0),
+      unit: x?.unit === 'day' ? 'day' : 'month',
+    }))
+    .filter((x) => x.name && x.duration > 0)
+    .slice(0, 12);
+}
+
+/** Số tháng bảo hành chung đủ phủ bộ phận lâu nhất (7 ngày vẫn tính 1 tháng). */
+export function monthsCovering(parts) {
+  return parts.reduce((m, p) => Math.max(m, p.unit === 'day' ? Math.ceil(p.duration / 30) : p.duration), 0);
+}
+
+/** Hạn bảo hành của một bộ phận, tính từ ngày bán. */
+export function partUntil(fromTs, duration, unit) {
+  return get(`SELECT date(COALESCE(?, datetime('now','localtime')), '+' || ? || ?) AS d`,
+    [fromTs || null, Math.max(0, Math.round(Number(duration) || 0)), unit === 'day' ? ' days' : ' months']).d;
+}
+
+/* ------------------------------------------------------------------ */
 /* Kho: ghi biến động tồn + cập nhật tồn hiện tại                      */
 /* ------------------------------------------------------------------ */
 
@@ -950,8 +1150,10 @@ export const saleOwedSql = (a = 's') => `MAX(0, CASE
  * nghìn lấy món 500 nghìn thì nợ bị ghi thấp đi 300 nghìn so với thật.
  * Công thức này sửa luôn cả các phiếu đổi hàng cũ.
  */
+/* Hoàn vào lương nhân viên (plan 28): hoá đơn gốc trả bằng lương, khách chưa từng
+   nợ đồng nào — hoàn lại vào sổ lương, không được trừ vào nợ của khách. */
 export const returnCreditSql = (a = 'sr') => `(CASE
-    WHEN ${a}.refund_method = 'voucher' THEN 0
+    WHEN ${a}.refund_method IN ('voucher', 'salary') THEN 0
     WHEN ${a}.exchange_sale_id IS NOT NULL THEN ${a}.debt_offset
     ELSE ${a}.total - ${a}.refunded
   END)`;
@@ -976,10 +1178,23 @@ export function customerDebt(customerId) {
      WHERE partner_type = 'customer' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [customerId]
   ).d;
-  return c.opening_debt + s - r - paid;
+  return c.opening_debt + s - r - paid + debtAdjustTotal('customer', customerId);
 }
 
-/** Công nợ nhà cung cấp = nợ đầu kỳ + (nhập chưa trả) - (trả hàng chưa nhận) - (đã trả nợ). */
+/** Tổng các phiếu điều chỉnh công nợ (plan 31, 6c) — âm là giảm nợ. */
+export function debtAdjustTotal(type, partnerId) {
+  return get(`SELECT COALESCE(SUM(amount), 0) AS d FROM debt_adjustments
+              WHERE partner_type = ? AND partner_id = ?`, [type, partnerId]).d;
+}
+
+/**
+ * Công nợ nhà cung cấp = nợ đầu kỳ + (nhập chưa trả) − (trả hàng NCC ĐÃ NHẬN, trừ phần NCC đã
+ * hoàn tiền mặt) − (đã trả nợ).
+ *
+ * Phiếu trả NCC chưa nhận hàng thì chưa trừ nợ (chủ tiệm chốt, plan 31 đợt 5). Tiền NCC
+ * hoàn chỉ ghi được sau khi NCC đã nhận, nên nhánh "chưa nhận mà có hoàn tiền" chỉ để
+ * sổ vẫn cân nếu dữ liệu cũ lỡ có.
+ */
 export function supplierDebt(supplierId) {
   const s = get('SELECT opening_debt FROM suppliers WHERE id = ?', [supplierId]);
   if (!s) return 0;
@@ -989,7 +1204,8 @@ export function supplierDebt(supplierId) {
     [supplierId]
   ).d;
   const r = get(
-    `SELECT COALESCE(SUM(total - refunded), 0) AS d FROM purchase_returns WHERE supplier_id = ?`,
+    `SELECT COALESCE(SUM(CASE WHEN received_at IS NOT NULL THEN total - refunded ELSE -refunded END), 0) AS d
+     FROM purchase_returns WHERE supplier_id = ?`,
     [supplierId]
   ).d;
   const paid = get(
@@ -1000,7 +1216,7 @@ export function supplierDebt(supplierId) {
      WHERE partner_type = 'supplier' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [supplierId]
   ).d;
-  return s.opening_debt + p - r - paid;
+  return s.opening_debt + p - r - paid + debtAdjustTotal('supplier', supplierId);
 }
 
 /* ------------------------------------------------------------------ */

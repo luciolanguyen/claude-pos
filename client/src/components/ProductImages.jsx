@@ -12,7 +12,8 @@ import {
   ImagePlus, Star, Trash2, ImageOff, ChevronLeft, ChevronRight, Image as ImageIcon, Info,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { money, n, qty as fq } from '../lib/format';
+import { useApp } from '../lib/store';
+import { money, n, qty as fq, date, blindCode } from '../lib/format';
 import { Button, IconButton, Modal, Spinner, Badge } from './ui';
 
 export const MAX_IMAGES = 4;
@@ -259,7 +260,11 @@ export function TileImageButton({ product, onOpen }) {
 }
 
 /** Hộp chi tiết: bên trái trình chiếu ảnh, bên phải bảng mô tả. */
-export function ProductInfoModal({ product, onClose, priceListId }) {
+/**
+ * @param blindKeys  mã hoá giá vốn đang bật ở màn hình bán hàng (tài liệu 24, phần 4)
+ */
+export function ProductInfoModal({ product, onClose, priceListId, blindKeys = null }) {
+  const { meta, can } = useApp();
   const [i, setI] = useState(0);
   const imgs = product?.images || [];
 
@@ -277,8 +282,23 @@ export function ProductInfoModal({ product, onClose, priceListId }) {
 
   if (!product) return null;
 
-  const unit = product.units?.find((u) => u.factor === 1) || product.units?.[0];
-  const price = Number(unit?.prices?.[priceListId] ?? Object.values(unit?.prices || {})[0]) || 0;
+  /* Giá của một đơn vị theo từng bảng giá. Màn hình bán hàng gửi sẵn
+     unit.prices; trang Hàng hoá gửi product.prices dạng danh sách. */
+  const pricesOf = (u) => {
+    if (u?.prices && !Array.isArray(u.prices)) return u.prices;
+    const m = {};
+    for (const pr of product.prices || []) if (pr.unit_id === u?.id) m[pr.price_list_id] = pr.price;
+    return m;
+  };
+  const units = (product.units || []).filter((u) => u.active !== 0);
+  const unit = units.find((u) => u.factor === 1) || units[0];
+  const price = Number(pricesOf(unit)?.[priceListId] ?? Object.values(pricesOf(unit) || {})[0]) || 0;
+  const lists = (meta?.priceLists || []).filter((pl) => units.some((u) => pricesOf(u)[pl.id] !== undefined));
+  /* Giá vốn / giá nhập: chỉ người xem được giá vốn, và chỉ khi máy chủ có gửi */
+  const seeCost = can?.('cost.view') && product.cost_price !== undefined;
+  const costText = (v, key) => (blindKeys
+    ? <b className="font-mono tracking-wider">{blindCode(v, blindKeys[key])}</b>
+    : money(v));
   const rows = [
     ['Mã hàng', product.sku],
     ['Nhóm hàng', product.category_name],
@@ -389,24 +409,70 @@ export function ProductInfoModal({ product, onClose, priceListId }) {
             </div>
           )}
 
-          {product.units?.length > 1 && (
+          {/* Mọi loại giá cùng một chỗ (plan 31, hạng mục 1.4a): giá theo
+              từng bảng giá × từng đơn vị tính, nấc giá sỉ theo số lượng, và
+              giá vốn / giá nhập gần nhất kèm ngày cập nhật cho người có quyền. */}
+          {units.length > 0 && lists.length > 0 && (
             <div>
-              <h3 className="text-[13px] font-bold mb-1">Các đơn vị bán</h3>
-              <ul className="text-[13px] space-y-0.5">
-                {product.units.map((u) => (
-                  <li key={u.id} className="flex items-baseline justify-between gap-2">
-                    <span>
-                      {u.unit_name}
-                      {u.factor > 1 && (
-                        <span className="text-2xs text-muted-ink"> = {fq(u.factor)} {product.base_unit}</span>
-                      )}
-                    </span>
-                    <span className="tabular font-semibold">
-                      {money(Number(u.prices?.[priceListId] ?? Object.values(u.prices || {})[0]) || 0)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <h3 className="text-[13px] font-bold mb-1">Bảng giá</h3>
+              <div className="table-wrap">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Đơn vị</th>
+                      {lists.map((pl) => (
+                        <th key={pl.id} className={`text-right ${pl.id === priceListId ? 'text-accent' : ''}`}>{pl.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {units.map((u) => {
+                      const pm = pricesOf(u);
+                      return (
+                        <tr key={u.id}>
+                          <td>
+                            <div className="font-medium">{u.unit_name}</div>
+                            {u.factor > 1 && <div className="text-2xs text-muted-ink">= {fq(u.factor)} {product.base_unit}</div>}
+                            {u.tiers?.length > 0 && (
+                              <div className="text-2xs text-violet-800 mt-0.5">
+                                Nấc sỉ: {u.tiers.map((t) => `từ ${fq(t.min_qty)} → ${n(t.price)}`).join(' · ')}
+                              </div>
+                            )}
+                          </td>
+                          {lists.map((pl) => (
+                            <td key={pl.id} className={`num ${pl.id === priceListId ? 'font-bold text-accent' : ''}`}>
+                              {pm[pl.id] !== undefined ? money(pm[pl.id]) : '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {seeCost && (
+            <div className="rounded border border-amber-200 bg-amber-50/60 p-2 text-[13px] space-y-0.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-muted-ink">Giá vốn / {product.base_unit}</span>
+                <span className="tabular font-semibold">{costText(product.cost_price, 'cost')}</span>
+              </div>
+              {product.cost_updated_at && (
+                <div className="text-2xs text-muted-ink text-right">cập nhật {date(product.cost_updated_at)}</div>
+              )}
+              {product.last_purchase_price > 0 && (
+                <>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-muted-ink">Giá nhập gần nhất / {product.base_unit}</span>
+                    <span className="tabular font-semibold">{costText(product.last_purchase_price, 'purchase')}</span>
+                  </div>
+                  {product.last_purchase_at && (
+                    <div className="text-2xs text-muted-ink text-right">nhập ngày {date(product.last_purchase_at)}</div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

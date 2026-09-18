@@ -107,10 +107,17 @@ export const REFUND_METHODS = [
  * Tiệm trả lại khách bằng cách nào. Phiếu đổi hàng và cấn trừ nợ không
  * đụng tới két — ca đông khách mà hoàn tiền mặt liên tục là cuối ca hụt quỹ.
  */
-export function RefundMethodPicker({ value, onChange, hasCustomer, name = 'refund-method' }) {
+export function RefundMethodPicker({ value, onChange, hasCustomer, name = 'refund-method', salary = null }) {
+  /* Hoá đơn gốc trừ vào lương nhân viên (plan 28): hoàn lại vào lương, không chi tiền */
+  const methods = salary
+    ? [...REFUND_METHODS, {
+      key: 'salary', label: `Hoàn vào lương ${salary.name || 'nhân viên'}`,
+      hint: `Hoá đơn trả bằng lương — cộng lại vào lương, tối đa ${salary.max.toLocaleString('vi-VN')} đ`,
+    }]
+    : REFUND_METHODS;
   return (
     <div className="grid gap-1.5 sm:grid-cols-2" role="radiogroup" aria-label="Trả lại khách bằng cách nào">
-      {REFUND_METHODS.map((m) => {
+      {methods.map((m) => {
         const off = m.needsCustomer && !hasCustomer;
         const on = value === m.key;
         return (

@@ -216,6 +216,7 @@ function ticketDetail(id) {
   t.custom_parts = all('SELECT * FROM warranty_custom_parts WHERE ticket_id = ? ORDER BY id', [t.id]);
   t.fees = all('SELECT * FROM warranty_fees WHERE ticket_id = ? ORDER BY id', [t.id]);
   t.totals = totalsOf(t);
+  t.batch = t.batch_id ? batchInfo(t.batch_id) : null;
   t.support_discount_total = t.parts.reduce((a, p) => a + p.support_discount, 0);
 
   /* Máy này từng vào tiệm mấy lần — chống bảo hành vòng lặp */
@@ -229,24 +230,60 @@ function ticketDetail(id) {
   return t;
 }
 
+/**
+ * Phiếu tiếp nhận gom nhiều món (plan 31, 3a): đầu phiếu và tình trạng từng
+ * món. Phiếu gom chỉ "xong" khi mọi món đã trả khách hoặc đã huỷ — trả được
+ * món nào thì trả món đó, món còn đang sửa thì phiếu vẫn mở.
+ */
+function batchInfo(batchId) {
+  const b = get(`
+    SELECT wb.*, COALESCE(c.name, wb.customer_name) AS customer_display,
+           COALESCE(c.phone, wb.customer_phone) AS phone_display,
+           c.address AS customer_address, u.full_name AS received_by_name
+    FROM warranty_batches wb
+    LEFT JOIN customers c ON c.id = wb.customer_id
+    LEFT JOIN users u ON u.id = wb.received_by
+    WHERE wb.id = ?`, [batchId]);
+  if (!b) return null;
+  b.items = all(`
+    SELECT id, code, product_name, serial, qty, status, ticket_type, resolution,
+           component_name, promised_at, delivered_at
+    FROM warranty_tickets WHERE batch_id = ? ORDER BY id`, [b.id]);
+  b.count = b.items.length;
+  b.open_count = b.items.filter((x) => !['delivered', 'cancelled'].includes(x.status)).length;
+  b.closed = b.count > 0 && b.open_count === 0;
+  return b;
+}
+
 /* ==================================================================== */
 /* Danh sách và chi tiết phiếu                                           */
 /* ==================================================================== */
 
 r.get('/warranty', (req, res) => {
-  const { q = '', status, resolution, from, to, open_only, type } = req.query;
+  const { q = '', status, resolution, from, to, open_only, type, batch_id: batchId } = req.query;
   const where = [];
   const params = [];
   if (q.trim()) {
     /* Số máy (serial) là chỗ hay cần tìm chính xác nhất: gõ "12" kiểu có
        chứa thì ra mọi máy có số 12 ở giữa (tài liệu 13, mục 2.1) */
+    /* Gõ số phiếu gom (TN…) là ra đủ các món của lần tiếp nhận đó */
     const c = searchWhere(
-      ['t.code', 't.product_name', 't.serial', 't.customer_name', 't.customer_phone', 'c.name'],
+      ['t.code', 't.product_name', 't.serial', 't.customer_name', 't.customer_phone', 'c.name', 'wb.code'],
       q, req.query.match);
-    where.push(c.sql);
-    params.push(...c.params);
+    /* Tem dán máy in mã vạch chỉ phần số của số phiếu (BH260917-0001 →
+       2609170001) cho vạch đủ nét trên tem nhỏ 35×22 mm. Quét vào ô tìm thì
+       đổi lại đúng số phiếu. Số điện thoại luôn bắt đầu bằng 0 nên không lẫn. */
+    const scan = String(q).trim().match(/^([1-9]\d{5})(\d{4})$/);
+    if (scan) {
+      where.push(`(${c.sql} OR t.code = ?)`);
+      params.push(...c.params, `BH${scan[1]}-${scan[2]}`);
+    } else {
+      where.push(c.sql);
+      params.push(...c.params);
+    }
   }
   if (status) { where.push('t.status = ?'); params.push(status); }
+  if (batchId) { where.push('t.batch_id = ?'); params.push(batchId); }
   if (resolution) { where.push('t.resolution = ?'); params.push(resolution); }
   if (type === 'warranty' || type === 'repair') { where.push('t.ticket_type = ?'); params.push(type); }
   if (from) { where.push('date(t.ts) >= date(?)'); params.push(from); }
@@ -263,6 +300,7 @@ r.get('/warranty', (req, res) => {
     LEFT JOIN suppliers s ON s.id = t.supplier_id
     LEFT JOIN users u ON u.id = t.received_by
     LEFT JOIN sales sa ON sa.id = t.sale_id
+    LEFT JOIN warranty_batches wb ON wb.id = t.batch_id
     ${w}`, params).n;
 
   const rows = all(`
@@ -272,12 +310,17 @@ r.get('/warranty', (req, res) => {
            s.name AS supplier_name, u.full_name AS received_by_name,
            sa.code AS sale_code,
            (SELECT COUNT(*) FROM warranty_photos p WHERE p.ticket_id = t.id) AS photo_count,
-           CAST(julianday('now','localtime') - julianday(t.ts) AS INTEGER) AS days_open
+           CAST(julianday('now','localtime') - julianday(t.ts) AS INTEGER) AS days_open,
+           wb.code AS batch_code,
+           (SELECT COUNT(*) FROM warranty_tickets x WHERE x.batch_id = t.batch_id) AS batch_count,
+           (SELECT COUNT(*) FROM warranty_tickets x WHERE x.batch_id = t.batch_id
+               AND x.status NOT IN ('delivered','cancelled')) AS batch_open
     FROM warranty_tickets t
     LEFT JOIN customers c ON c.id = t.customer_id
     LEFT JOIN suppliers s ON s.id = t.supplier_id
     LEFT JOIN users u ON u.id = t.received_by
     LEFT JOIN sales sa ON sa.id = t.sale_id
+    LEFT JOIN warranty_batches wb ON wb.id = t.batch_id
     ${w}
     ORDER BY t.id DESC LIMIT ${size} OFFSET ${offset}`, params);
   res.json({ rows, total, page, page_size: size });
@@ -298,6 +341,14 @@ r.get('/warranty/:id', (req, res) => {
   const t = ticketDetail(req.params.id);
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu bảo hành' });
   res.json(t);
+});
+
+/** Phiếu tiếp nhận gom: đầu phiếu + chi tiết đủ từng món — để in chung biên nhận và tem. */
+r.get('/warranty-batches/:id', (req, res) => {
+  const b = batchInfo(req.params.id);
+  if (!b) return res.status(404).json({ error: 'Không tìm thấy phiếu tiếp nhận' });
+  b.tickets = b.items.map((x) => ticketDetail(x.id));
+  res.json(b);
 });
 
 /* ==================================================================== */
@@ -366,6 +417,24 @@ r.get('/warranty-lookup', (req, res) => {
            OR t.exchange_serial LIKE ? OR c.name LIKE ? OR t.customer_name LIKE ? OR ep.name LIKE ?)
     ORDER BY t.id DESC LIMIT 100`, [like, like, like, like, like, like, like, like]);
 
+  /* Hạn từng bộ phận đã chốt lúc bán (plan 31, 3e) */
+  const ids = sold.map((x) => x.item_id);
+  const partsBy = new Map();
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    for (const p of all(`
+      SELECT sale_item_id, name, duration, unit, until,
+             CASE WHEN date(until) >= date('now','localtime') THEN 1 ELSE 0 END AS in_warranty,
+             CAST(julianday(until) - julianday('now','localtime') AS INTEGER) AS days_left
+      FROM sale_item_warranty_parts WHERE sale_item_id IN (${chunk.map(() => '?').join(',')})
+      ORDER BY id`, chunk)) {
+      if (!partsBy.has(p.sale_item_id)) partsBy.set(p.sale_item_id, []);
+      partsBy.get(p.sale_item_id).push(p);
+    }
+  }
+  for (const row of sold) row.warranty_parts = partsBy.get(row.item_id) || [];
+  for (const row of exchanged) row.warranty_parts = [];
+
   res.json([...exchanged, ...sold]);
 });
 
@@ -385,7 +454,7 @@ r.get('/warranty-history', (req, res) => {
   if (!where.length) return res.status(400).json({ error: 'Cần hoá đơn, khách hàng hoặc serial để tra lịch sử.' });
 
   const tickets = all(`
-    SELECT t.id, t.code, t.ts, t.ticket_type, t.status, t.resolution, t.product_name, t.serial,
+    SELECT t.id, t.code, t.ts, t.ticket_type, t.status, t.resolution, t.product_name, t.serial, t.component_name,
            t.issue, t.condition_note, t.delivered_at, t.labor_fee, t.fees_total, t.discount, t.charge,
            t.in_warranty, t.exchange_mode, t.exchange_warranty_until, t.exchange_serial,
            ep.name AS exchange_product_name, sa.code AS sale_code,
@@ -414,10 +483,68 @@ r.get('/warranty-history', (req, res) => {
 /* Lập phiếu tiếp nhận                                                   */
 /* ==================================================================== */
 
+/**
+ * Ghi một món tiếp nhận. Khách, người nhận, phiếu gom do chỗ gọi truyền vào.
+ * @param head  phần chung của lần tiếp nhận: khách, người nhận, ngày, hẹn trả, KTV
+ * @param it    phần riêng của món: hàng, serial, lỗi, tình trạng, hạn bảo hành, ảnh
+ */
+function insertTicket(head, it, batchId) {
+  const code = nextCode('warranty_tickets', 'BH');
+  const type = normType(it.ticket_type);
+  const info = run(`
+    INSERT INTO warranty_tickets
+      (code, ts, customer_id, customer_name, customer_phone, sale_id, product_id,
+       product_name, serial, qty, issue, condition_note, accessories,
+       in_warranty, warranty_until, status, promised_at, received_by, note,
+       ticket_type, technician_id, batch_id, component_name)
+    VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, ?, ?, ?)`,
+    [code, head.ts || null, head.customer_id || null,
+      head.customer_name?.trim() || null, head.customer_phone?.trim() || null,
+      it.sale_id || null, it.product_id || null, String(it.product_name).trim(),
+      it.serial?.trim() || null, Number(it.qty) || 1,
+      it.issue?.trim() || null, it.condition_note?.trim() || null,
+      it.accessories?.trim() || null,
+      it.in_warranty ? 1 : 0, it.warranty_until || null,
+      (it.promised_at ?? head.promised_at) || null, head.received_by || null, it.note?.trim() || null,
+      type, Number(it.technician_id ?? head.technician_id) || null,
+      batchId || null, String(it.component_name ?? '').trim() || null]);
+  const id = Number(info.lastInsertRowid);
+
+  run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
+    [id, 'received', head.received_by || null,
+      type === 'repair' ? 'Tiếp nhận sửa chữa dịch vụ' : 'Tiếp nhận bảo hành']);
+
+  // Ảnh chụp lúc nhận — bằng chứng tình trạng máy
+  for (const ph of (Array.isArray(it.photos) ? it.photos : []).slice(0, 12)) {
+    const file = savePhoto(ph.data ?? ph, id);
+    if (file) {
+      run('INSERT INTO warranty_photos(ticket_id, kind, file, caption) VALUES(?, ?, ?, ?)',
+        [id, 'received', file, ph.caption || null]);
+    }
+  }
+  return { id, code, ticket_type: type, product_name: String(it.product_name).trim() };
+}
+
+/**
+ * Lập phiếu tiếp nhận.
+ *
+ * Gửi `items: [...]` để nhận nhiều món cùng lúc (plan 31, 3a): từ hai món trở
+ * lên thì sinh một phiếu gom TN… và mỗi món một phiếu BH… riêng — mỗi món vẫn
+ * tự đi luồng sửa, tính tiền và trả khách. Không gửi `items` thì như bản cũ:
+ * thân yêu cầu chính là một món.
+ */
 r.post('/warranty', (req, res) => {
   const b = req.body;
-  if (!String(b.product_name || '').trim()) {
-    return res.status(400).json({ error: 'Bắt buộc ghi tên hàng khách mang tới.' });
+  const items = Array.isArray(b.items) ? b.items : [b];
+  if (!items.length) return res.status(400).json({ error: 'Phiếu tiếp nhận phải có ít nhất một món.' });
+  const unnamed = items.findIndex((it) => !String(it?.product_name || '').trim());
+  if (unnamed >= 0) {
+    return res.status(400).json({
+      error: items.length > 1
+        ? `Món thứ ${unnamed + 1} chưa ghi tên hàng khách mang tới.`
+        : 'Bắt buộc ghi tên hàng khách mang tới.',
+      code: 'PRODUCT_NAME_REQUIRED',
+    });
   }
   if (!b.customer_id && !String(b.customer_name || '').trim() && !String(b.customer_phone || '').trim()) {
     return res.status(400).json({ error: 'Ghi ít nhất tên hoặc số điện thoại của khách để còn gọi khi xong.' });
@@ -425,39 +552,21 @@ r.post('/warranty', (req, res) => {
 
   try {
     const result = tx(() => {
-      const code = nextCode('warranty_tickets', 'BH');
-      const type = normType(b.ticket_type);
-      const info = run(`
-        INSERT INTO warranty_tickets
-          (code, ts, customer_id, customer_name, customer_phone, sale_id, product_id,
-           product_name, serial, qty, issue, condition_note, accessories,
-           in_warranty, warranty_until, status, promised_at, received_by, note,
-           ticket_type, technician_id)
-        VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, ?)`,
-        [code, b.ts || null, b.customer_id || null,
-          b.customer_name?.trim() || null, b.customer_phone?.trim() || null,
-          b.sale_id || null, b.product_id || null, b.product_name.trim(),
-          b.serial?.trim() || null, Number(b.qty) || 1,
-          b.issue?.trim() || null, b.condition_note?.trim() || null,
-          b.accessories?.trim() || null,
-          b.in_warranty ? 1 : 0, b.warranty_until || null,
-          b.promised_at || null, b.received_by || null, b.note?.trim() || null,
-          type, Number(b.technician_id) || null]);
-      const id = Number(info.lastInsertRowid);
-
-      run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
-        [id, 'received', b.received_by || null,
-          type === 'repair' ? 'Tiếp nhận sửa chữa dịch vụ' : 'Tiếp nhận bảo hành']);
-
-      // Ảnh chụp lúc nhận — bằng chứng tình trạng máy
-      for (const ph of (Array.isArray(b.photos) ? b.photos : []).slice(0, 12)) {
-        const file = savePhoto(ph.data ?? ph, id);
-        if (file) {
-          run('INSERT INTO warranty_photos(ticket_id, kind, file, caption) VALUES(?, ?, ?, ?)',
-            [id, 'received', file, ph.caption || null]);
-        }
+      let batch = null;
+      if (items.length > 1) {
+        const code = nextCode('warranty_batches', 'TN');
+        const info = run(`
+          INSERT INTO warranty_batches(code, ts, customer_id, customer_name, customer_phone, received_by, note)
+          VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?)`,
+          [code, b.ts || null, b.customer_id || null, b.customer_name?.trim() || null,
+            b.customer_phone?.trim() || null, b.received_by || null, b.batch_note?.trim() || null]);
+        batch = { id: Number(info.lastInsertRowid), code };
       }
-      return { id, code, ticket_type: type };
+      const tickets = items.map((it) => insertTicket(b, it, batch?.id));
+      return {
+        id: tickets[0].id, code: tickets[0].code, ticket_type: tickets[0].ticket_type,
+        batch_id: batch?.id || null, batch_code: batch?.code || null, tickets,
+      };
     });
     res.json(result);
   } catch (e) {
@@ -474,7 +583,8 @@ r.put('/warranty/:id', (req, res) => {
          customer_id = ?, customer_name = ?, customer_phone = ?,
          product_name = ?, serial = ?, qty = ?, issue = ?, condition_note = ?,
          accessories = ?, in_warranty = ?, warranty_until = ?, promised_at = ?, note = ?,
-         ticket_type = ?, technician_id = ?
+         ticket_type = ?, technician_id = ?,
+         component_name = CASE WHEN ? = 1 THEN ? ELSE component_name END
        WHERE id = ?`,
     [b.customer_id || null, b.customer_name?.trim() || null, b.customer_phone?.trim() || null,
       b.product_name ?? t.product_name, b.serial?.trim() || null, Number(b.qty) || 1,
@@ -483,7 +593,17 @@ r.put('/warranty/:id', (req, res) => {
       b.note?.trim() || null,
       b.ticket_type === undefined ? t.ticket_type : normType(b.ticket_type),
       b.technician_id === undefined ? t.technician_id : (Number(b.technician_id) || null),
+      b.component_name === undefined ? 0 : 1, String(b.component_name ?? '').trim() || null,
       t.id]);
+  /* Các món cùng một lần tiếp nhận là của cùng một khách: sửa khách ở một
+     món thì cả phiếu gom đổi theo, kẻo biên nhận in chung ra hai tên */
+  if (t.batch_id) {
+    const cust = [b.customer_id || null, b.customer_name?.trim() || null, b.customer_phone?.trim() || null];
+    run('UPDATE warranty_tickets SET customer_id = ?, customer_name = ?, customer_phone = ? WHERE batch_id = ? AND id <> ?',
+      [...cust, t.batch_id, t.id]);
+    run('UPDATE warranty_batches SET customer_id = ?, customer_name = ?, customer_phone = ? WHERE id = ?',
+      [...cust, t.batch_id]);
+  }
   res.json({ ok: true });
 });
 

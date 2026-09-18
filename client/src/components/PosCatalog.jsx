@@ -17,7 +17,9 @@
    cũ vẽ hai nghìn ô là khựng. Vẽ trước một khúc, cuộn gần tới đâu vẽ thêm.
    ==================================================================== */
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronRight, ChevronLeft, X, FolderTree, RotateCcw } from 'lucide-react';
+import {
+  ChevronRight, ChevronLeft, X, FolderTree, RotateCcw, ArrowDownUp,
+} from 'lucide-react';
 import { n, match } from '../lib/format';
 import { SearchInput } from './ui';
 import { categoryBranch } from './CategoryTree';
@@ -254,6 +256,105 @@ export function CategoryDrawer({
  *
  * Thanh này giờ chỉ mang mấy công tắc của lưới và số đếm mặt hàng.
  */
+/* ==================================================================== *
+ * BẢNG SẮP XẾP LƯỚI HÀNG (plan 31, mục 3.2)
+ *
+ * Lưới có bốn quy tắc xếp thứ tự. Mỗi quy tắc một nút riêng thì thanh công
+ * cụ thành một hàng công tắc và người đứng quầy không đoán nổi bật cái nào
+ * ra kết quả gì. Gộp vào MỘT nút mở ra bảng nhỏ, kèm một dòng nói đang áp
+ * dụng những gì.
+ *
+ * Quy tắc "món khách gọi bằng tên riêng" CỐ Ý không có công tắc: nó chỉ bật
+ * khi khách đó có ghi chú riêng, và đó đúng là lúc nó hữu ích nhất.
+ * ==================================================================== */
+export function GridSortPanel({
+  boughtTop, onBoughtTop, cartTop, onCartTop, pinOn, onPinOn, pinnedCount = 0,
+  hideUntilSearch, onHideUntilSearch, hasCustomer = false,
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  /* Bấm ra ngoài hoặc Esc thì thu bảng lại */
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+
+  /* Một dòng tóm tắt, để nhìn nút là biết lưới đang xếp kiểu gì */
+  const parts = [];
+  if (boughtTop && hasCustomer) parts.push('khách hay mua');
+  if (cartTop) parts.push('đang trong giỏ');
+  if (pinOn && pinnedCount > 0) parts.push(`hàng ghim (${n(pinnedCount)})`);
+  const summary = parts.length ? `Lên trước: ${parts.join(' · ')}` : 'Xếp theo tên hàng';
+
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={summary}
+        className={`h-8 px-2 rounded border text-2xs font-semibold inline-flex items-center gap-1
+                    cursor-pointer transition-colors duration-100
+                    ${open ? 'bg-accent-soft border-accent text-emerald-900'
+                           : 'bg-card border-line text-muted-ink hover:text-ink'}`}
+      >
+        <ArrowDownUp size={12} aria-hidden="true" />
+        Sắp xếp lưới
+        {parts.length > 0 && <span className="tabular">({n(parts.length)})</span>}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-30 w-72 rounded border border-line
+                        bg-card shadow-lg overflow-hidden">
+          <div className="px-2.5 py-1.5 border-b border-line text-2xs font-bold text-muted-ink">
+            Món nào lên đầu lưới
+          </div>
+          <Row
+            on={boughtTop}
+            onChange={onBoughtTop}
+            disabled={!hasCustomer}
+            label="Món khách này hay mua lên trước"
+            hint={hasCustomer ? null : 'Chọn khách hàng trước thì mới dùng được'}
+          />
+          <Row
+            on={cartTop}
+            onChange={onCartTop}
+            label="Món đang trong giỏ lên trước"
+            hint="Thợ nhìn ngay lên đầu để đối chiếu thông số rồi đi cắt hàng"
+          />
+          <Row
+            on={pinOn}
+            onChange={onPinOn}
+            disabled={pinnedCount === 0}
+            label={`Hàng ghim theo mùa lên trước${pinnedCount ? ` (${n(pinnedCount)})` : ''}`}
+            hint={pinnedCount ? null : 'Chưa ghim món nào — ghim ở Thiết lập'}
+          />
+          <div className="border-t border-line">
+            <Row
+              on={hideUntilSearch}
+              onChange={onHideUntilSearch}
+              label="Ẩn lưới, chỉ hiện khi tìm kiếm"
+              hint="Quầy quen gõ tìm hoặc quét mã thì lưới hàng chỉ tổ chật màn hình"
+            />
+          </div>
+          <p className="px-2.5 py-1.5 border-t border-line text-2xs text-muted-ink">
+            {summary}. Mỗi máy đứng quầy nhớ riêng cài đặt này.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GridToolbar({ shown, total, filtering = false, extra = null }) {
   return (
     <div className="px-3 py-2 border-b border-line bg-card shrink-0 flex items-center gap-1.5">
@@ -308,5 +409,26 @@ export function LazyGrid({ items, renderItem, rootRef, resetKey, step = 60, clas
         </div>
       )}
     </>
+  );
+}
+
+/* Một dòng tích chọn của bảng "Sắp xếp lưới". Khai ngoài thân component cha (BRD mục 8):
+   khai bên trong thì mỗi lần vẽ lại là React thay cả khối, ô tích mất con trỏ. */
+function Row({ on, onChange, label, hint, disabled = false }) {
+  return (
+    <label className={`flex items-start gap-2 px-2.5 py-1.5 text-[13px]
+                       ${disabled ? 'opacity-55' : 'cursor-pointer hover:bg-muted/60'}`}>
+      <input
+        type="checkbox"
+        className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5 shrink-0"
+        checked={on}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="min-w-0">
+        {label}
+        {hint && <span className="block text-2xs text-muted-ink leading-snug">{hint}</span>}
+      </span>
+    </label>
   );
 }

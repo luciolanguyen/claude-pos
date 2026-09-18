@@ -286,6 +286,7 @@ const KIND = {
   receipt: 'Phiếu thu nợ',
   refund: 'Phiếu chi trả lại',
   return_offset: 'Trả hàng cấn trừ',
+  adjustment: 'Điều chỉnh công nợ',
 };
 
 /**
@@ -355,7 +356,7 @@ function DebtLedgerModal({ customerId, onBack, onClose, onDone }) {
 
   const rows = (L?.rows || []).filter((r) => view === 'all'
     || (view === 'debt' && r.kind === 'debt_invoice')
-    || (view === 'money' && ['receipt', 'refund', 'return_offset'].includes(r.kind)));
+    || (view === 'money' && ['receipt', 'refund', 'return_offset', 'adjustment'].includes(r.kind)));
   const maxDays = L?.max_debt_days || 0;
 
   const submit = async () => {
@@ -486,6 +487,14 @@ function DebtLedgerModal({ customerId, onBack, onClose, onDone }) {
                                   <>
                                     <span className="font-bold text-emerald-700 tabular">Trừ nợ +{money(r.amount)}</span>
                                     {r.sale_code && <div className="text-2xs text-muted-ink">hàng của {r.sale_code}</div>}
+                                  </>
+                                )}
+                                {r.kind === 'adjustment' && (
+                                  <>
+                                    <span className={`font-bold tabular ${r.amount > 0 ? 'text-warn' : 'text-emerald-700'}`}>
+                                      {money(r.debt_before)} → {money(r.debt_after)}
+                                    </span>
+                                    <div className="text-2xs text-muted-ink">{r.reason}{r.approved_by_name ? ` · duyệt ${r.approved_by_name}` : ''}</div>
                                   </>
                                 )}
                               </td>

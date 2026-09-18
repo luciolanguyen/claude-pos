@@ -12,7 +12,7 @@ import { useApp, useFetch, usePaged, useDebounced, fetchAllPages } from '../lib/
 import { money, n, short, datetime, date, range, RANGES, CASH_LABEL, match, matchCustomer } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo, Pager,
+  Confirm, Field, MoneyInput, Textarea, Stat, Input, Combo, Pager, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CashVoucherPrint from '../components/CashVoucherPrint';
@@ -209,7 +209,9 @@ export default function Cash() {
             Sổ quỹ
             {txData?.rows && <span className="text-muted-ink font-normal ml-1.5">({n(rowCount)} phiếu)</span>}
           </h2>
-          <Button size="sm" icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
+          <PermGate perm="data.export">
+            <Button size="sm" icon={Download} onClick={exportCsv} disabled={!rowCount}>Xuất Excel</Button>
+          </PermGate>
         </div>
 
         {busy && !txData ? <Spinner />

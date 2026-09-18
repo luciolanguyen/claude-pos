@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Undo2, Eye, Plus, Trash2, AlertTriangle, PackagePlus, FileSearch, ArrowLeftRight, Wallet, Banknote,
+  ArrowLeft, Check, Truck, PackageCheck,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, range, RANGES, match } from '../lib/format';
 import {
   Button, IconButton, Select, Modal, Spinner, Empty, ErrorBox, Badge, Stat,
-  Field, MoneyInput, Textarea, Combo, QtyInput, Pager, Input, SearchInput,
+  Field, MoneyInput, Textarea, Combo, QtyInput, Pager, Input, SearchInput, Confirm,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import SaveDraftButton, { OpenDraftsButton } from '../components/DraftButtons';
@@ -111,25 +112,77 @@ export function SaleReturns() {
 /* Trả hàng nhà cung cấp — danh sách + form lập phiếu (tài liệu 11)      */
 /* ==================================================================== */
 
+/* Trạng thái phiếu trả NCC (plan 31, 5.2d) — màu nhãn */
+const RSTATUS_TONE = {
+  draft: 'mute', sent: 'warn', offset: 'ok', awaiting_refund: 'info', refunded: 'ok',
+};
+/* Lọc việc còn tồn đọng thì xem hết mọi ngày: phiếu gửi đã lâu mà NCC
+   chưa nhận chính là phiếu dễ bị quên nhất */
+const RSTATUS_OPEN = new Set(['pending', 'draft', 'sent', 'awaiting_refund', 'issue']);
+const RSTATUS_FILTER = [
+  ['', 'Mọi trạng thái'],
+  ['pending', 'Chưa được NCC nhận'],
+  ['draft', 'Chưa gửi hàng'],
+  ['sent', 'Đã gửi, chờ NCC nhận'],
+  ['awaiting_refund', 'Chờ NCC hoàn tiền'],
+  ['issue', 'Có trục trặc'],
+  ['offset', 'Đã cấn trừ công nợ'],
+  ['refunded', 'Đã hoàn tiền'],
+];
+
+/**
+ * Trả hàng nhà cung cấp — hai khung (plan 31, hạng mục 5.2b): bấm một phiếu
+ * bên trái, chi tiết và các bước xử lý hiện ngay bên phải.
+ */
 export function PurchaseReturns() {
   const { toast } = useApp();
   const [rangeKey, setRangeKey] = useState('day30');
-  const r = useMemo(() => range(rangeKey), [rangeKey]);
+  /* Lọc nâng cao (plan 31, hạng mục 5.2a): ngoài khoảng ngày dựng sẵn còn
+     cho chọn ngày tuỳ ý, lọc theo mối, và gõ tìm số phiếu. Trước đây chỉ
+     có mỗi khoảng ngày, muốn tìm một phiếu cũ là phải lật từng trang. */
+  const [custom, setCustom] = useState({ from: '', to: '' });
+  const [supplierId, setSupplierId] = useState(null);
+  const [status, setStatus] = useState('');
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 300);
+  const preset = useMemo(() => range(rangeKey), [rangeKey]);
+  const r = rangeKey === 'custom'
+    ? { ...custom, label: custom.from || custom.to ? `${custom.from || '…'} → ${custom.to || '…'}` : 'Chọn ngày' }
+    : preset;
+  const allDates = RSTATUS_OPEN.has(status);
+  const from = allDates ? '' : r.from;
+  const to = allDates ? '' : r.to;
+  const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), []);
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
-  } = usePaged((pg) => api.purchaseReturns({ from: r.from, to: r.to, ...pg }), [r.from, r.to],
+  } = usePaged(
+    (pg) => api.purchaseReturns({
+      from, to, supplier_id: supplierId || '', q: dq, status, ...pg,
+    }),
+    [from, to, supplierId, dq, status],
     { key: 'purchase-returns' });
-  const [detail, setDetail] = useState(null);
+  const [selId, setSelId] = useState(null);
   const [creating, setCreating] = useState(false);
+  const wide = typeof window !== 'undefined' && window.matchMedia?.('(min-width: 1024px)').matches;
+  const rows = data || [];
+
+  /* Màn hình rộng: tự chọn phiếu mới nhất cho khung bên phải khỏi trống */
+  useEffect(() => {
+    if (!wide || busy) return;
+    if (rows.length && !rows.some((x) => x.id === selId)) setSelId(rows[0].id);
+    if (!rows.length) setSelId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, busy]);
 
   const totals = extra?.totals || null;
+  const showDetailOnly = !wide && !!selId;
 
   return (
     <>
       <PageHeader
         title="Trả hàng nhà cung cấp"
-        subtitle={`${r.label} · Hàng lỗi, sai quy cách, giao nhầm trả lại cho mối`}
+        subtitle={`${allDates ? 'Mọi ngày — việc còn tồn đọng' : r.label} · Hàng lỗi, sai quy cách, giao nhầm trả lại cho mối`}
         actions={
           <>
             <OpenDraftsButton kind="purchase_return" onOpen={(d) => setCreating(d)} />
@@ -139,89 +192,435 @@ export function PurchaseReturns() {
           </>
         }
       >
-        <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
-          {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-        </Select>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto"
+            disabled={allDates} aria-label="Khoảng ngày"
+            title={allDates ? 'Đang lọc việc còn tồn đọng nên xem hết mọi ngày' : undefined}>
+            {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            <option value="custom">Chọn ngày…</option>
+          </Select>
+          {rangeKey === 'custom' && !allDates && (
+            <>
+              <Input type="date" size="sm" className="!w-36" aria-label="Từ ngày"
+                value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
+              <span className="text-2xs text-muted-ink">đến</span>
+              <Input type="date" size="sm" className="!w-36" aria-label="Đến ngày"
+                value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
+            </>
+          )}
+          <div className="w-52">
+            <Combo
+              size="sm"
+              items={suppliers || []}
+              value={supplierId}
+              onChange={setSupplierId}
+              placeholder="Mọi nhà cung cấp"
+              filter={(x, k) => match(x.name, k) || (x.phone || '').includes(k) || match(x.code, k)}
+              render={(x) => ({ label: x.name, sub: x.phone || '' })}
+            />
+          </div>
+          <Select value={status} onChange={(e) => setStatus(e.target.value)} size="sm" className="!w-auto" aria-label="Lọc theo trạng thái">
+            {RSTATUS_FILTER.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </Select>
+          <SearchInput value={q} onChange={setQ} size="sm" className="w-52"
+            placeholder="Số phiếu, số phiếu nhập, lý do..." />
+        </div>
       </PageHeader>
 
       <Page className="space-y-3">
         {totals && (
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
-            <Stat label="Số phiếu trả" value={n(totals.count)} icon={Undo2} />
-            <Stat label="Tiền NCC trừ nợ / hoàn" value={short(totals.total)} />
-            <Stat label="Chi phí trả hàng" value={short(totals.expense || 0)} tone={totals.expense > 0 ? 'warn' : 'default'} />
-            <Stat label="NCC đã hoàn tiền" value={short(totals.refunded)} tone="good" />
+            <Stat label="Số phiếu trả" value={n(totals.count)} icon={Undo2}
+              sub={allDates ? 'mọi ngày' : r.label} />
+            {/* Ba thẻ dưới là việc tồn đọng: tính mọi ngày, chỉ theo NCC đang chọn */}
+            <Stat label="Chờ NCC nhận — chưa trừ nợ" value={short(totals.pending_value || 0)}
+              sub={totals.pending_count ? `${n(totals.pending_count)} phiếu · mọi ngày` : 'mọi ngày'}
+              tone={totals.pending_count > 0 ? 'warn' : 'default'} onClick={() => setStatus('pending')} />
+            <Stat label="Chờ NCC hoàn tiền" value={short(totals.awaiting_refund || 0)}
+              sub={totals.awaiting_count ? `${n(totals.awaiting_count)} phiếu · mọi ngày` : 'mọi ngày'}
+              tone={totals.awaiting_refund > 0 ? 'warn' : 'default'} onClick={() => setStatus('awaiting_refund')} />
+            <Stat label="Có trục trặc" value={n(totals.issue_count || 0)}
+              sub="chưa xử lý xong"
+              tone={totals.issue_count > 0 ? 'bad' : 'default'} onClick={() => setStatus('issue')} />
           </div>
         )}
 
         {busy && !data ? <Spinner />
           : error ? <ErrorBox error={error} onRetry={reload} />
-            : !data?.length ? (
+            : !rows.length ? (
               <Empty
                 icon={Undo2}
-                title="Chưa có phiếu trả hàng NCC"
-                message="Khi nhận hàng lỗi, sai quy cách hoặc giao nhầm, lập phiếu trả để trừ tồn kho và giảm công nợ."
+                title={status || dq || supplierId ? 'Không có phiếu nào khớp bộ lọc' : 'Chưa có phiếu trả hàng NCC'}
+                message="Khi nhận hàng lỗi, sai quy cách hoặc giao nhầm, lập phiếu trả để trừ tồn kho; công nợ NCC giảm khi NCC nhận hàng."
                 action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Lập phiếu trả hàng</Button>}
               />
             ) : (
-              <div className="card">
-              <div className="table-wrap table-scroll !border-0 !rounded-none">
-                <table className="data">
-                  <thead>
-                    <tr>
-                      <th>Mã phiếu</th><th>Ngày</th><th>Nhà cung cấp</th><th>Cách trả</th>
-                      <th className="text-right">Giá trị hàng</th>
-                      <th className="text-right">Chi phí</th>
-                      <th className="text-right">NCC trừ nợ / hoàn</th>
-                      <th className="text-right">NCC hoàn tiền</th>
-                      <th className="text-right">Xem</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.map((x) => (
-                      <tr key={x.id} className="hoverable">
-                        <td className="font-mono font-semibold">
-                          {x.code}
-                          {x.custom_count > 0 && <Badge tone="bad" className="ml-1">Có hàng ngoài hệ thống</Badge>}
-                        </td>
-                        <td className="text-muted-ink whitespace-nowrap">{datetime(x.ts)}</td>
-                        <td>{x.supplier_name || '—'}</td>
-                        <td className="text-muted-ink">
-                          {x.purchase_code ? <>Theo phiếu <span className="font-mono">{x.purchase_code}</span></> : 'Trả tự do'}
-                        </td>
-                        <td className="num">{money(x.subtotal ?? x.total)}</td>
-                        <td className="num text-muted-ink">{x.expense > 0 ? `-${money(x.expense)}` : '—'}</td>
-                        <td className="num font-semibold">{money(x.total)}</td>
-                        <td className="num">{money(x.refunded)}</td>
-                        <td className="text-right">
-                          <IconButton icon={Eye} label={`Xem ${x.code}`} size={14}
-                            onClick={async () => setDetail(await api.get(`/purchase-returns/${x.id}`))} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Pager
-                page={page}
-                pageSize={pageSize}
-                total={rowCount}
-                onPage={setPage}
-                onPageSize={setPageSize}
-              />
+              <div className="grid gap-3 lg:grid-cols-[minmax(340px,420px)_1fr] items-start">
+                {/* ------------------------ Khung trái ------------------------ */}
+                <section className={`card overflow-hidden ${showDetailOnly ? 'hidden' : ''}`} aria-label="Danh sách phiếu trả hàng">
+                  <ul className="divide-y divide-line max-h-[calc(100vh-19rem)] overflow-y-auto">
+                    {rows.map((x) => {
+                      const active = x.id === selId;
+                      return (
+                        <li key={x.id}>
+                          <button type="button" onClick={() => setSelId(x.id)} aria-pressed={active}
+                            className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 cursor-pointer transition-colors duration-100
+                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent
+                                        ${active ? 'bg-accent-soft/60 shadow-[inset_3px_0_0] shadow-accent' : 'hover:bg-muted/60'}`}>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-mono text-[13px] font-semibold shrink-0">{x.code}</span>
+                              <span className="text-2xs text-muted-ink shrink-0">{date(x.ts)}</span>
+                              <span className="ml-auto font-mono tabular text-[13px] font-bold shrink-0">{money(x.total)}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-2xs text-muted-ink min-w-0">
+                              <span className="truncate">{x.supplier_name || '—'}</span>
+                              <span className="shrink-0">· {x.purchase_code ? `theo ${x.purchase_code}` : 'trả tự do'}</span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1">
+                              <Badge tone={RSTATUS_TONE[x.status] || 'mute'}>{x.status_label}</Badge>
+                              {x.has_issue === 1 && <Badge tone="bad">Trục trặc</Badge>}
+                              {x.custom_count > 0 && <Badge tone="mute">Có hàng ngoài hệ thống</Badge>}
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <Pager page={page} pageSize={pageSize} total={rowCount} onPage={setPage} onPageSize={setPageSize} />
+                </section>
+
+                {/* ------------------------ Khung phải ------------------------ */}
+                <section className={`${!wide && !selId ? 'hidden' : ''}`} aria-label="Chi tiết phiếu trả hàng">
+                  {!wide && selId && (
+                    <Button size="sm" icon={ArrowLeft} className="mb-2" onClick={() => setSelId(null)}>Về danh sách</Button>
+                  )}
+                  {selId
+                    ? <PurchaseReturnPanel id={selId} onChanged={reload} />
+                    : <div className="card"><Empty icon={Undo2} title="Chưa chọn phiếu" message="Bấm một phiếu bên trái để xem chi tiết." /></div>}
+                </section>
               </div>
             )}
       </Page>
-
-      <ReturnDetail detail={detail} onClose={() => setDetail(null)} kind="purchase" />
 
       <PurchaseReturnForm
         open={!!creating}
         draft={typeof creating === 'object' ? creating : null}
         onClose={() => setCreating(false)}
-        onSaved={(code) => { setCreating(false); reload(); toast(`Đã lập phiếu trả hàng ${code}`, 'ok'); }}
+        onSaved={(code, res) => {
+          setCreating(false);
+          reload();
+          if (res?.id) setSelId(res.id);
+          toast(`Đã lập phiếu trả hàng ${code}`, 'ok');
+        }}
       />
     </>
+  );
+}
+
+/**
+ * Chi tiết một phiếu trả NCC và các bước xử lý (plan 31, 5.2b + 5.2d):
+ * Lập phiếu → Đã gửi → NCC đã nhận (lúc này mới trừ nợ) → Cấn trừ / Hoàn tiền.
+ */
+function PurchaseReturnPanel({ id, onChanged }) {
+  const { meta, user, toast } = useApp();
+  const { data: loaded, busy, error, reload } = useFetch(() => api.get(`/purchase-returns/${id}`), [id]);
+  const [d, setD] = useState(null);
+  const [working, setWorking] = useState('');
+  const [askReceive, setAskReceive] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [refundAmount, setRefundAmount] = useState(0);
+  const [refundAcc, setRefundAcc] = useState('');
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [issueText, setIssueText] = useState('');
+
+  useEffect(() => { setD(loaded); }, [loaded]);
+
+  const act = async (key, body, okMsg) => {
+    setWorking(key);
+    try {
+      const res = await api.post(`/purchase-returns/${id}/status`, body);
+      setD(res);
+      onChanged?.();
+      if (okMsg) toast(typeof okMsg === 'function' ? okMsg(res) : okMsg, 'ok', 6000);
+      return true;
+    } catch (e) {
+      toast(e.message, 'bad', 7000);
+      return false;
+    } finally {
+      setWorking('');
+    }
+  };
+
+  const doRefund = async () => {
+    setWorking('refund');
+    try {
+      const res = await api.post(`/purchase-returns/${id}/refund`, {
+        amount: Math.round(Number(refundAmount) || 0), account_id: refundAcc || undefined, user_id: user?.id,
+      });
+      setD(res);
+      setRefundOpen(false);
+      onChanged?.();
+      toast(`Đã ghi NCC hoàn ${money(refundAmount)} cho phiếu ${res.code}`, 'ok', 6000);
+    } catch (e) {
+      toast(e.message, 'bad', 7000);
+    } finally {
+      setWorking('');
+    }
+  };
+
+  if (error) return <div className="card"><ErrorBox error={error} onRetry={reload} /></div>;
+  if (!d || (busy && d.id !== id)) return <div className="card"><Spinner /></div>;
+
+  const left = d.total - d.refunded;
+  const steps = [
+    ['Lập phiếu', d.ts],
+    ['Đã gửi hàng', d.sent_at],
+    ['NCC đã nhận', d.received_at],
+    [d.settle_method === 'refund' ? (left > 0 ? `NCC hoàn ${money(d.refunded)}/${money(d.total)}` : 'Đã hoàn tiền') : 'Cấn trừ công nợ',
+      d.received_at && (d.settle_method === 'offset' || left <= 0) ? (d.refunds?.slice(-1)[0]?.ts || d.received_at) : null],
+  ];
+
+  return (
+    <div className="card p-3 space-y-3">
+      {/* ---------------- Đầu phiếu ---------------- */}
+      <div className="flex flex-col sm:flex-row sm:items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h2 className="font-mono font-bold text-base">{d.code}</h2>
+            <Badge tone={RSTATUS_TONE[d.status] || 'mute'}>{d.status_label}</Badge>
+          </div>
+          <p className="text-2xs text-muted-ink">
+            {d.supplier_name || '—'}{d.supplier_phone ? ` · ${d.supplier_phone}` : ''} · {datetime(d.ts)} · {d.user_name || '—'}
+          </p>
+          <p className="text-2xs text-muted-ink">
+            {d.purchase_code ? <>Theo phiếu nhập <span className="font-mono">{d.purchase_code}</span></> : 'Trả tự do'} · Kho {d.warehouse_name}
+            {d.reason ? ` · ${d.reason}` : ''}
+          </p>
+        </div>
+      </div>
+
+      {/* ---------------- Các mốc ---------------- */}
+      <ol className="grid grid-cols-4 gap-1" aria-label="Tiến trình trả hàng">
+        {steps.map(([label, at], i) => (
+          <li key={label} className="flex flex-col items-center text-center">
+            <span className={`w-6 h-6 rounded-full grid place-items-center text-2xs font-bold
+                              ${at ? 'bg-accent text-white' : 'bg-muted text-muted-ink border border-line'}`}>
+              {at ? <Check size={13} aria-hidden="true" /> : i + 1}
+            </span>
+            <span className={`mt-0.5 text-2xs leading-tight ${at ? 'font-semibold text-ink' : 'text-muted-ink'}`}>{label}</span>
+            <span className="text-2xs text-muted-ink tabular">{at ? date(at) : '—'}</span>
+          </li>
+        ))}
+      </ol>
+
+      {/* ---------------- Việc cần làm tiếp ---------------- */}
+      <div className="rounded-lg border border-line bg-muted/40 p-2.5 space-y-2">
+        {!d.sent_at && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px] flex-1 min-w-[12rem]">Hàng đã trừ kho, <b>chưa gửi</b> cho NCC.</span>
+            <Button size="sm" variant="primary" icon={Truck} loading={working === 'sent'}
+              onClick={() => act('sent', { sent: true }, 'Đã đánh dấu gửi hàng')}>Đã gửi hàng</Button>
+          </div>
+        )}
+        {d.sent_at && !d.received_at && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px] flex-1 min-w-[12rem]">
+              Chờ NCC nhận hàng. <b className="text-warn">Công nợ NCC chưa trừ {money(d.total)}.</b>
+            </span>
+            <Button size="sm" onClick={() => act('unsent', { sent: false })} loading={working === 'unsent'}>Chưa gửi</Button>
+            <Button size="sm" variant="primary" icon={PackageCheck} onClick={() => setAskReceive(true)}>NCC đã nhận hàng</Button>
+          </div>
+        )}
+        {d.received_at && (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-2xs text-muted-ink">Chốt tiền với NCC</span>
+              <div role="radiogroup" aria-label="Cách chốt tiền với NCC" className="inline-flex rounded border border-line overflow-hidden">
+                {[['offset', 'Cấn trừ công nợ'], ['refund', 'NCC hoàn tiền']].map(([k, label]) => (
+                  <button key={k} type="button" role="radio" aria-checked={d.settle_method === k}
+                    disabled={working !== '' || (k === 'offset' && d.refunded > 0)}
+                    onClick={() => d.settle_method !== k && act('settle', { settle_method: k })}
+                    className={`px-2.5 h-7 text-2xs font-semibold cursor-pointer disabled:cursor-not-allowed
+                                ${d.settle_method === k ? 'bg-accent text-white' : 'bg-card text-muted-ink hover:bg-muted'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {d.settle_method === 'refund' && left > 0 && (
+                <Button size="sm" variant="primary" icon={Banknote}
+                  onClick={() => { setRefundAmount(left); setRefundAcc(meta.accounts?.[0]?.id || ''); setRefundOpen(true); }}>
+                  Ghi NCC hoàn tiền
+                </Button>
+              )}
+              <button type="button" className="ml-auto text-2xs text-muted-ink hover:underline cursor-pointer disabled:opacity-50"
+                disabled={d.refunded > 0 || working !== ''}
+                title={d.refunded > 0 ? 'Đã ghi NCC hoàn tiền thì không bỏ đánh dấu được' : 'Công nợ NCC sẽ trở lại như trước khi nhận'}
+                onClick={() => act('unrecv', { received: false }, 'Đã bỏ đánh dấu NCC nhận hàng — công nợ trở lại như cũ')}>
+                Bỏ đánh dấu đã nhận
+              </button>
+            </div>
+            <p className="text-2xs text-muted-ink">
+              {d.settle_method === 'offset'
+                ? <>Đã trừ <b className="text-ink">{money(d.total)}</b> vào công nợ NCC.</>
+                : left > 0
+                  ? <>NCC đã hoàn <b className="text-ink">{money(d.refunded)}</b>, còn phải hoàn <b className="text-warn">{money(left)}</b>.</>
+                  : <>NCC đã hoàn đủ <b className="text-ink">{money(d.total)}</b>.</>}
+            </p>
+          </>
+        )}
+
+        {/* Trục trặc */}
+        {d.has_issue === 1 ? (
+          <div className="flex flex-wrap items-start gap-2 rounded border border-danger/30 bg-red-50 p-2">
+            <AlertTriangle size={15} className="text-danger shrink-0 mt-0.5" aria-hidden="true" />
+            <p className="text-[13px] text-red-900 flex-1 min-w-[12rem] whitespace-pre-wrap">{d.issue_note}</p>
+            <Button size="sm" onClick={() => { setIssueText(d.issue_note || ''); setIssueOpen(true); }}>Sửa</Button>
+            <Button size="sm" variant="primary" loading={working === 'resolve'}
+              onClick={() => act('resolve', { issue_resolved: true }, 'Đã đánh dấu xử lý xong trục trặc')}>Đã xử lý xong</Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {d.issue_note && d.issue_resolved_at && (
+              <span className="text-2xs text-muted-ink flex-1">Trục trặc đã xử lý {date(d.issue_resolved_at)}: {d.issue_note}</span>
+            )}
+            <button type="button" className="ml-auto text-2xs text-danger font-semibold hover:underline cursor-pointer"
+              onClick={() => { setIssueText(''); setIssueOpen(true); }}>
+              + Ghi trục trặc (NCC chê hàng, thiếu, hỏng thêm…)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ---------------- Hàng trả ---------------- */}
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Tên hàng</th><th>ĐVT</th>
+              <th className="text-right">SL</th><th className="text-right">Đơn giá</th><th className="text-right">Thành tiền</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.items.map((it) => (
+              <tr key={it.id}>
+                <td><div className="font-semibold">{it.product_name}</div><div className="text-2xs text-muted-ink font-mono">{it.sku}</div></td>
+                <td>{it.unit_name}</td>
+                <td className="num">{fq(it.qty)}</td>
+                <td className="num">{money(it.price)}</td>
+                <td className="num font-semibold">{money(it.amount)}</td>
+              </tr>
+            ))}
+            {(d.custom_items || []).map((c) => (
+              <tr key={`c${c.id}`} className="bg-red-50/40">
+                <td><div className="font-semibold">{c.name}</div>
+                  <Badge tone="bad">{c.custom_item_id ? 'Hàng giao sai' : 'Ngoài hệ thống'} · không trừ kho</Badge></td>
+                <td>{c.unit_name || '—'}</td>
+                <td className="num">{fq(c.qty)}</td>
+                <td className="num">{money(c.price)}</td>
+                <td className="num font-semibold">{money(c.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ---------------- Tiền ---------------- */}
+      <div className="flex justify-end">
+        <div className="w-full sm:w-80 space-y-1 text-[13px]">
+          <div className="flex justify-between"><span className="text-muted-ink">Giá trị hàng trả</span><span className="tabular font-mono">{money(d.subtotal)}</span></div>
+          {d.expense > 0 && (
+            <div className="rounded border border-line p-1.5 space-y-0.5">
+              <div className="flex justify-between">
+                <span className="text-muted-ink">Chi phí trả hàng{d.expense_note ? ` · ${d.expense_note}` : ''}</span>
+                <span className="tabular font-mono">{money(d.expense)}</span>
+              </div>
+              <div className="text-2xs text-muted-ink">
+                {d.expense_payer === 'shop' ? 'Tiệm' : 'NCC'} đưa tiền trước ·{' '}
+                {d.expense_bearer === 'split' ? `tiệm chịu ${money(d.expense_shop)}, NCC chịu ${money(d.expense_supplier)}`
+                  : d.expense_bearer === 'supplier' ? 'NCC chịu' : 'tiệm chịu'}
+                {d.expense_cash_code && <> · phiếu chi <span className="font-mono">{d.expense_cash_code}</span></>}
+              </div>
+              <div className="flex justify-between text-2xs">
+                <span className="text-muted-ink">Ảnh hưởng tiền NCC hoàn / trừ nợ</span>
+                <span className="tabular font-mono">
+                  {d.expense_payer === 'shop'
+                    ? (d.expense_supplier > 0 ? `+${money(d.expense_supplier)}` : '0 đ')
+                    : (d.expense_shop > 0 ? `-${money(d.expense_shop)}` : '0 đ')}
+                </span>
+              </div>
+            </div>
+          )}
+          <div className="flex justify-between pt-1.5 border-t border-line font-bold">
+            <span>NCC hoàn / trừ nợ</span><span className="tabular font-mono">{money(d.total)}</span>
+          </div>
+          {(d.refunds || []).map((rf) => (
+            <div key={rf.id} className="flex justify-between text-2xs">
+              <span className="text-muted-ink">NCC hoàn · {date(rf.ts)} · <span className="font-mono">{rf.code}</span></span>
+              <span className="tabular font-mono">{money(rf.amount)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      {d.note && <div className="rounded border border-line p-2.5 text-[13px]"><b>Ghi chú: </b>{d.note}</div>}
+
+      <Confirm
+        open={askReceive}
+        onClose={() => setAskReceive(false)}
+        danger={false}
+        busy={working === 'recv'}
+        title="NCC đã nhận hàng trả?"
+        confirmText="NCC đã nhận"
+        message={<>Công nợ NCC <b>{d.supplier_name}</b> sẽ giảm <b>{money(d.total)}</b> ngay bây giờ.</>}
+        onConfirm={async () => {
+          const ok = await act('recv', { received: true }, (res) => `NCC đã nhận hàng — công nợ còn ${money(res.debt)}`);
+          if (ok) setAskReceive(false);
+        }}
+      />
+
+      <Modal
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        title={`NCC hoàn tiền phiếu ${d.code}`}
+        subtitle={`Còn phải hoàn ${money(left)}`}
+        size="sm"
+        footer={<>
+          <Button onClick={() => setRefundOpen(false)}>Huỷ</Button>
+          <Button variant="primary" icon={Banknote} loading={working === 'refund'} onClick={doRefund}
+            disabled={!(Number(refundAmount) > 0) || Number(refundAmount) > left}>
+            Ghi hoàn {money(refundAmount)}
+          </Button>
+        </>}
+      >
+        <div className="space-y-3">
+          <Field label="Số tiền NCC hoàn" htmlFor="rf-amt">
+            <MoneyInput id="rf-amt" value={refundAmount} onChange={setRefundAmount} />
+          </Field>
+          <Field label="Nộp vào quỹ" htmlFor="rf-acc">
+            <Select id="rf-acc" value={refundAcc} onChange={(e) => setRefundAcc(Number(e.target.value))}>
+              {(meta.accounts || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
+        open={issueOpen}
+        onClose={() => setIssueOpen(false)}
+        title={`Trục trặc — phiếu ${d.code}`}
+        size="sm"
+        footer={<>
+          <Button onClick={() => setIssueOpen(false)}>Huỷ</Button>
+          <Button variant="primary" loading={working === 'issue'} disabled={!issueText.trim()}
+            onClick={async () => { if (await act('issue', { issue_note: issueText }, 'Đã ghi trục trặc')) setIssueOpen(false); }}>
+            Lưu
+          </Button>
+        </>}
+      >
+        <Field label="Chuyện gì xảy ra" htmlFor="rf-issue" hint="Ví dụ: NCC báo thiếu 2 cái, nhận 8/10; hàng bể thêm khi chở">
+          <Textarea id="rf-issue" rows={3} value={issueText} onChange={(e) => setIssueText(e.target.value)} />
+        </Field>
+      </Modal>
+    </div>
   );
 }
 
@@ -345,6 +744,24 @@ const MODES = [
 ];
 const lineValue = (qty, price) => Math.round((Number(qty) || 0) * (Number(price) || 0));
 
+/** Nút chọn một trong vài giá trị, gọn trong một hàng. */
+function Segmented({ label, value, onChange, options }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-2xs text-muted-ink">{label}</span>
+      <div role="radiogroup" aria-label={label} className="inline-flex rounded border border-line overflow-hidden">
+        {options.map(([k, text]) => (
+          <button key={k} type="button" role="radio" aria-checked={value === k} onClick={() => onChange(k)}
+            className={`px-2.5 h-7 text-2xs font-semibold cursor-pointer transition-colors duration-100
+                        ${value === k ? 'bg-accent text-white' : 'bg-card text-muted-ink hover:bg-muted'}`}>
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Lập phiếu trả hàng NCC.
  * @param purchaseId  mở thẳng luồng "theo phiếu nhập gốc" với phiếu này
@@ -369,6 +786,14 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
   /* Tiền */
   const [expense, setExpense] = useState(0);
   const [expenseNote, setExpenseNote] = useState('');
+  /* Chi phí trả hàng (plan 31, 5.2c): ai đưa tiền trước, ai chịu */
+  const [expensePayer, setExpensePayer] = useState('shop');     // shop | supplier
+  const [expenseBearer, setExpenseBearer] = useState('shop');   // shop | supplier | split
+  const [expenseShop, setExpenseShop] = useState(0);            // phần tiệm chịu khi chia
+  const [expenseCash, setExpenseCash] = useState(true);         // tiệm trả trước thì lập phiếu chi
+  /* Trạng thái (plan 31, 5.2d): công nợ NCC chỉ giảm khi NCC đã nhận hàng */
+  const [sent, setSent] = useState(true);
+  const [received, setReceived] = useState(false);
   const [settle, setSettle] = useState('debt');      // debt | cash
   const [refunded, setRefunded] = useState(0);
   const [accountId, setAccountId] = useState('');
@@ -418,6 +843,13 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
     setFreeCustom(p?.custom || []);
     setExpense(p?.expense || 0);
     setExpenseNote(p?.expense_note || '');
+    /* Phiếu tạm bản cũ: chi phí luôn trừ vào tiền NCC hoàn, tức NCC thu phí, tiệm chịu */
+    setExpensePayer(p ? (p.expense_payer || 'supplier') : 'shop');
+    setExpenseBearer(p?.expense_bearer || 'shop');
+    setExpenseShop(p?.expense_shop || 0);
+    setExpenseCash(p?.expense_cash !== false);
+    setSent(p?.sent !== false);
+    setReceived(p?.received === true);
     setSettle(p?.refunded > 0 ? 'cash' : 'debt');
     setRefunded(p?.refunded || 0);
     setReason(p?.reason || '');
@@ -462,7 +894,16 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
     : freeCustom.reduce((a, c) => a + lineValue(c.qty, c.price), 0);
   const subtotal = stockValue + customValue;
   const exp = Math.max(0, Math.round(Number(expense) || 0));
-  const total = subtotal - exp;
+  const shopShare = expenseBearer === 'shop' ? exp
+    : expenseBearer === 'supplier' ? 0
+      : Math.min(exp, Math.max(0, Math.round(Number(expenseShop) || 0)));
+  const supShare = exp - shopShare;
+  /* Tiệm trả trước mà NCC chịu phần nào → NCC trả thêm phần đó.
+     NCC trả trước mà tiệm chịu phần nào  → NCC trừ phần đó vào tiền hoàn. */
+  const adjust = expensePayer === 'shop' ? supShare : -shopShare;
+  const total = subtotal + adjust;
+  const refundNow = settle === 'cash' ? Math.max(0, Math.min(Math.round(Number(refunded) || 0), Math.max(0, total))) : 0;
+  const isReceived = received || refundNow > 0;
   const lineCount = mode === 'by_purchase'
     ? byItems.filter((l) => l.rqty > 0).length + byCustom.filter((c) => c.rqty > 0).length
     : lines.length + freeCustom.length;
@@ -481,7 +922,7 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
         setErr('Hàng ngoài hệ thống phải có tên và số lượng lớn hơn 0.'); return;
       }
     }
-    if (exp > subtotal) { setErr('Chi phí trả hàng không được lớn hơn giá trị hàng trả.'); return; }
+    if (-adjust > subtotal) { setErr('Phần chi phí tiệm chịu không được lớn hơn giá trị hàng trả.'); return; }
 
     const body = mode === 'by_purchase' ? {
       purchase_id: purchase.id,
@@ -505,8 +946,16 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
         user_id: user?.id,
         expense: exp,
         expense_note: expenseNote.trim() || null,
-        refunded: settle === 'cash' ? Math.min(refunded, Math.max(0, total)) : 0,
+        expense_payer: expensePayer,
+        expense_bearer: expenseBearer,
+        expense_shop: shopShare,
+        expense_cash: expensePayer === 'shop' && expenseCash,
+        expense_account_id: accountId,
+        refunded: refundNow,
         account_id: accountId,
+        settle_method: settle === 'cash' ? 'refund' : 'offset',
+        sent: sent || isReceived,
+        received: isReceived,
         reason, note,
       });
       /* Lưu chính thức xong thì bỏ bản nháp đi, để lần sau khỏi mở nhầm
@@ -531,7 +980,7 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
         open={open}
         onClose={onClose}
         title="Lập phiếu trả hàng nhà cung cấp"
-        subtitle="Hàng chuẩn trừ tồn kho · hàng giao sai và hàng ngoài hệ thống không đụng kho · công nợ NCC giảm ngay"
+        subtitle="Hàng chuẩn trừ tồn kho · hàng giao sai và hàng ngoài hệ thống không đụng kho · công nợ NCC giảm khi NCC đã nhận hàng"
         size="xl"
         footer={<>
           <SaveDraftButton
@@ -549,6 +998,8 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
                 mode, purchase_id: purchase?.id || null, supplier_id: supplierId, warehouse_id: warehouseId,
                 qtys, custom_qtys: customQtys, lines, custom: freeCustom,
                 expense: exp, expense_note: expenseNote, refunded: settle === 'cash' ? refunded : 0, reason, note,
+                expense_payer: expensePayer, expense_bearer: expenseBearer, expense_shop: expenseShop,
+                expense_cash: expenseCash, sent, received,
               },
             })}
           />
@@ -876,16 +1327,57 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
                 <div className="flex items-center justify-between gap-2">
                   <label htmlFor="prf-exp" className="text-muted-ink">
                     Chi phí trả hàng
-                    <span className="block text-2xs">Tiệm chịu, trừ vào tiền NCC trả</span>
+                    <span className="block text-2xs">Tiền xe gửi hàng về, phí NCC thu…</span>
                   </label>
                   <MoneyInput id="prf-exp" size="sm" className="!w-32" value={expense} onChange={setExpense} />
                 </div>
                 {exp > 0 && (
-                  <Input size="sm" value={expenseNote} onChange={(e) => setExpenseNote(e.target.value)}
-                    placeholder="Ghi chú chi phí: xe chở, phí gửi..." aria-label="Ghi chú chi phí trả hàng" />
+                  <div className="space-y-1.5 rounded border border-line bg-muted/40 p-2">
+                    <Input size="sm" value={expenseNote} onChange={(e) => setExpenseNote(e.target.value)}
+                      placeholder="Ghi chú chi phí: xe chở, phí gửi..." aria-label="Ghi chú chi phí trả hàng" />
+                    <Segmented label="Ai đưa tiền trước" value={expensePayer} onChange={setExpensePayer}
+                      options={[['shop', 'Tiệm'], ['supplier', 'NCC']]} />
+                    <Segmented label="Ai chịu" value={expenseBearer}
+                      onChange={(k) => {
+                        /* Bấm "Chia" mà chưa gõ phần tiệm chịu thì tạm chia đôi, khỏi
+                           rơi vào cảnh 0 đồng rồi câu giải thích lại ra "NCC tự chịu" */
+                        if (k === 'split' && !(Number(expenseShop) > 0)) setExpenseShop(Math.round(exp / 2));
+                        setExpenseBearer(k);
+                      }}
+                      options={[['shop', 'Tiệm'], ['supplier', 'NCC'], ['split', 'Chia']]} />
+                    {expenseBearer === 'split' && (
+                      <div className="flex items-center justify-between gap-2">
+                        <label htmlFor="prf-exp-shop" className="text-2xs text-muted-ink">Tiệm chịu</label>
+                        <MoneyInput id="prf-exp-shop" size="sm" className="!w-28" value={expenseShop} onChange={setExpenseShop} />
+                        <span className="text-2xs text-muted-ink whitespace-nowrap">NCC chịu <b className="tabular text-ink">{money(supShare)}</b></span>
+                      </div>
+                    )}
+                    <p className="text-2xs text-muted-ink leading-relaxed">
+                      {expenseBearer === 'split' && (
+                        <>Tiệm chịu <b className="text-ink">{money(shopShare)}</b>, NCC chịu <b className="text-ink">{money(supShare)}</b>. </>
+                      )}
+                      {expensePayer === 'shop'
+                        ? (supShare > 0
+                          ? <>NCC trả lại tiệm <b className="text-ink">{money(supShare)}</b> — cộng vào tiền NCC hoàn / trừ nợ.</>
+                          : 'Tiệm trả và tự chịu — không đụng tới tiền NCC.')
+                        : (shopShare > 0
+                          ? <>NCC trừ <b className="text-ink">{money(shopShare)}</b> vào tiền hoàn / trừ nợ.</>
+                          : 'NCC trả và tự chịu — không đụng tới tiền phiếu.')}
+                    </p>
+                    {expensePayer === 'shop' && (
+                      <label className="flex items-center gap-2 text-2xs cursor-pointer">
+                        <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                          checked={expenseCash} onChange={(e) => setExpenseCash(e.target.checked)} />
+                        Lập phiếu chi {money(exp)} tiền trả hàng (bỏ tích nếu đã ghi chi ở chỗ khác)
+                      </label>
+                    )}
+                  </div>
                 )}
                 <div className="flex items-baseline justify-between pt-2 border-t border-line">
-                  <span className="font-semibold">Tiền NCC phải trả / trừ nợ</span>
+                  <span className="font-semibold">
+                    Tiền NCC phải trả / trừ nợ
+                    {!isReceived && <span className="block text-2xs font-normal text-warn">Chưa trừ công nợ — trừ khi NCC nhận hàng</span>}
+                  </span>
                   <span className={`text-xl font-display font-bold tabular ${total < 0 ? 'text-danger' : ''}`}>{money(total)}</span>
                 </div>
               </div>
@@ -902,9 +1394,30 @@ export function PurchaseReturnForm({ open, onClose, onSaved, draft = null, purch
                   </label>
                 ))}
               </div>
+              {/* Trạng thái hàng trả (plan 31, 5.2d) */}
+              <div className="space-y-1 text-[13px]">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer"
+                    checked={sent || isReceived} disabled={isReceived}
+                    onChange={(e) => setSent(e.target.checked)} />
+                  Đã gửi hàng đi
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" className="w-4 h-4 accent-emerald-700 cursor-pointer mt-0.5"
+                    checked={isReceived} disabled={refundNow > 0}
+                    onChange={(e) => { setReceived(e.target.checked); if (e.target.checked) setSent(true); }} />
+                  <span>
+                    NCC đã nhận hàng
+                    <span className="block text-2xs text-muted-ink">
+                      {refundNow > 0 ? 'NCC hoàn tiền ngay tức là đã cầm hàng.'
+                        : 'Công nợ NCC chỉ giảm khi NCC đã nhận. Chưa nhận thì đánh dấu sau ở chi tiết phiếu.'}
+                    </span>
+                  </span>
+                </label>
+              </div>
               {settle === 'cash' && (
                 <div className="grid gap-2 grid-cols-2">
-                  <Field label="NCC hoàn">
+                  <Field label="NCC hoàn ngay" hint="Để 0 nếu NCC hoàn sau — ghi ở chi tiết phiếu">
                     <MoneyInput value={refunded} onChange={setRefunded} />
                   </Field>
                   <Field label="Nộp vào quỹ">

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { all, get, run, addCashTx, accountBalance , pageParams } from '../db.js';
+import { can } from '../guard.js';
 
 const r = Router();
 
@@ -22,6 +23,9 @@ export const CASH_CATEGORIES = {
     { code: 'sale_return', label: 'Hoàn tiền khách trả hàng' },
     { code: 'deposit_out', label: 'Hoàn cọc đơn đã huỷ' },
     { code: 'salary', label: 'Lương nhân viên' },
+    /* Sinh từ bảng lương (plan 28) — ứng và thưởng đưa ngay là tiền ra khỏi két */
+    { code: 'salary_advance', label: 'Ứng lương nhân viên' },
+    { code: 'salary_bonus', label: 'Thưởng nhân viên' },
     { code: 'rent', label: 'Tiền thuê mặt bằng' },
     { code: 'utility', label: 'Điện, nước, internet' },
     { code: 'transport', label: 'Vận chuyển, xăng xe' },
@@ -145,6 +149,11 @@ r.get('/cash/transactions/:id', (req, res) => {
     LEFT JOIN users u ON u.id = t.user_id
     WHERE t.id = ?`, [req.params.id]);
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu' });
+  /* Thu ngân xem lại được một phiếu theo số để in đưa khách — nhưng phiếu ứng lương,
+     trả lương là tiền lương của đồng nghiệp: dò số phiếu là đọc được hết (plan 28, §9) */
+  if (t.partner_type === 'employee' && !can(req, 'payroll.manage')) {
+    return res.status(403).json({ error: 'Phiếu lương nhân viên chỉ chủ tiệm và quản lý xem được.', code: 'NO_PERM' });
+  }
 
   /* Địa chỉ đối tác để in lên phiếu — khách ký nhận tiền thì trên phiếu
      phải có địa chỉ của người ký, không thì tờ phiếu không có giá trị. */

@@ -10,10 +10,14 @@
      2. Gom theo ngày, theo tuần, theo tháng — hoặc chốt từng dòng lẻ.
      3. Chốt xong khoá cứng: dòng đã chốt không vào đợt sau được nữa,
         hoa hồng vào doanh thu tiệm, và in phiếu chi riêng cho từng người.
+
+   Đợt 4 plan 31 (hạng mục 4b): đợt chốt "trả sau" chi tiền được về sau,
+   in lại phiếu đối soát từng đợt, và in phiếu đối chiếu công nợ theo kỳ
+   cho chủ hàng ký xác nhận.
    ==================================================================== */
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
-  Handshake, Users, Wallet, Check, Printer, Lock, CalendarRange, Plus, Pencil,
+  Handshake, Users, Wallet, Check, Printer, Lock, CalendarRange, Plus, Pencil, FileText, Banknote,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -24,6 +28,7 @@ import {
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CashVoucherPrint from '../components/CashVoucherPrint';
+import ConsignStatementPrint from '../components/ConsignStatementPrint';
 
 /* Khoảng ngày dựng sẵn: gom theo ngày, theo tuần, theo tháng (mục 5.3) */
 const iso = (d) => d.toLocaleDateString('sv-SE');
@@ -476,9 +481,17 @@ function DoneTab() {
     () => api.consignSettlements({ page, page_size: 20 }), [page]);
   const rows = data?.rows || [];
   const [detailOf, setDetailOf] = useState(null);
+  const [paying, setPaying] = useState(null);       // đợt chốt "trả sau" đang chi tiền
 
   return (
     <div className="p-3 space-y-3">
+      {/* Tiền còn nợ các chủ hàng — trả thiếu thì phần còn lại nằm đây (BRD mục 4) */}
+      {data?.sums?.owing > 0 && (
+        <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-[13px] text-amber-900">
+          Tiệm còn nợ các chủ hàng <b className="tabular">{money(data.sums.owing)}</b> trong các đợt đã chốt.
+          Bấm <b>Trả tiếp</b> ở đợt còn nợ để trả thêm — trả bao nhiêu cũng được.
+        </p>
+      )}
       {busy && !data ? <Spinner />
         : error ? <ErrorBox error={error} onRetry={reload} />
           : rows.length === 0 ? (
@@ -497,8 +510,10 @@ function DoneTab() {
                       <th className="text-right">Tiền bán hộ</th>
                       <th className="text-right">Hoa hồng</th>
                       <th className="text-right">Chiết khấu</th>
+                      {/* Số phải trả sau chiết khấu, đã trả bao nhiêu, còn nợ bao nhiêu */}
+                      <th className="text-right">Phải trả</th>
                       <th className="text-right">Đã trả</th>
-                      <th>Phiếu chi</th>
+                      <th>Còn nợ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -517,10 +532,19 @@ function DoneTab() {
                         <td className="num text-emerald-700">{money(x.commission)}</td>
                         <td className="num">{x.discount > 0 ? money(x.discount) : '—'}</td>
                         <td className="num font-bold">{money(x.payout)}</td>
-                        <td>
-                          {x.cash_code
-                            ? <Badge tone="good">{x.cash_code}</Badge>
-                            : <Badge tone="warn">Chưa chi tiền</Badge>}
+                        <td className="num">{x.paid > 0 ? money(x.paid) : '—'}</td>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          {x.owing > 0 ? (
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <span className="tabular font-semibold text-warn">{money(x.owing)}</span>
+                              <Button size="sm" variant="primary" icon={Banknote} onClick={() => setPaying(x)}
+                                title="Trả thêm cho chủ hàng — trả một phần cũng được">
+                                {x.paid > 0 ? 'Trả tiếp' : 'Chi tiền'}
+                              </Button>
+                            </div>
+                          ) : x.payout > 0
+                            ? <Badge tone="ok">Đã trả đủ</Badge>
+                            : <Badge tone="mute">Không phải trả</Badge>}
                         </td>
                       </tr>
                     ))}
@@ -531,21 +555,156 @@ function DoneTab() {
             </>
           )}
 
-      <SettlementDetail id={detailOf?.id} onClose={() => setDetailOf(null)} />
+      <SettlementDetail
+        id={detailOf?.id}
+        onClose={() => setDetailOf(null)}
+        onPay={(st) => { setDetailOf(null); setPaying(st); }}
+      />
+      <PaySettlementModal
+        settlement={paying}
+        onClose={() => setPaying(null)}
+        onDone={() => reload()}
+      />
     </div>
   );
 }
 
-function SettlementDetail({ id, onClose }) {
-  const { data, busy } = useFetch(() => api.consignSettlement(id), [id], { skip: !id });
+/**
+ * Chi tiền cho một đợt đã chốt mà lúc chốt chọn "chỉ ghi sổ, trả sau".
+ * Chi xong in được phiếu chi ngay.
+ */
+function PaySettlementModal({ settlement, onClose, onDone }) {
+  const { meta, toast, user } = useApp();
+  const accounts = meta.accounts || [];
+  const [accountId, setAccountId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [voucher, setVoucher] = useState(null);
+  const [paid, setPaid] = useState(null);
+  /* Trả một phần cũng được (BRD nâng cấp, mục 4): mặc định trả nốt phần còn nợ */
+  const owing = settlement ? Math.max(0, (settlement.payout || 0) - (settlement.paid || 0)) : 0;
+  const [amount, setAmount] = useState(0);
+
+  useEffect(() => {
+    if (settlement) {
+      setAccountId((accounts.find((a) => a.type === 'cash') || accounts[0])?.id || '');
+      setErr(''); setPaid(null);
+      setAmount(owing);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settlement?.id]);
+
+  const pay = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      const res = await api.payConsignSettlement(settlement.id, {
+        amount, account_id: accountId || undefined, user_id: user?.id,
+      });
+      setPaid({ ...res, amount });
+      onDone?.();
+      toast(`Đã chi ${money(amount)} cho ${settlement.partner_name} — phiếu ${res.cash_code}`
+        + (res.owing > 0 ? ` · còn nợ ${money(res.owing)}` : ''), 'ok', 7000);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const printVoucher = async () => {
+    try { setVoucher(await api.get(`/cash/transactions/${paid.cash_tx_id}`)); }
+    catch (e) { toast(`Chưa in được phiếu chi: ${e.message}. Vào Quỹ tiền in lại được.`, 'warn', 7000); }
+  };
+
   return (
+    <>
+      <Modal
+        open={!!settlement && !voucher}
+        onClose={onClose}
+        title={paid ? 'Đã chi tiền' : `Chi tiền đợt ${settlement?.code || ''}`}
+        subtitle={settlement ? `${settlement.partner_name} · ${n(settlement.item_count)} món` : ''}
+        size="sm"
+        footer={paid ? <>
+          <Button onClick={onClose}>Xong</Button>
+          <Button variant="primary" icon={Printer} onClick={printVoucher}>In phiếu chi</Button>
+        </> : <>
+          <Button onClick={onClose}>Huỷ</Button>
+          <Button variant="primary" icon={Banknote} onClick={pay} loading={busy} disabled={!(amount > 0) || amount > owing}>
+            Chi {money(amount)}
+          </Button>
+        </>}
+      >
+        {settlement && (paid ? (
+          <p className="text-[13px]">
+            Đã lập phiếu chi <b className="font-mono">{paid.cash_code}</b> trả{' '}
+            <b>{money(paid.amount)}</b> cho <b>{settlement.partner_name}</b>.
+            {paid.owing > 0
+              ? <> Còn nợ <b className="text-warn">{money(paid.owing)}</b> — trả tiếp ở danh sách đợt đã chốt.</>
+              : ' Đã trả đủ đợt này.'}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {err && <ErrorBox error={err} />}
+            <div className="text-[13px] space-y-1">
+              <div className="flex justify-between"><span className="text-muted-ink">Tiền bán hộ</span><span className="tabular">{money(settlement.gross)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-ink">Hoa hồng tiệm giữ</span><span className="tabular">− {money(settlement.commission)}</span></div>
+              {settlement.discount > 0 && (
+                <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular">− {money(settlement.discount)}</span></div>
+              )}
+              <div className="flex justify-between border-t border-line pt-1 font-bold">
+                <span>Phải trả</span><span className="tabular">{money(settlement.payout)}</span>
+              </div>
+              {settlement.paid > 0 && (
+                <div className="flex justify-between"><span className="text-muted-ink">Đã trả trước đó</span><span className="tabular">− {money(settlement.paid)}</span></div>
+              )}
+              <div className="flex justify-between font-bold">
+                <span>Còn nợ</span><span className="tabular text-accent">{money(owing)}</span>
+              </div>
+            </div>
+            <Field label="Lần này trả" htmlFor="csp-amount"
+              hint="Chưa gom đủ thì trả một phần; phần còn lại vẫn nằm trong sổ nợ chủ hàng.">
+              <MoneyInput id="csp-amount" size="lg" value={amount} autoFocus
+                onChange={(v) => setAmount(Math.max(0, Math.min(v, owing)))} />
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                <button type="button" onClick={() => setAmount(owing)}
+                  className={`btn btn-sm ${amount === owing ? 'btn-soft' : 'btn-outline'}`}>Trả hết {n(owing)}</button>
+                {owing >= 2 && (
+                  <button type="button" onClick={() => setAmount(Math.round(owing / 2))}
+                    className={`btn btn-sm ${amount === Math.round(owing / 2) ? 'btn-soft' : 'btn-outline'}`}>Một nửa</button>
+                )}
+              </div>
+            </Field>
+            <Field label="Chi từ quỹ" htmlFor="csp-acc">
+              <Select id="csp-acc" value={accountId} onChange={(e) => setAccountId(Number(e.target.value))}>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </Select>
+            </Field>
+          </div>
+        ))}
+      </Modal>
+      {voucher && <CashVoucherPrint voucher={voucher} onClose={() => { setVoucher(null); onClose(); }} />}
+    </>
+  );
+}
+
+function SettlementDetail({ id, onClose, onPay }) {
+  const { data, busy } = useFetch(() => api.consignSettlement(id), [id], { skip: !id });
+  const [printing, setPrinting] = useState(false);
+  return (
+    <>
     <Modal
-      open={!!id}
+      open={!!id && !printing}
       onClose={onClose}
       title={`Phiếu đối soát ${data?.code || ''}`}
       subtitle={data ? `${data.partner_name} · ${n(data.item_count)} món` : ''}
       size="lg"
-      footer={<Button onClick={onClose}>Đóng</Button>}
+      footer={<>
+        {data && data.owing > 0 && (
+          <Button variant="primary" icon={Banknote} onClick={() => onPay?.(data)}>
+            {data.paid > 0 ? `Trả tiếp (còn ${money(data.owing)})` : `Chi tiền ${money(data.payout)}`}
+          </Button>
+        )}
+        <div className="flex-1" />
+        <Button onClick={onClose}>Đóng</Button>
+        <Button icon={Printer} onClick={() => setPrinting(true)} disabled={!data}>In phiếu đối soát</Button>
+      </>}
     >
       {busy || !data ? <Spinner /> : (
         <div className="space-y-3">
@@ -553,7 +712,7 @@ function SettlementDetail({ id, onClose }) {
             <div><div className="text-2xs text-muted-ink">Tiền bán hộ</div><b className="tabular">{money(data.gross)}</b></div>
             <div><div className="text-2xs text-muted-ink">Hoa hồng tiệm</div><b className="tabular text-emerald-700">{money(data.commission)}</b></div>
             <div><div className="text-2xs text-muted-ink">Chiết khấu</div><b className="tabular">{money(data.discount)}</b></div>
-            <div><div className="text-2xs text-muted-ink">Đã trả</div><b className="tabular text-accent">{money(data.payout)}</b></div>
+            <div><div className="text-2xs text-muted-ink">Thực trả</div><b className="tabular text-accent">{money(data.payout)}</b></div>
           </div>
           <div className="table-wrap max-h-[50vh]">
             <table className="data">
@@ -579,9 +738,36 @@ function SettlementDetail({ id, onClose }) {
               </tbody>
             </table>
           </div>
+          {/* Các lần đã trả — trả làm nhiều lần thì mỗi lần một dòng (BRD mục 4) */}
+          {data.payments?.length > 0 ? (
+            <div className="card p-2.5 text-[13px] space-y-1">
+              <div className="text-2xs font-bold text-muted-ink uppercase">Các lần đã trả</div>
+              {data.payments.map((p, i) => (
+                <div key={p.id} className="flex justify-between gap-2">
+                  <span>
+                    Lần {i + 1} · {datetime(p.ts)} · phiếu <b className="font-mono">{p.cash_code}</b>
+                    {p.account_name ? ` · ${p.account_name}` : ''}
+                  </span>
+                  <b className="tabular">{money(p.amount)}</b>
+                </div>
+              ))}
+              <div className="flex justify-between border-t border-line pt-1 font-semibold">
+                <span>{data.owing > 0 ? 'Còn nợ chủ hàng' : 'Đã trả đủ'}</span>
+                <span className={`tabular ${data.owing > 0 ? 'text-warn' : 'text-emerald-700'}`}>{money(data.owing)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[13px]">
+              {data.cash_code
+                ? <>Đã chi tiền — phiếu chi <b className="font-mono">{data.cash_code}</b>{data.paid_at ? ` ngày ${date(data.paid_at)}` : ''}.</>
+                : <span className="text-warn font-semibold">Chưa chi tiền cho chủ hàng.</span>}
+            </p>
+          )}
         </div>
       )}
     </Modal>
+    {printing && data && <ConsignStatementPrint settlement={data} onClose={() => setPrinting(false)} />}
+    </>
   );
 }
 
@@ -592,6 +778,7 @@ function PartnersTab({ toast }) {
   const { data, busy, error, reload } = useFetch(() => api.consignPartners(), []);
   const [editing, setEditing] = useState(null);
   const [removing, setRemoving] = useState(null);
+  const [stmtOf, setStmtOf] = useState(null);       // chủ hàng đang lập phiếu đối chiếu
   const rows = useMemo(() => {
     const list = Array.isArray(data) ? data : [];
     return q.trim() ? list.filter((x) => match(x.name, q) || (x.phone || '').includes(q.trim())) : list;
@@ -620,7 +807,7 @@ function PartnersTab({ toast }) {
                     <th>Ghi chú</th>
                     <th className="text-right">Món chờ chốt</th>
                     <th className="text-right">Đang nợ chủ hàng</th>
-                    <th style={{ width: 90 }} />
+                    <th style={{ width: 120 }} />
                   </tr>
                 </thead>
                 <tbody>
@@ -633,8 +820,15 @@ function PartnersTab({ toast }) {
                       <td className="tabular">{x.phone || '—'}</td>
                       <td className="text-2xs text-muted-ink">{x.note || '—'}</td>
                       <td className="num">{n(x.open_items)}</td>
-                      <td className="num font-semibold">{x.owed > 0 ? money(x.owed) : '—'}</td>
+                      <td className="num">
+                        <div className="font-semibold">{x.owed > 0 ? money(x.owed) : '—'}</div>
+                        {x.unpaid_settled > 0 && (
+                          <div className="text-2xs text-warn">gồm {money(x.unpaid_settled)} đã chốt chưa trả</div>
+                        )}
+                      </td>
                       <td className="text-center whitespace-nowrap">
+                        <IconButton icon={FileText} size={14} label={`Đối chiếu công nợ với ${x.name}`}
+                          onClick={() => setStmtOf(x)} />
                         <IconButton icon={Pencil} size={14} label={`Sửa ${x.name}`}
                           onClick={() => setEditing(x)} />
                         <IconButton icon={Lock} size={14} label={`Ngừng dùng ${x.name}`}
@@ -646,6 +840,8 @@ function PartnersTab({ toast }) {
               </table>
             </div>
           )}
+
+      <StatementModal partner={stmtOf} onClose={() => setStmtOf(null)} />
 
       <PartnerForm
         value={editing}
@@ -672,8 +868,122 @@ function PartnersTab({ toast }) {
   );
 }
 
+/* ==================== PHIẾU ĐỐI CHIẾU CÔNG NỢ ===================== */
+
+const monthRange = (offset = 0) => {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  const last = offset === 0 ? now : new Date(now.getFullYear(), now.getMonth() + offset + 1, 0);
+  return { from: iso(first), to: iso(last) };
+};
+
+/**
+ * Đối chiếu công nợ với một chủ hàng theo kỳ (plan 31, hạng mục 4b): xem
+ * ngay trên màn hình rồi in cho chủ hàng ký.
+ */
+function StatementModal({ partner, onClose }) {
+  const [range, setRange] = useState(monthRange(0));
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => { if (partner) { setRange(monthRange(0)); setPrinting(false); } }, [partner?.id]);
+  const { data, busy, error, reload } = useFetch(
+    () => api.consignStatement({ partner_id: partner?.id, from: range.from, to: range.to }),
+    [partner?.id, range.from, range.to], { skip: !partner || !range.from || !range.to });
+
+  const presets = [
+    ['Tháng này', monthRange(0)],
+    ['Tháng trước', monthRange(-1)],
+    ['Từ đầu năm', { from: `${new Date().getFullYear()}-01-01`, to: iso(new Date()) }],
+  ];
+
+  return (
+    <>
+      <Modal
+        open={!!partner && !printing}
+        onClose={onClose}
+        title={`Đối chiếu công nợ — ${partner?.name || ''}`}
+        subtitle="Xem trước số liệu, rồi in cho chủ hàng ký xác nhận"
+        size="lg"
+        footer={<>
+          <div className="flex-1" />
+          <Button onClick={onClose}>Đóng</Button>
+          <Button variant="primary" icon={Printer} disabled={!data || busy} onClick={() => setPrinting(true)}>
+            In phiếu đối chiếu
+          </Button>
+        </>}
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {presets.map(([label, r]) => (
+              <button key={label} type="button" onClick={() => setRange(r)}
+                aria-pressed={range.from === r.from && range.to === r.to}
+                className={`btn btn-sm ${range.from === r.from && range.to === r.to ? 'btn-secondary' : 'btn-outline'}`}>
+                {label}
+              </button>
+            ))}
+            <Input type="date" size="sm" className="!w-36" aria-label="Từ ngày"
+              value={range.from} onChange={(e) => setRange((x) => ({ ...x, from: e.target.value }))} />
+            <span className="text-2xs text-muted-ink">đến</span>
+            <Input type="date" size="sm" className="!w-36" aria-label="Đến ngày"
+              value={range.to} onChange={(e) => setRange((x) => ({ ...x, to: e.target.value }))} />
+          </div>
+
+          {busy && !data ? <Spinner />
+            : error ? <ErrorBox error={error} onRetry={reload} />
+              : data && (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-4">
+                    <Stat label="Nợ đầu kỳ" value={money(data.opening)} icon={Wallet} />
+                    <Stat label={`Phải trả thêm (${n(data.sold_totals.count)} món)`} value={money(data.sold_totals.payable)} icon={Handshake} />
+                    <Stat label="Đã trả + chiết khấu" value={money(data.paid + data.discount)} icon={Banknote} />
+                    <Stat label={data.closing >= 0 ? 'Còn nợ cuối kỳ' : 'Chủ hàng nợ tiệm'} value={money(Math.abs(data.closing))}
+                      icon={Wallet} tone={data.closing > 0 ? 'warn' : 'default'} />
+                  </div>
+                  <div className="table-wrap max-h-[40vh]">
+                    <table className="data">
+                      <thead>
+                        <tr>
+                          <th>Ngày</th><th>Hoá đơn</th><th>Tên món</th>
+                          <th className="text-right">Tiền bán</th><th className="text-right">Hoa hồng</th>
+                          <th className="text-right">Phải trả</th><th>Đợt chốt</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.sold.map((x) => (
+                          <tr key={x.id}>
+                            <td className="text-2xs whitespace-nowrap">{date(x.sale_ts)}</td>
+                            <td className="font-mono text-2xs">{x.sale_code}</td>
+                            <td>{x.name} <span className="text-2xs text-muted-ink">· {n(x.qty)} {x.unit_name || ''}</span></td>
+                            <td className="num">{money(x.amount)}</td>
+                            <td className="num text-emerald-700">{money(x.commission)}</td>
+                            <td className="num font-semibold">{money(x.payable)}</td>
+                            <td className="text-2xs">{x.settlement_code || <Badge tone="warn">Chưa chốt</Badge>}</td>
+                          </tr>
+                        ))}
+                        {!data.sold.length && (
+                          <tr><td colSpan={7} className="text-center text-2xs text-muted-ink">Không bán món nào của chủ hàng này trong kỳ</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  {data.payments.length > 0 && (
+                    <p className="text-[13px]">
+                      Đã trả trong kỳ:{' '}
+                      {data.payments.map((p) => `${p.code} (${date(p.ts)}) ${money(p.amount)}`).join(' · ')}
+                    </p>
+                  )}
+                </>
+              )}
+        </div>
+      </Modal>
+      {printing && data && <ConsignStatementPrint statement={data} onClose={() => setPrinting(false)} />}
+    </>
+  );
+}
+
 function PartnerForm({ value, onClose, onSaved, toast }) {
-  const [f, setF] = useState({ name: '', phone: '', note: '', active: 1 });
+  const [f, setF] = useState({
+    name: '', phone: '', note: '', active: 1, commission_type: 'percent', commission_value: 0,
+  });
   const [busy, setBusy] = useState(false);
   const open = !!value;
 
@@ -682,6 +992,8 @@ function PartnerForm({ value, onClose, onSaved, toast }) {
       setF({
         name: value.name || '', phone: value.phone || '',
         note: value.note || '', active: value.active === 0 ? 0 : 1,
+        commission_type: value.commission_type === 'amount' ? 'amount' : 'percent',
+        commission_value: value.commission_value ?? 0,
       });
     }
   }, [value]);
@@ -717,6 +1029,22 @@ function PartnerForm({ value, onClose, onSaved, toast }) {
         <Field label="Điện thoại" htmlFor="cp-phone">
           <Input id="cp-phone" value={f.phone}
             onChange={(e) => setF((x) => ({ ...x, phone: e.target.value }))} />
+        </Field>
+        {/* Thu ngân không gõ hoa hồng nữa (BRD nâng cấp, mục 5) — mức thoả thuận
+            khai sẵn ở đây, bán hàng là tự áp */}
+        <Field label="Hoa hồng tiệm giữ (mặc định)"
+          hint="Thu ngân bán hàng gửi của chủ này sẽ tự áp mức này; quản lý sửa lại được sau khi hoá đơn xong.">
+          <div className="flex gap-1.5">
+            <Select className="!w-24" aria-label="Cách tính hoa hồng mặc định"
+              value={f.commission_type}
+              onChange={(e) => setF((x) => ({ ...x, commission_type: e.target.value }))}>
+              <option value="percent">%</option>
+              <option value="amount">đồng</option>
+            </Select>
+            <Input type="number" min="0" step="any" className="flex-1" aria-label="Mức hoa hồng mặc định"
+              value={f.commission_value}
+              onChange={(e) => setF((x) => ({ ...x, commission_value: e.target.value }))} />
+          </div>
         </Field>
         <Field label="Ghi chú" htmlFor="cp-note">
           <Input id="cp-note" value={f.note}

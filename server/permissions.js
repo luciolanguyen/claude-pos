@@ -28,13 +28,29 @@ export const PERMISSIONS = {
   'cash.manage':     'Quỹ tiền, thu chi',
   'cash.voucher':    'In lại phiếu thu, phiếu chi đã lập',
   'cost.view':       'Xem giá vốn và lãi lỗ',
+  /* Sửa số công nợ và chốt sổ công nợ (plan 31, 6b / 6c): chủ tiệm chốt cho
+     cả chủ và quản lý, nhưng mỗi lần sửa vẫn bắt gõ PIN, ghi lý do, lưu vết */
+  'debt.adjust':     'Sửa công nợ, chốt sổ công nợ',
+  /* Bảng lương (plan 28): chủ tiệm chốt quản lý xem được y như chủ (28-1).
+     Mở bảng lương còn phải gõ mã PIN mỗi phiên — xem routes/payroll.js */
+  'payroll.manage':  'Bảng lương nhân viên',
   'report.view':     'Xem báo cáo',
+  /* Nhập / xuất hàng loạt tách riêng khỏi quyền sửa hàng hoá: một lần nhập
+     file sai là hỏng cả danh mục, mà xuất file là mang dữ liệu tiệm ra
+     ngoài — hai việc đó nặng hơn hẳn việc sửa giá một mặt hàng. */
+  'data.import':     'Nhập danh mục từ file Excel',
+  'data.export':     'Xuất dữ liệu ra file Excel',
   'settings.manage': 'Thiết lập, người dùng, sao lưu',
 };
 
 const ALL = Object.keys(PERMISSIONS);
 
-/** Quyền của từng vai trò. owner và manager giống hệt nhau: toàn quyền. */
+/**
+ * Quyền của từng vai trò.
+ *
+ * owner và manager giống hệt nhau: toàn quyền — chủ tiệm đã chốt như vậy,
+ * quản lý ở đây là người nhà chứ không phải người làm thuê.
+ */
 export const ROLE_PERMISSIONS = {
   owner: ALL,
   manager: ALL,
@@ -45,9 +61,20 @@ export const ROLE_PERMISSIONS = {
     /* Thu nợ tại quầy xong thì in tờ phiếu thu đưa khách. Chỉ xem lại
        được đúng phiếu theo số, không mở được cả sổ quỹ. */
     'cash.voucher',
+    /* Xuất được danh sách hoá đơn, khách hàng trong ca mình — nhưng KHÔNG
+       nhập được file: nhập sai một file là hỏng cả danh mục hàng hoá. */
+    'data.export',
   ],
   stock: [
     'product.view', 'product.manage', 'stock.manage', 'purchase.manage',
+    /* Người dựng danh mục hàng hoá chính là người cần nhập file Excel */
+    'data.import', 'data.export',
+  ],
+  /* Người chỉ lo nhận và trả hàng bảo hành, không đụng quầy thu tiền.
+     Vẫn cần tra hoá đơn cũ (máy này bán hồi nào, còn hạn không), tra
+     hàng hoá, và mở hồ sơ khách để gọi điện báo máy đã sửa xong. */
+  warranty: [
+    'warranty.manage', 'sale.view', 'product.view', 'customer.manage',
   ],
 };
 
@@ -56,6 +83,7 @@ export const ROLE_LABEL = {
   manager: 'Quản lý',
   cashier: 'Thu ngân',
   stock: 'Nhân viên kho',
+  warranty: 'Nhân viên bảo hành',
 };
 
 /** Danh sách quyền của một vai trò. Vai trò lạ thì không có quyền nào. */

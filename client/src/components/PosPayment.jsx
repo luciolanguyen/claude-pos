@@ -17,7 +17,7 @@
 import { useState, useEffect } from 'react';
 import {
   Wallet, CreditCard, HandCoins, Tag, Printer, Truck, Lock, ShieldCheck,
-  AlertTriangle, Ticket, X, Pencil, KeyRound,
+  AlertTriangle, Ticket, X, Pencil, KeyRound, IdCard,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { money, n } from '../lib/format';
@@ -25,16 +25,20 @@ import { Button, IconButton, Modal, Field, MoneyInput } from './ui';
 import { CollectDebtRow } from './PosDebt';
 import { PinApprovalModal } from './PosApproval';
 import { PrintChoice } from './PosDeliveryForm';
+import { useApp } from '../lib/store';
 
 const METHODS = [
   { key: 'cash', label: 'Tiền mặt', icon: Wallet },
   { key: 'transfer', label: 'Chuyển khoản', icon: CreditCard },
   { key: 'debt', label: 'Ghi nợ', icon: HandCoins },
   { key: 'mixed', label: 'Kết hợp', icon: Tag },
+  /* Nhân viên mua hàng, trừ vào lương (plan 28, §6) */
+  { key: 'salary', label: 'Trừ lương', icon: IdCard },
 ];
 
 export default function PaymentModal({ open, onClose, totals, customer, onSubmit, delivery, onEditDelivery }) {
   const codMode = !!delivery && delivery.codMode !== false;
+  const { access } = useApp();
 
   const [method, setMethod] = useState('cash');
   const [received, setReceived] = useState(0);
@@ -50,8 +54,13 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
   const [vBusy, setVBusy] = useState(false);
   const [vErr, setVErr] = useState('');
   const [print, setPrint] = useState({ invoice: true, note: true });
+  /* In kèm phiếu soạn hàng cho nhân viên đi lấy hàng (BRD nâng cấp, mục 3) */
+  const [pickSlip, setPickSlip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /* Danh sách TÊN nhân viên (không lương, không số dư) — chỉ khi tiệm bật đăng nhập */
+  const [staff, setStaff] = useState([]);
+  const [salaryEmp, setSalaryEmp] = useState('');
 
   const voucherUse = voucher ? Math.min(voucher.balance, totals.total) : 0;
   const due = Math.max(0, totals.total - voucherUse);
@@ -70,7 +79,11 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     setVoucher(null);
     setVErr('');
     setPrint(delivery ? { invoice: true, note: true, ...(delivery.print || {}) } : { invoice: true, note: false });
+    setPickSlip(false);
     setErr('');
+    /* KHÔNG chọn sẵn ai: mặc định người đang đứng quầy là thu ngân tự mua ghi vào
+       lương mình chỉ bằng hai lần bấm mà chẳng ai để ý (plan 28, PAY-405) */
+    setSalaryEmp('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -79,6 +92,15 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     if (open) setReceived(Math.max(0, totals.total - voucherUse));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voucherUse]);
+
+  useEffect(() => {
+    if (!open || access?.login_required === false) { setStaff([]); return undefined; }
+    let alive = true;
+    api.get('/payroll/employee-names')
+      .then((list) => { if (alive) setStaff(Array.isArray(list) ? list : []); })
+      .catch(() => { if (alive) setStaff([]); });
+    return () => { alive = false; };
+  }, [open, access?.login_required]);
 
   /* Công nợ, hạn mức, nợ quá hạn — hỏi thẳng máy chủ mỗi lần mở hộp */
   useEffect(() => {
@@ -107,6 +129,13 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     cashAmount = method === 'transfer' ? 0 : paid;
     transferAmt = method === 'transfer' ? paid : 0;
     payMethod = remaining > 0 ? 'cod' : (method === 'transfer' ? 'transfer' : 'cash');
+  } else if (method === 'salary') {
+    /* Không đồng nào vào két, không thành nợ: cả phần còn phải trả trừ vào lương */
+    paid = 0;
+    remaining = 0;
+    cashAmount = 0;
+    transferAmt = 0;
+    payMethod = 'salary';
   } else {
     paid = method === 'cash' ? Math.min(received, due)
       : method === 'transfer' ? due
@@ -143,13 +172,19 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     cash_amount: cashAmount,
     transfer_amount: transferAmt,
     ...(voucher ? { voucher_code: voucher.code, voucher_amount: voucherUse } : {}),
+    ...(!codMode && method === 'salary' ? { salary_amount: due, salary_employee_id: Number(salaryEmp) || null } : {}),
     ...(approval ? { approval_token: approval.token } : {}),
     ...(delivery ? { _print: print } : {}),
+    ...(pickSlip ? { _pick: true } : {}),
     ...extra,
   });
 
   const run = async (extra = {}) => {
     setErr('');
+    if (!codMode && method === 'salary' && !salaryEmp) {
+      setErr('Chọn nhân viên mua hàng — phần mềm không tự chọn ai.');
+      return;
+    }
     if (debtNow && !customer) {
       setErr('Đơn còn nợ lại nên bắt buộc phải chọn khách hàng để theo dõi công nợ.');
       return;
@@ -356,8 +391,8 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
             <>
               <div>
                 <span className="label">Hình thức thanh toán</span>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {METHODS.map((m) => {
+                <div className={`grid gap-1.5 ${staff.length ? 'grid-cols-3 sm:grid-cols-5' : 'grid-cols-4'}`}>
+                  {METHODS.filter((m) => m.key !== 'salary' || staff.length > 0).map((m) => {
                     const off = m.key === 'debt' && !!credit?.blocked_overdue;
                     return (
                       <button
@@ -382,6 +417,22 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
                   })}
                 </div>
               </div>
+
+              {method === 'salary' && (
+                <div className="space-y-2">
+                  <Field label="Nhân viên mua hàng" required htmlFor="pay-salary-emp">
+                    <select id="pay-salary-emp" className="field field-lg" value={salaryEmp}
+                      onChange={(e) => { setSalaryEmp(e.target.value); setErr(''); }}>
+                      <option value="">— Chọn nhân viên —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
+                    </select>
+                  </Field>
+                  <p className="text-[13px] rounded-lg border border-line bg-muted/50 p-2.5">
+                    Trừ <b className="tabular">{money(due)}</b> vào lương kỳ này của nhân viên. Không thu tiền, không ghi nợ
+                    khách — kho vẫn trừ bình thường.
+                  </p>
+                </div>
+              )}
 
               {(method === 'cash' || method === 'mixed') && (
                 <Field label="Tiền khách đưa" htmlFor="pay-received">
@@ -411,7 +462,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
                 </Field>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
+              {method !== 'salary' && <div className="grid grid-cols-2 gap-2">
                 <div className="card p-2.5">
                   <div className="text-2xs font-bold text-muted-ink uppercase">Tiền thối lại</div>
                   <div className="text-lg font-display font-bold tabular mt-0.5">{money(change)}</div>
@@ -422,7 +473,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
                     {money(remaining)}
                   </div>
                 </div>
-              </div>
+              </div>}
 
               {remaining > 0 && credit?.debt_limit > 0 && !overLimit && (
                 <p className="text-2xs text-warn font-semibold">
@@ -484,6 +535,23 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
           )}
 
           {delivery && <PrintChoice value={print} onChange={setPrint} idPrefix="pay-print" />}
+
+          {/* Phiếu soạn hàng: không có giá tiền, có vị trí kệ — đưa nhân viên đi lấy hàng */}
+          <label htmlFor="pay-pick" className="flex items-start gap-2 cursor-pointer rounded-lg border border-line p-2.5">
+            <input
+              id="pay-pick"
+              type="checkbox"
+              className="w-5 h-5 mt-0.5 accent-emerald-700 cursor-pointer"
+              checked={pickSlip}
+              onChange={(e) => setPickSlip(e.target.checked)}
+            />
+            <span className="text-[13px] leading-tight">
+              In thêm phiếu soạn hàng cho nhân viên
+              <span className="block text-2xs text-muted-ink">
+                Chỉ tên hàng, vị trí kệ và số lượng — không in giá tiền
+              </span>
+            </span>
+          </label>
 
           {err && (
             <p role="alert" className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">

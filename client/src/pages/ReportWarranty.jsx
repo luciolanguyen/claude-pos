@@ -5,7 +5,8 @@ import {
 import { api } from '../lib/api';
 import { useFetch } from '../lib/store';
 import { money, n, short, date, datetime, pct } from '../lib/format';
-import { Button, Spinner, Empty, ErrorBox, Stat, Badge, Tabs } from '../components/ui';
+import { Button, Spinner, Empty, ErrorBox, Stat, Badge, Tabs, PermGate,
+} from '../components/ui';
 
 const STATUS_LABEL = {
   received: 'Mới nhận', checking: 'Đang kiểm tra', repairing: 'Đang sửa',
@@ -81,34 +82,36 @@ export default function ReportWarranty({ r }) {
             { key: 'product', label: 'Hàng hay hỏng', count: data.by_product.length },
           ]}
         />
-        <Button size="sm" icon={Download}
-          onClick={() => {
-            if (view === 'waiting') {
-              downloadCsv(`bao-hanh-cho-lay-${r.to}.csv`,
-                ['Mã phiếu', 'Ngày nhận', 'Khách hàng', 'Điện thoại', 'Hàng hoá', 'Serial', 'Hẹn trả', 'Tiền thu', 'Đã thu', 'Số ngày'],
-                data.waiting.map((x) => [x.code, date(x.ts), x.customer_display, x.phone_display,
-                  x.product_name, x.serial || '', x.promised_at ? date(x.promised_at) : '',
-                  x.charge, x.paid, x.days_open]));
-            } else if (view === 'open') {
-              downloadCsv(`bao-hanh-dang-xu-ly-${r.to}.csv`,
-                ['Mã phiếu', 'Ngày nhận', 'Khách hàng', 'Điện thoại', 'Hàng hoá', 'Trạng thái', 'Hẹn trả', 'Trễ (ngày)', 'Đã nhận (ngày)'],
-                data.open.map((x) => [x.code, date(x.ts), x.customer_display, x.phone_display,
-                  x.product_name, STATUS_LABEL[x.status], x.promised_at ? date(x.promised_at) : '',
-                  x.days_late > 0 ? x.days_late : '', x.days_open]));
-            } else if (view === 'done') {
-              downloadCsv(`bao-hanh-da-tra-${r.from}-${r.to}.csv`,
-                ['Mã phiếu', 'Ngày nhận', 'Ngày trả', 'Khách hàng', 'Hàng hoá', 'Xử lý', 'Còn BH', 'Tiền công', 'Vốn linh kiện', 'Thu khách', 'Lãi', 'Số ngày'],
-                data.done.map((x) => [x.code, date(x.ts), date(x.delivered_at), x.customer_display,
-                  x.product_name, RESOLUTION_LABEL[x.resolution] || '', x.in_warranty ? 'Có' : 'Không',
-                  x.labor_fee, x.parts_cost, x.charge, x.profit, x.days_taken]));
-            } else {
-              downloadCsv(`bao-hanh-theo-mat-hang-${r.from}-${r.to}.csv`,
-                ['Tên hàng', 'Số lần hỏng', 'Trong đó còn BH', 'Vốn linh kiện', 'Thu khách'],
-                data.by_product.map((x) => [x.product_name, x.n, x.in_warranty_count, x.parts_cost, x.charge]));
-            }
-          }}>
-          Xuất Excel
-        </Button>
+        <PermGate perm="data.export">
+          <Button size="sm" icon={Download}
+            onClick={() => {
+              if (view === 'waiting') {
+                downloadCsv(`bao-hanh-cho-lay-${r.to}.csv`,
+                  ['Mã phiếu', 'Ngày nhận', 'Khách hàng', 'Điện thoại', 'Hàng hoá', 'Serial', 'Hẹn trả', 'Tiền thu', 'Đã thu', 'Số ngày'],
+                  data.waiting.map((x) => [x.code, date(x.ts), x.customer_display, x.phone_display,
+                    x.product_name, x.serial || '', x.promised_at ? date(x.promised_at) : '',
+                    x.charge, x.paid, x.days_open]));
+              } else if (view === 'open') {
+                downloadCsv(`bao-hanh-dang-xu-ly-${r.to}.csv`,
+                  ['Mã phiếu', 'Ngày nhận', 'Khách hàng', 'Điện thoại', 'Hàng hoá', 'Trạng thái', 'Hẹn trả', 'Trễ (ngày)', 'Đã nhận (ngày)'],
+                  data.open.map((x) => [x.code, date(x.ts), x.customer_display, x.phone_display,
+                    x.product_name, STATUS_LABEL[x.status], x.promised_at ? date(x.promised_at) : '',
+                    x.days_late > 0 ? x.days_late : '', x.days_open]));
+              } else if (view === 'done') {
+                downloadCsv(`bao-hanh-da-tra-${r.from}-${r.to}.csv`,
+                  ['Mã phiếu', 'Ngày nhận', 'Ngày trả', 'Khách hàng', 'Hàng hoá', 'Xử lý', 'Còn BH', 'Tiền công', 'Vốn linh kiện', 'Thu khách', 'Lãi', 'Số ngày'],
+                  data.done.map((x) => [x.code, date(x.ts), date(x.delivered_at), x.customer_display,
+                    x.product_name, RESOLUTION_LABEL[x.resolution] || '', x.in_warranty ? 'Có' : 'Không',
+                    x.labor_fee, x.parts_cost, x.charge, x.profit, x.days_taken]));
+              } else {
+                downloadCsv(`bao-hanh-theo-mat-hang-${r.from}-${r.to}.csv`,
+                  ['Tên hàng', 'Số lần hỏng', 'Trong đó còn BH', 'Vốn linh kiện', 'Thu khách'],
+                  data.by_product.map((x) => [x.product_name, x.n, x.in_warranty_count, x.parts_cost, x.charge]));
+              }
+            }}>
+            Xuất Excel
+          </Button>
+        </PermGate>
       </div>
 
       {view === 'waiting' && (
