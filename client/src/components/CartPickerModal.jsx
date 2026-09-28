@@ -16,7 +16,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search, Plus, Minus, Trash2, PackagePlus, Undo2, ClipboardList, ShoppingCart,
-  Star, PackageX, ClipboardCheck, Lock,
+  Star, PackageX, ClipboardCheck, Lock, RefreshCcw,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
@@ -53,6 +53,19 @@ export const DOC_THEMES = {
     btn: '!bg-slate-700 !border-slate-700 !text-white hover:!bg-slate-800',
     head: 'bg-slate-100 border-slate-300 text-slate-900',
     chip: 'bg-slate-700 text-white',
+  },
+  /* Hàng khách lấy mới khi đổi hàng, và hàng khách mang trả không có hoá đơn
+     (yêu cầu 28/09, mục I.1): cùng một hộp chọn hàng với phiếu nhập, để thu ngân
+     chỉ phải quen một kiểu bảng. */
+  exchange: {
+    label: 'Hàng khách lấy mới', flow: 'Hàng đi ra khỏi kho',
+    icon: RefreshCcw, head: 'bg-amber-50 border-amber-200 text-amber-900',
+    chip: 'bg-amber-100 text-amber-900 border-amber-300',
+  },
+  sale_return: {
+    label: 'Khách trả hàng', flow: 'Hàng quay về kho',
+    icon: Undo2, head: 'bg-rose-50 border-rose-200 text-rose-900',
+    chip: 'bg-rose-100 text-rose-900 border-rose-300',
   },
   purchase: {
     icon: PackagePlus, label: 'Phiếu nhập hàng NCC', flow: 'Hàng đi vào kho',

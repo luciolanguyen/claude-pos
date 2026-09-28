@@ -495,6 +495,15 @@ addColumns('sales', {
   shipper_fee: 'INTEGER NOT NULL DEFAULT 0',
   ship_weight: 'REAL NOT NULL DEFAULT 0',
   ship_size: 'TEXT',
+  /* Phiếu chi tiền xe của đơn này (yêu cầu 28/09, mục I.2). Có số ở đây nghĩa là
+     đã chi rồi — bấm "đã giao xong" lần nữa cũng không chi lần thứ hai. */
+  shipper_paid_tx_id: 'INTEGER',
+  /* Nợ khách TRƯỚC và SAU hoá đơn này, chụp lại lúc bán để in lên hoá đơn
+     (yêu cầu 28/09, mục I.4). Chụp chứ không tính lại: in lại tờ hoá đơn cũ phải
+     ra đúng con số hôm đó, chứ không phải số nợ của hôm nay. NULL = khách lẻ
+     hoặc hoá đơn lập trước khi có tính năng này. */
+  debt_before: 'INTEGER',
+  debt_after: 'INTEGER',
 });
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_customers_phone2 ON customers(phone2)');

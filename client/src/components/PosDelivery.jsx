@@ -29,7 +29,7 @@ import { useApp, useFetch, useDebounced } from '../lib/store';
 import { money, n, date, smartTime, ROLE_LABEL } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty,
-  Spinner, Textarea, SearchInput, ErrorBox, Confirm,
+  Spinner, Textarea, SearchInput, ErrorBox, Confirm, Badge,
 } from './ui';
 import DeliveryNotePrint from './DeliveryNotePrint';
 
@@ -627,6 +627,18 @@ function DeliveryDetail({ row, onClose, onChanged, onPrint }) {
               <span className="flex items-center gap-1.5">
                 {row.cod_left > 0 && <span className="font-bold text-amber-800 tabular">còn {money(row.cod_left)}</span>}
                 <CodBadge status={row.cod_status} size="sm" />
+              </span>
+            </div>
+          )}
+          {/* Tiền xe: bấm "đã giao xong" là máy tự chi khỏi quỹ (yêu cầu 28/09, mục I.2) */}
+          {row.shipper_fee > 0 && (
+            <div className="flex justify-between items-center gap-2">
+              <span className="text-muted-ink">Tiền xe trả người giao</span>
+              <span className="flex items-center gap-1.5">
+                <span className="tabular font-semibold">{money(row.shipper_fee)}</span>
+                {row.shipper_paid_tx_id
+                  ? <Badge tone="ok">đã chi</Badge>
+                  : <Badge tone="mute">chi khi giao xong</Badge>}
               </span>
             </div>
           )}

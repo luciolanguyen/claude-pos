@@ -20,13 +20,14 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronLeft, ChevronRight, Printer, RefreshCcw, ReceiptText, Undo2, Handshake, ArrowLeft,
-  CalendarDays,
+  CalendarDays, Truck, ClipboardList,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced } from '../lib/store';
 import { money, n, qty as fq, date, datetime, time, isoDate, PAYMENT_LABEL } from '../lib/format';
 import { Modal, Button, Badge, Empty, Spinner, SearchInput, ErrorBox } from './ui';
 import InvoicePrint from './InvoicePrint';
+import { StepBadge } from './PosDelivery';
 
 const PAGE = 50;
 
@@ -44,9 +45,10 @@ const dayLabel = (iso) => {
 
 /**
  * @param onExchange      (sale) => void — mở hộp đổi trả với đúng hoá đơn này
- * @param onQuickExchange () => void — mở hộp đổi trả trống (hoá đơn ngày khác / không hoá đơn)
+ * @param onQuickExchange () => void — mở hộp đổi trả trống (tìm hoá đơn ngày khác)
+ * @param onQuickReturn () => void — mở thẳng hộp "Trả hàng nhanh" (khách không có hoá đơn)
  */
-export default function PosDayInvoices({ open, onClose, onExchange, onQuickExchange }) {
+export default function PosDayInvoices({ open, onClose, onExchange, onQuickExchange, onQuickReturn }) {
   const { can, store, settings } = useApp();
   const seeCost = can('cost.view');
   const mayReturn = can('sale.return');
@@ -121,10 +123,19 @@ export default function PosDayInvoices({ open, onClose, onExchange, onQuickExcha
         subtitle={`${dayLabel(day)}${day !== isoDate() ? ` · ${date(day)}` : ''} · bấm một hoá đơn để xem chi tiết, in lại hoặc đổi trả`}
         size="full"
         footer={<>
+          {/* Khách mang hàng tới trả mà không có hoá đơn là chuyện thường ngày,
+              nên nút này đi THẲNG vào hộp trả hàng nhanh (yêu cầu 28/09, mục I.1).
+              Trước đây phải qua màn tìm hoá đơn rồi mới bấm được một dòng chữ nhỏ. */}
+          {mayReturn && (
+            <Button icon={Undo2} onClick={onQuickReturn}
+              title="Khách mang hàng tới trả, không có hoá đơn">
+              Trả hàng nhanh
+            </Button>
+          )}
           {mayReturn && (
             <Button icon={RefreshCcw} onClick={onQuickExchange}
-              title="Khách không giữ hoá đơn, hoặc hoá đơn thuộc ngày khác">
-              Đổi trả nhanh
+              title="Đổi trả theo hoá đơn của ngày khác">
+              Tìm hoá đơn cũ để đổi trả
             </Button>
           )}
           <div className="flex-1" />
@@ -261,6 +272,20 @@ function InvoiceRow({ s, active, onPick }) {
             · <Handshake size={11} aria-hidden="true" /> {n(s.consign_count)} mua hộ
           </span>
         )}
+        {/* Hai dấu để nhìn danh sách là biết đơn nào phải đem đi, đơn nào khách
+            đặt trước rồi mới tới lấy (yêu cầu 28/09, mục I.1) */}
+        {s.delivery_status && (
+          <span className="shrink-0 text-sky-700 inline-flex items-center gap-0.5"
+            title={`Giao tận nơi${s.delivery_address ? ' · ' + s.delivery_address : ''}`}>
+            · <Truck size={11} aria-hidden="true" /> giao
+          </span>
+        )}
+        {s.order_code && (
+          <span className="shrink-0 text-emerald-700 inline-flex items-center gap-0.5"
+            title={`Xuất từ đơn đặt hàng ${s.order_code}`}>
+            · <ClipboardList size={11} aria-hidden="true" /> đơn đặt
+          </span>
+        )}
         {(cancelled || owes) && (
           <span className="ml-auto shrink-0">
             {cancelled ? <Badge tone="bad">Đã huỷ</Badge> : <Badge tone="warn">Nợ {money(s.total - s.paid)}</Badge>}
@@ -334,6 +359,41 @@ function InvoiceDetail({ s, seeCost, mayReturn, dim, onPrint, onExchange }) {
           <div>Kho xuất: {s.warehouse_name || '—'}</div>
           <div>Bảng giá: {s.price_list_name || 'Giá lẻ'}</div>
           {s.cod_amount > 0 && <div>Thu hộ COD: {money(s.cod_amount)}</div>}
+          {s.order_code && (
+            <div className="text-emerald-800 mt-0.5 flex items-center gap-1">
+              <ClipboardList size={12} aria-hidden="true" />
+              Xuất từ đơn đặt <b className="font-mono">{s.order_code}</b>
+            </div>
+          )}
+          {/* Đơn giao tận nơi: địa chỉ, người cầm hàng đi, và hai khoản tiền dễ lẫn
+              — phí khách trả và tiền xe tiệm trả (yêu cầu 28/09, mục I.1) */}
+          {s.delivery_status && (
+            <div className="mt-1 pt-1 border-t border-line space-y-0.5">
+              <div className="flex items-center gap-1.5">
+                <Truck size={12} className="text-sky-700" aria-hidden="true" />
+                <b>Giao tận nơi</b>
+                <StepBadge status={s.delivery_status} size="sm" />
+              </div>
+              {s.delivery_address && <div>Địa chỉ: {s.delivery_address}</div>}
+              {(s.delivery_name || s.delivery_phone) && (
+                <div>Người nhận: {[s.delivery_name, s.delivery_phone].filter(Boolean).join(' · ')}</div>
+              )}
+              {(s.shipper_name || s.shipper_user_name || s.carrier_name) && (
+                <div>Người giao: {s.shipper_name || s.shipper_user_name || s.carrier_name}</div>
+              )}
+              {s.ship_fee > 0 && (
+                <div>
+                  Phí giao {s.ship_payer === 'customer' ? 'khách trả' : 'tiệm chịu'}: {money(s.ship_fee)}
+                </div>
+              )}
+              {seeCost && s.shipper_fee > 0 && (
+                <div>
+                  Tiền xe trả người giao: {money(s.shipper_fee)}
+                  {s.shipper_paid_tx_id ? ' · đã chi' : ' · chi khi giao xong'}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

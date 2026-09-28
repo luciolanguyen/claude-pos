@@ -272,6 +272,14 @@ function InvoiceSettings() {
         <CheckRow checked={!!form['show_cost']} onChange={(v) => setForm((f) => ({ ...f, show_cost: v }))} label="Hiện giá vốn và lãi trên bản in"
           hint="Chỉ bật khi in bản lưu nội bộ, đừng đưa cho khách" />
         <CheckRow checked={!!form['auto_print']} onChange={(v) => setForm((f) => ({ ...f, auto_print: v }))} label="Tự mở hộp thoại in ngay sau khi thanh toán" />
+        {/* Nợ của khách in ngay trên hoá đơn để khỏi phải tra sổ (yêu cầu 28/09, mục I.4).
+            Số nợ được chụp lúc bán, in lại tờ cũ vẫn ra đúng con số hôm đó. */}
+        <CheckRow checked={form['show_debt_old'] !== false} onChange={(v) => setForm((f) => ({ ...f, show_debt_old: v }))}
+          label="In dòng nợ cũ của khách"
+          hint="Số khách còn nợ TRƯỚC hoá đơn này. Khách lẻ không có dòng này." />
+        <CheckRow checked={form['show_debt_new'] !== false} onChange={(v) => setForm((f) => ({ ...f, show_debt_new: v }))}
+          label="In dòng tổng nợ sau hoá đơn này"
+          hint="Nợ cũ cộng phần chưa trả của hoá đơn này." />
       </div>
 
       {/* Phiếu thu nợ khổ K80 (tài liệu 14, mục 1.2) */}

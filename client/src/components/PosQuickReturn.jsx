@@ -24,7 +24,7 @@ import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty, Badge, Textarea, QtyInput,
   ErrorBox, TotalRow,
 } from './ui';
-import { ProductPicker } from './ProductPicker';
+import CartPickerModal from './CartPickerModal';
 import {
   ConditionToggle, FeeField, RefundMethodPicker, REFUND_METHODS, VoucherPrint, feeOf,
 } from './ReturnParts';
@@ -94,7 +94,6 @@ export default function QuickReturnModal({
 
   const add = (p, qty = 1) => {
     const more = Number(qty) > 0 ? Number(qty) : 1;
-    setPickOpen(false);
     setLines((prev) => {
       const at = prev.findIndex((l) => l.product_id === p.id);
       if (at >= 0) {
@@ -321,12 +320,23 @@ export default function QuickReturnModal({
         </div>
       </Modal>
 
-      <ProductPicker
+      {/* Cùng hộp chọn hàng với phiếu nhập (yêu cầu 28/09, mục I.1). Hộp cũ còn
+          hiện cả GIÁ VỐN cho thu ngân xem — bỏ luôn được chỗ hở đó. */}
+      <CartPickerModal
         open={pickOpen}
         onClose={() => setPickOpen(false)}
-        products={products || []}
-        onPick={add}
+        kind="sale_return"
+        wide
+        qtyEntry
         title="Chọn hàng khách mang trả"
+        products={products || []}
+        lines={lines}
+        onAdd={add}
+        onPatch={patch}
+        onRemove={drop}
+        priceOf={(p) => listedPrice(p, priceListId)}
+        priceLabel="Giá bán"
+        footerNote="Tiền hàng khách trả"
       />
     </>
   );

@@ -33,7 +33,7 @@ import {
   Button, IconButton, Input, Select, Modal, Field, MoneyInput, Empty, Spinner, Badge,
   QtyInput, SearchInput, TotalRow,
 } from './ui';
-import { CategorySelect, categoryBranch } from './CategoryTree';
+import CartPickerModal from './CartPickerModal';
 import InvoicePrint from './InvoicePrint';
 import { PinApprovalModal } from './PosApproval';
 import { findByCode, barcodeIncludes } from '../lib/codeMatch';
@@ -643,13 +643,26 @@ export default function ExchangeModal({ open, onClose, sale: preset = null, prod
         )}
       </Modal>
 
-      <SwapProductPicker
+      {/* Cùng một hộp chọn hàng với phiếu nhập: có ô số lượng ngay trên dòng và
+          giỏ hàng bên phải, sửa ở hộp là bảng B bên dưới đổi theo (mục I.1) */}
+      <CartPickerModal
         open={picking !== false}
-        initialQuery={typeof picking === 'string' ? picking : ''}
         onClose={() => setPicking(false)}
+        kind="exchange"
+        wide
+        qtyEntry
+        title="Chọn hàng khách lấy mới"
         products={products || []}
-        priceListId={priceListId}
-        onPick={addSwap}
+        lines={swap}
+        onAdd={addSwap}
+        onPatch={(key, p) => setSwap((ls) => ls.map((x) => (x.key === key ? { ...x, ...p } : x)))}
+        onRemove={(key) => setSwap((ls) => ls.filter((x) => x.key !== key))}
+        priceOf={(p) => {
+          const u = p.units?.find((x) => x.factor === 1) || p.units?.[0];
+          return u?.prices?.[priceListId] ?? u?.prices?.[defaultPriceList] ?? 0;
+        }}
+        priceLabel="Giá bán"
+        footerNote="Tiền hàng khách lấy mới"
       />
 
       <PinApprovalModal
@@ -670,81 +683,3 @@ export default function ExchangeModal({ open, onClose, sale: preset = null, prod
   );
 }
 
-/** Bảng chọn hàng khách lấy mới — hiện giá bán và tồn, không hiện giá vốn. */
-function SwapProductPicker({ open, onClose, products, onPick, priceListId, initialQuery }) {
-  const { meta } = useApp();
-  const [q, setQ] = useState('');
-  const [cat, setCat] = useState('');
-
-  useEffect(() => { if (open) setQ(initialQuery || ''); }, [open, initialQuery]);
-
-  const list = useMemo(() => {
-    let l = products;
-    if (cat) {
-      const branch = categoryBranch(meta.categories, cat);
-      if (branch) l = l.filter((p) => branch.has(p.category_id));
-    }
-    if (q.trim()) {
-      l = l.filter((p) => match(p.name, q) || match(p.alias || '', q) || match(p.sku, q)
-        || barcodeIncludes(p, q));
-    }
-    return l.slice(0, 300);
-  }, [products, q, cat, meta.categories]);
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Chọn hàng khách lấy mới"
-      size="lg"
-      footer={<Button variant="primary" onClick={onClose}>Xong</Button>}
-    >
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <SearchInput value={q} onChange={setQ} placeholder="Gõ tên hàng hoặc quét mã vạch..." className="flex-1" autoFocus />
-          <CategorySelect value={cat} onChange={setCat} categories={meta.categories} className="!w-auto"
-            ariaLabel="Lọc theo nhóm hàng" />
-        </div>
-        {list.length === 0 ? (
-          <Empty icon={Search} title="Không tìm thấy hàng nào" message={`Không có mặt hàng khớp "${q}".`} />
-        ) : (
-          <div className="table-wrap max-h-[50vh]">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Mã hàng</th><th>Tên hàng</th>
-                  <th className="text-right">Tồn kho</th>
-                  <th className="text-right">Giá bán</th>
-                  <th style={{ width: 60 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((p) => {
-                  const u = p.units?.find((x) => x.factor === 1) || p.units?.[0];
-                  const price = u?.prices?.[priceListId] ?? Object.values(u?.prices || {})[0] ?? 0;
-                  return (
-                    <tr key={p.id} className="hoverable clickable" onClick={() => onPick(p)}>
-                      <td className="tabular text-muted-ink">{p.sku}</td>
-                      <td>
-                        <div>{p.name}</div>
-                        {p.alias && <div className="text-2xs text-muted-ink truncate">{p.alias}</div>}
-                      </td>
-                      <td className={`num ${p.track_stock && p.stock <= 0 ? 'text-danger' : ''}`}>
-                        {p.track_stock ? `${fq(p.stock)} ${p.base_unit}` : '—'}
-                      </td>
-                      <td className="num font-semibold">{money(price)}</td>
-                      <td className="text-center">
-                        <IconButton icon={Plus} label={`Chọn ${p.name}`}
-                          onClick={(e) => { e.stopPropagation(); onPick(p); }} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
