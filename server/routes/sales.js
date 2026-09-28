@@ -60,7 +60,8 @@ r.get('/sales', (req, res) => {
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.code AS customer_code,
            u.full_name AS user_name, w.name AS warehouse_name,
            (s.total - s.paid) AS remaining,
-           (s.total - s.vat_amount - s.cogs) AS profit,
+           /* Lãi của đơn giao hàng phải trừ tiền xe trả người giao (mục II.1) */
+           (s.total - s.vat_amount - s.cogs - s.shipper_fee) AS profit,
            (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
            /* Hàng mua hộ vãng lai tách riêng (plan 31, hạng mục 4d): nhìn
               danh sách hoá đơn phải phân biệt được đâu là hàng của tiệm,
@@ -93,7 +94,8 @@ r.get('/sales', (req, res) => {
   const sums = get(`
     SELECT COUNT(*) AS count,
            COALESCE(SUM(s.total), 0) AS revenue,
-           COALESCE(SUM(s.total - s.vat_amount - s.cogs), 0) AS profit,
+           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee), 0) AS profit,
+           COALESCE(SUM(s.shipper_fee), 0) AS shipper_fee,
            COALESCE(SUM(MAX(s.total - s.paid, 0)), 0) AS unpaid
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id

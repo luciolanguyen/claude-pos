@@ -2,9 +2,10 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   Receipt, Printer, Undo2, XCircle, Filter, Download, ShoppingCart, HandCoins,
-  ShieldCheck, Handshake, ArrowLeft, ClipboardList, Pencil,
+  ShieldCheck, Handshake, ArrowLeft, ClipboardList, Pencil, Truck,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { StepBadge } from '../components/PosDelivery';
 import { useApp, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
 import { money, n, short, qty as fq, datetime, date, isoDate, range, RANGES, PAYMENT_LABEL } from '../lib/format';
 import {
@@ -190,6 +191,15 @@ export default function Sales() {
                           {/* Hoá đơn có hàng bán giùm chủ vãng lai (plan 31,
                               hạng mục 4d): tiền gộp chung vào tổng nhưng lãi
                               chỉ là phần hoa hồng — phải phân biệt được. */}
+                          {/* Đơn phải đem đi giao: nhìn danh sách là biết ngay (yêu cầu 28/09, mục II.1) */}
+                          {s.delivery_status && (
+                            <span title={`Giao tận nơi${s.delivery_address ? ' · ' + s.delivery_address : ''}`}
+                              className="ml-1 inline-flex items-center gap-0.5 rounded border border-sky-300
+                                         bg-sky-50 px-1 text-2xs font-semibold text-sky-800">
+                              <Truck size={10} aria-hidden="true" />
+                              Giao
+                            </span>
+                          )}
                           {s.consign_count > 0 && (
                             <span
                               title={`${s.consign_count} món mua hộ · ${money(s.consign_amount)}`
@@ -504,6 +514,28 @@ function SaleDetail({
           {detail.approval_note && (
             <div className="text-2xs text-muted-ink">Quản lý đã duyệt: {detail.approval_note}</div>
           )}
+          {/* Đơn giao tận nơi: ai cầm hàng đi, tới đâu, mã vận đơn (mục II.1) */}
+          {detail.delivery_status && (
+            <div className="mt-1 pt-1 border-t border-line space-y-0.5">
+              <div className="flex items-center gap-1.5 font-semibold text-sky-800">
+                <Truck size={13} aria-hidden="true" /> Giao tận nơi
+                <StepBadge status={detail.delivery_status} size="sm" />
+              </div>
+              {detail.delivery_address && <div>Địa chỉ: {detail.delivery_address}</div>}
+              {(detail.delivery_name || detail.delivery_phone) && (
+                <div>Người nhận: {[detail.delivery_name, detail.delivery_phone].filter(Boolean).join(' · ')}</div>
+              )}
+              {(detail.shipper_name || detail.shipper_user_name || detail.carrier_name) && (
+                <div>Người giao: {detail.shipper_name || detail.shipper_user_name || detail.carrier_name}</div>
+              )}
+              {detail.tracking_code && <div>Mã vận đơn: <b className="font-mono">{detail.tracking_code}</b></div>}
+            </div>
+          )}
+          {detail.order_code && (
+            <div className="text-emerald-800 mt-0.5">
+              Xuất từ đơn đặt <b className="font-mono">{detail.order_code}</b>
+            </div>
+          )}
         </div>
       </div>
 
@@ -619,12 +651,44 @@ function SaleDetail({
           {detail.cogs !== undefined && (
             <>
               <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
-                <span>Giá vốn</span><span className="tabular font-mono">{money(detail.cogs)}</span>
+                <span>Giá vốn hàng bán</span><span className="tabular font-mono">{money(detail.cogs)}</span>
               </div>
+              {/* Hai khoản tiền của đơn giao hàng, trước đây trộn lẫn vào lãi:
+                  phí giao là tiền khách trả thêm, tiền xe là tiền tiệm bỏ ra
+                  (yêu cầu 28/09, mục II.1) */}
+              {detail.ship_fee > 0 && (
+                <div className="flex justify-between text-muted-ink">
+                  <span>{detail.ship_payer === 'customer' ? 'Phí giao khách trả' : 'Phí giao tiệm chịu'}</span>
+                  <span className="tabular font-mono">{money(detail.ship_fee)}</span>
+                </div>
+              )}
+              {detail.shipper_fee > 0 && (
+                <div className="flex justify-between text-muted-ink">
+                  <span>Tiền xe trả người giao{detail.shipper_paid_tx_id ? '' : ' (chưa chi)'}</span>
+                  <span className="tabular font-mono">-{money(detail.shipper_fee)}</span>
+                </div>
+              )}
               <div className="flex justify-between font-semibold text-emerald-700">
                 <span>Lợi nhuận</span>
-                <span className="tabular font-mono">{money(detail.total - detail.vat_amount - detail.cogs)}</span>
+                <span className="tabular font-mono">
+                  {money(detail.total - detail.vat_amount - detail.cogs - (detail.shipper_fee || 0))}
+                </span>
               </div>
+              {/* Tiền thật đã vào (hoặc ra) két vì hoá đơn này: khách trả bao nhiêu,
+                  trừ tiền xe đã chi cho người giao. Đơn giao thu hộ thì lúc chưa đối
+                  soát con số này âm — nói thẳng ra như vậy chứ đừng ghi "thực thu" rồi
+                  để người xem tự đoán. */}
+              {(() => {
+                const net = detail.paid - (detail.shipper_paid_tx_id ? detail.shipper_fee || 0 : 0);
+                return (
+                  <div className={`flex justify-between ${net < 0 ? 'text-warn' : 'text-muted-ink'}`}>
+                    <span title="Tiền khách đã trả, trừ tiền xe đã chi cho người giao">
+                      {net < 0 ? 'Quỹ đang ứng ra' : 'Thực thu về quỹ'}
+                    </span>
+                    <span className="tabular font-mono">{money(Math.abs(net))}</span>
+                  </div>
+                );
+              })()}
             </>
           )}
         </div>

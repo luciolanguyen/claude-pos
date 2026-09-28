@@ -187,6 +187,9 @@ function detail(id) {
   rq.items = all(`
     SELECT i.*, p.sku, p.base_unit, p.barcode, p.cost_price, p.pack_spec,
            c.name AS category_name,
+           /* Ảnh đại diện để nhìn mặt hàng mà nhớ, khỏi đọc tên dài (mục II.3b) */
+           (SELECT file FROM product_images pi WHERE pi.product_id = p.id
+             ORDER BY pi.is_main DESC, pi.sort_order, pi.id LIMIT 1) AS image,
            d.code AS split_draft_code,
            COALESCE((SELECT SUM(s.qty) FROM stock s
                       WHERE s.product_id = i.product_id AND s.warehouse_id = ?), 0) AS stock_now
@@ -199,13 +202,15 @@ function detail(id) {
   /* Mối nào bán món này, và mối nào đang được chọn trên phiếu */
   for (const it of rq.items) {
     it.suppliers = supplierOptions(it.product_id);
-    const picked = all(`SELECT supplier_id, quote_price FROM requisition_item_suppliers
+    const picked = all(`SELECT supplier_id, quote_price, buy_qty FROM requisition_item_suppliers
                         WHERE item_id = ?`, [it.id]);
     it.chosen = picked.map((x) => x.supplier_id);
     /* Báo giá kế toán gõ thẳng trên phiếu cho từng mối (tài liệu 17, mục 2.2) */
     it.quotes = Object.fromEntries(picked
       .filter((x) => Number(x.quote_price) > 0)
       .map((x) => [x.supplier_id, x.quote_price]));
+    /* Số dự mua chia cho từng mối (yêu cầu 28/09, mục II.3b) */
+    it.buy_qtys = Object.fromEntries(picked.map((x) => [x.supplier_id, x.buy_qty || 0]));
     /* Đã chuyển sang phiếu mua tạm thì KHOÁ: không sửa số, không lập lại */
     it.locked = !!it.split_at;
   }
@@ -322,6 +327,17 @@ r.put('/requisitions/:id/items/:itemId', (req, res) => {
           b.note === undefined ? it.note : (b.note || null),
           it.id]);
 
+      /* Số dự mua của một mối: { supplier_id, buy_qty } (yêu cầu 28/09, mục II.3b).
+         Gõ số cho mối nào thì mối đó tự được chọn luôn — đỡ phải bấm hai nhát. */
+      if (b.supplier_qty && Number(b.supplier_qty.supplier_id)) {
+        const sid = Number(b.supplier_qty.supplier_id);
+        const qty = Math.max(0, Number(b.supplier_qty.buy_qty) || 0);
+        run('INSERT OR IGNORE INTO requisition_item_suppliers(item_id, supplier_id) VALUES(?, ?)',
+          [it.id, sid]);
+        run(`UPDATE requisition_item_suppliers SET buy_qty = ?
+             WHERE item_id = ? AND supplier_id = ?`, [qty, it.id, sid]);
+      }
+
       if (Array.isArray(b.supplier_ids)) {
         /* Giữ lại báo giá đã gõ cho những mối vẫn còn được chọn */
         const keep = new Map(all(`SELECT supplier_id, quote_price FROM requisition_item_suppliers
@@ -341,6 +357,14 @@ r.put('/requisitions/:id/items/:itemId', (req, res) => {
           [it.id, sid]);
         run(`UPDATE requisition_item_suppliers SET quote_price = ?
              WHERE item_id = ? AND supplier_id = ?`, [price > 0 ? price : null, it.id, sid]);
+      }
+      /* Dòng nào đã chia số cho các mối thì TỔNG dự mua lấy theo tổng đó — cột
+         "dự mua" cũ vẫn đúng cho báo cáo và cho chỗ lọc, khỏi phải gõ hai lần. */
+      const spread = get(`SELECT COALESCE(SUM(buy_qty), 0) AS total, COUNT(*) AS n
+                          FROM requisition_item_suppliers WHERE item_id = ? AND buy_qty > 0`,
+      [it.id]);
+      if (spread.n > 0) {
+        run('UPDATE requisition_items SET buy_qty = ? WHERE id = ?', [spread.total, it.id]);
       }
       return detail(Number(req.params.id));
     });
@@ -605,6 +629,18 @@ r.post('/requisitions/:id/split', (req, res) => {
          chống trùng của tài liệu 15, mục 4.4 */
       if (it.split_at) { locked.push(it.name_snapshot); continue; }
       if (!it.chosen.length) { noSupplier.push(it.name_snapshot); continue; }
+      /* Số dự mua chia theo từng mối (yêu cầu 28/09, mục II.3b). Dòng nào chưa chia
+         mà lại chọn nhiều mối thì giữ cách cũ — mỗi mối một phiếu với TOÀN BỘ số
+         lượng, và cảnh báo để người lập phiếu tự bỏ bớt. */
+      const spread = it.chosen.filter((sid) => Number(it.buy_qtys?.[sid]) > 0);
+      if (spread.length) {
+        takenIds.add(it.id);
+        for (const sid of spread) {
+          if (!bySupplier.has(sid)) bySupplier.set(sid, []);
+          bySupplier.get(sid).push({ ...it, buy_qty: Number(it.buy_qtys[sid]) });
+        }
+        continue;
+      }
       if (it.chosen.length > 1) {
         duplicated.push({ name: it.name_snapshot, qty: it.buy_qty, suppliers: it.chosen.length });
       }

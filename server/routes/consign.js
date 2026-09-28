@@ -319,7 +319,19 @@ r.get('/consign-settlements', (req, res) => {
   /* Tổng còn nợ chủ hàng của các đợt đang xem — chủ tiệm hay hỏi "còn thiếu ai bao nhiêu" */
   const sums = get(`SELECT COALESCE(SUM(st.payout), 0) AS payout, COALESCE(SUM(st.paid), 0) AS paid,
                            COALESCE(SUM(st.payout - st.paid), 0) AS owing ${sql}`, params);
-  res.json({ rows, total, page, page_size: size, sums });
+  /* Còn nợ ai bao nhiêu, gom theo chủ hàng và tính trên TOÀN BỘ sổ chứ không theo
+     trang đang xem — để trả gộp một lần cho một người (yêu cầu 28/09, mục II.4). */
+  const owingByPartner = all(`
+    SELECT st.partner_id, COALESCE(p.name, st.partner_name) AS partner_name, p.phone,
+           COUNT(*) AS settlement_count,
+           COALESCE(SUM(st.payout - st.paid), 0) AS owing,
+           MIN(date(st.ts)) AS oldest_ts
+    FROM consign_settlements st
+    LEFT JOIN consign_partners p ON p.id = st.partner_id
+    WHERE st.payout > st.paid AND st.partner_id IS NOT NULL
+    GROUP BY st.partner_id
+    ORDER BY owing DESC`);
+  res.json({ rows, total, page, page_size: size, sums, owing_by_partner: owingByPartner });
 });
 
 r.get('/consign-settlements/:id', (req, res) => {
@@ -398,6 +410,93 @@ r.post('/consign-settlements/:id/pay', (req, res) => {
       return {
         id: st.id, code: st.code, payout: st.payout, paid: st.paid + asked, owing: left,
         cash_tx_id: cashTx.id, cash_code: cashTx.code,
+      };
+    });
+    res.json(out);
+  } catch (e) { fail(res, e); }
+});
+
+/**
+ * TRẢ NỢ TỔNG HỢP cho MỘT chủ hàng (yêu cầu 28/09, mục II.4).
+ *
+ * Một chủ hàng thường có mấy đợt chốt còn nợ rải rác. Trước đây phải mở từng đợt
+ * mà trả, ra mấy phiếu chi lẻ cho cùng một lần đưa tiền. Giờ đưa bao nhiêu gõ bấy
+ * nhiêu: máy trả dần từ đợt CŨ NHẤT (FIFO), ghi một phiếu chi duy nhất, còn mỗi
+ * đợt vẫn có dòng riêng trong sổ trả tiền để đối chiếu.
+ *
+ *   amount bỏ trống  → trả nốt tất cả những gì còn nợ chủ hàng đó.
+ */
+r.post('/consign-partners/:id/pay', (req, res) => {
+  try {
+    const out = tx(() => {
+      const partnerId = Number(req.params.id);
+      const partner = get('SELECT * FROM consign_partners WHERE id = ?', [partnerId]);
+      if (!partner) throw Object.assign(new Error('Không tìm thấy chủ hàng'), { status: 404 });
+
+      const open = all(`SELECT * FROM consign_settlements
+                        WHERE partner_id = ? AND payout > paid
+                        ORDER BY ts, id`, [partnerId]);
+      const owing = open.reduce((a, x) => a + (x.payout - x.paid), 0);
+      if (!(owing > 0)) throw badRequest(`Không còn nợ ${partner.name} đồng nào.`, 'ALREADY_PAID');
+
+      const asked = req.body?.amount === undefined || req.body?.amount === null || req.body?.amount === ''
+        ? owing : Math.round(Number(req.body.amount) || 0);
+      if (!(asked > 0)) throw badRequest('Số tiền trả phải lớn hơn 0.');
+      if (asked > owing) {
+        throw badRequest(`Chỉ còn nợ ${partner.name} ${owing.toLocaleString('vi-VN')} đ — không trả quá số đó.`,
+          'OVER_PAY');
+      }
+
+      const accountId = Number(req.body?.account_id) || defaultCashAccount();
+      if (!accountId) throw badRequest('Chưa thiết lập quỹ tiền để chi trả.');
+      const userId = req.body?.user_id || req.user?.id || null;
+
+      /* Chia tiền cho từng đợt trước, để ghi được số đợt lên phiếu chi */
+      const plan = [];
+      let left = asked;
+      for (const st of open) {
+        if (left <= 0) break;
+        const take = Math.min(left, st.payout - st.paid);
+        plan.push({ settlement_id: st.id, code: st.code, amount: take });
+        left -= take;
+      }
+
+      const cashTx = addCashTx({
+        accountId,
+        direction: 'out',
+        amount: asked,
+        category: 'consign_out',
+        partnerType: 'consign',
+        partnerId,
+        partnerName: partner.name,
+        refType: 'consign_partner',
+        refId: partnerId,
+        refCode: plan.length === 1 ? plan[0].code : null,
+        userId,
+        note: `Trả tiền hàng gửi bán cho ${partner.name} — ${plan.length} đợt: `
+          + plan.map((x) => `${x.code} ${x.amount.toLocaleString('vi-VN')} đ`).join(', ')
+          + (asked < owing ? ` (còn nợ ${(owing - asked).toLocaleString('vi-VN')} đ)` : ''),
+      });
+
+      for (const x of plan) {
+        run(`INSERT INTO consign_payments(settlement_id, amount, account_id, cash_tx_id, user_id, note)
+             VALUES(?, ?, ?, ?, ?, ?)`,
+        [x.settlement_id, x.amount, accountId, cashTx.id, userId,
+          String(req.body?.note || '').trim() || `Trả gộp ${plan.length} đợt, phiếu ${cashTx.code}`]);
+        run('UPDATE consign_settlements SET paid = paid + ?, cash_tx_id = COALESCE(cash_tx_id, ?) WHERE id = ?',
+          [x.amount, cashTx.id, x.settlement_id]);
+      }
+
+      return {
+        partner_id: partnerId,
+        partner_name: partner.name,
+        paid: asked,
+        owing_before: owing,
+        owing: owing - asked,
+        settlement_count: plan.length,
+        allocation: plan,
+        cash_tx_id: cashTx.id,
+        cash_code: cashTx.code,
       };
     });
     res.json(out);

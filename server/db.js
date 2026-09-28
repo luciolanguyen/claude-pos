@@ -488,6 +488,11 @@ addColumns('requisition_items', {
   split_draft_id: 'INTEGER',
 });
 addColumns('requisitions', { merged_into: 'INTEGER' });
+/* Số dự mua của TỪNG MỐI cho một dòng phiếu báo hết hàng (yêu cầu 28/09, mục II.3b).
+   Trước đây số dự mua chỉ có một ô cho cả dòng, mà một món lại chọn được nhiều mối —
+   tách phiếu mua tạm thì số lượng bị NHÂN ĐÔI sang cả hai mối. Giờ mua 100 cái thì
+   chia 60 mối A, 40 mối B; `requisition_items.buy_qty` giữ lại làm TỔNG. */
+addColumns('requisition_item_suppliers', { buy_qty: 'REAL NOT NULL DEFAULT 0' });
 
 /* Giao hàng: phí trả cho tài xế (khác phí thu của khách), và số đo đóng gói
    để khai với hãng vận chuyển (tài liệu 14, mục 5). */

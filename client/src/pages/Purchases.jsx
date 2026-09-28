@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  FileText, Plus, Eye, XCircle, Truck, Download, Trash2, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
-  BarChart3,
+  FileText, Plus, XCircle, Download, Trash2, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
+  BarChart3, ArrowLeft,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
@@ -42,6 +42,17 @@ export default function Purchases() {
 
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+
+  /* Mở một phiếu ở khung bên phải. Giữ phiếu cũ trên màn hình trong lúc tải phiếu
+     mới thì nhìn nhấp nháy, nên xoá trước rồi mới tải. */
+  const openDetail = async (id) => {
+    setDetail(null);
+    setDetailBusy(true);
+    try { setDetail(await api.purchase(id)); }
+    catch (e) { toast(e.message, 'bad', 6000); }
+    finally { setDetailBusy(false); }
+  };
   const [cancelling, setCancelling] = useState(null);
   const [paying, setPaying] = useState(null);
   const [labelsOf, setLabelsOf] = useState(null);
@@ -162,75 +173,264 @@ export default function Purchases() {
                 action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu nhập</Button>}
               />
             ) : (
-              <div className="card">
-              <div className="table-wrap table-scroll !border-0 !rounded-none">
-                <table className="data">
-                  <thead>
-                    <tr>
-                      <th>Mã phiếu</th><th>Ngày nhập</th><th>Nhà cung cấp</th>
-                      <th>Số HĐ của NCC</th>
-                      <th className="text-right">Số mặt</th>
-                      <th className="text-right">Tổng tiền</th>
-                      <th className="text-right">Đã trả</th>
-                      <th className="text-right">Còn nợ</th>
-                      <th>Hạn trả</th>
-                      <th className="text-right">Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.map((p) => {
-                      const overdue = p.remaining > 0 && p.due_date && p.due_date < isoDate();
-                      return (
-                        <tr key={p.id} className={`hoverable ${p.status === 'cancelled' ? 'opacity-55' : ''}`}>
-                          <td>
-                            <button
-                              onClick={async () => setDetail(await api.purchase(p.id))}
-                              className="font-mono font-semibold text-accent hover:underline cursor-pointer"
-                            >
-                              {p.code}
-                            </button>
-                            {p.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
-                            {p.custom_count > 0 && <Badge tone="bad" className="ml-1">Hàng giao sai</Badge>}
-                          </td>
-                          <td className="text-muted-ink whitespace-nowrap">{datetime(p.ts)}</td>
-                          <td className="truncate max-w-[200px]">{p.supplier_name || '—'}</td>
-                          <td className="font-mono text-muted-ink">{p.supplier_invoice || '—'}</td>
-                          <td className="num">{p.item_count}</td>
-                          <td className="num font-semibold">{money(p.total)}</td>
-                          <td className="num">{money(p.paid)}</td>
-                          <td className={`num ${p.remaining > 0 ? 'text-danger font-semibold' : 'text-muted-ink'}`}>
-                            {p.remaining > 0 ? money(p.remaining) : '—'}
-                          </td>
-                          <td>
-                            {p.due_date
-                              ? <span className={overdue ? 'text-danger font-semibold' : 'text-muted-ink'}>
-                                  {date(p.due_date)}{overdue && ' (quá hạn)'}
-                                </span>
-                              : <span className="text-muted-ink">—</span>}
-                          </td>
-                          <td>
-                            <div className="flex items-center justify-end gap-0.5">
-                              <IconButton icon={Eye} label={`Xem ${p.code}`} size={14}
-                                onClick={async () => setDetail(await api.purchase(p.id))} />
-                              {p.status === 'done' && p.remaining > 0 && (
-                                <IconButton icon={Wallet} label={`Trả tiền ${p.code}`} size={14}
-                                  className="!text-warn" onClick={() => setPaying(p)} />
-                              )}
-                            </div>
-                          </td>
+              /* Hai khung: danh sách bên trái, chi tiết phiếu bên phải (yêu cầu
+                 28/09, mục II.2) — cùng một mẫu với màn hình Hoá đơn. Trước đây
+                 chi tiết là hộp thoại che hết danh sách, soi phiếu này rồi phiếu
+                 kia phải đóng mở liên tục. */
+              <div className="grid gap-3 lg:grid-cols-[minmax(320px,460px)_1fr] lg:items-start">
+                <div className={`card ${detail ? 'hidden lg:block' : ''}`}>
+                  <div className="table-wrap table-scroll !border-0 !rounded-none">
+                    <table className="data">
+                      <thead>
+                        <tr>
+                          <th>Mã phiếu · ngày</th>
+                          <th>Nhà cung cấp</th>
+                          <th className="text-right">Tổng tiền</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <Pager
-                page={page}
-                pageSize={pageSize}
-                total={rowCount}
-                onPage={setPage}
-                onPageSize={setPageSize}
-              />
+                      </thead>
+                      <tbody>
+                        {data.map((p) => {
+                          const overdue = p.remaining > 0 && p.due_date && p.due_date < isoDate();
+                          return (
+                            <tr key={p.id}
+                              onClick={() => openDetail(p.id)}
+                              aria-current={detail?.id === p.id}
+                              className={`hoverable clickable ${p.status === 'cancelled' ? 'opacity-55' : ''}
+                                          ${detail?.id === p.id ? 'bg-accent-soft/60' : ''}`}>
+                              <td>
+                                <div className="font-mono font-semibold text-accent whitespace-nowrap">{p.code}</div>
+                                <div className="text-2xs text-muted-ink">{datetime(p.ts)}</div>
+                                <div className="flex flex-wrap gap-1 mt-0.5">
+                                  {p.status === 'cancelled' && <Badge tone="bad">Đã huỷ</Badge>}
+                                  {p.custom_count > 0 && <Badge tone="bad">Hàng giao sai</Badge>}
+                                  {overdue && <Badge tone="warn">Quá hạn trả {date(p.due_date)}</Badge>}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="truncate max-w-[150px]">{p.supplier_name || '—'}</div>
+                                {p.supplier_invoice && (
+                                  <div className="text-2xs text-muted-ink font-mono truncate max-w-[150px]">
+                                    HĐ {p.supplier_invoice}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="num font-semibold whitespace-nowrap">
+                                {money(p.total)}
+                                <span className="block text-2xs font-normal text-muted-ink">{p.item_count} mặt hàng</span>
+                                {p.remaining > 0 && (
+                                  <span className="block text-2xs text-danger">Nợ {money(p.remaining)}</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Pager
+                    page={page}
+                    pageSize={pageSize}
+                    total={rowCount}
+                    onPage={setPage}
+                    onPageSize={setPageSize}
+                  />
+                </div>
+
+                <div className="card p-3">
+                  {!detail ? (
+                    <Empty icon={FileText} title="Chọn một phiếu nhập"
+                      message="Bấm một phiếu bên trái để xem hàng đã nhập, tiền đã trả và còn nợ." />
+                  ) : detailBusy ? <Spinner /> : (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-start gap-2">
+                        <Button size="sm" className="lg:hidden" icon={ArrowLeft} onClick={() => setDetail(null)}>
+                          Danh sách
+                        </Button>
+                        <div className="min-w-[13rem] flex-1">
+                          <div className="font-bold">
+                            Phiếu nhập <span className="font-mono whitespace-nowrap">{detail.code}</span>
+                            {detail.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
+                          </div>
+                          <div className="text-2xs text-muted-ink">
+                            {datetime(detail.ts)} · {detail.supplier_name || 'Không rõ NCC'}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {detail.status === 'done' && detail.total - detail.paid > 0 && (
+                            <Button size="sm" icon={Wallet} className="!text-warn"
+                              onClick={() => setPaying(detail)}>Trả tiền NCC</Button>
+                          )}
+                          {detail.status === 'done' && (
+                            <Button size="sm" icon={Undo2} onClick={() => setReturnOf(detail)}>Trả hàng NCC</Button>
+                          )}
+                          <PermGate perm="data.export">
+                            <Button size="sm" icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
+                          </PermGate>
+                          <Button size="sm" icon={Tag} onClick={() => setLabelsOf(detail)}>In tem</Button>
+                          {detail.status === 'done' && (
+                            <Button size="sm" variant="danger" icon={XCircle}
+                              onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
+                          )}
+                        </div>
+                      </div>
+                    <div className="grid gap-3 sm:grid-cols-2 text-[13px]">
+                      <div className="card p-2.5">
+                        <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Nhà cung cấp</div>
+                        <div className="font-semibold">{detail.supplier_name || '—'}</div>
+                        {detail.supplier_phone && <div className="text-muted-ink">{detail.supplier_phone}</div>}
+                        {detail.supplier_address && <div className="text-muted-ink">{detail.supplier_address}</div>}
+                      </div>
+                      <div className="card p-2.5">
+                        <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Chứng từ</div>
+                        <div>Kho nhận: {detail.warehouse_name}</div>
+                        <div>Số HĐ của NCC: {detail.supplier_invoice || '—'}</div>
+                        <div>Hạn thanh toán: {detail.due_date ? date(detail.due_date) : '—'}</div>
+                        <div>Người lập: {detail.user_name || '—'}</div>
+                      </div>
+                    </div>
+
+                    <div className="table-wrap">
+                      <table className="data">
+                        <thead>
+                          <tr>
+                            <th>Tên hàng</th><th>ĐVT</th>
+                            <th className="text-right">SL</th>
+                            <th className="text-right">Quy đổi</th>
+                            <th className="text-right">Đơn giá</th>
+                            <th className="text-right">CK %</th>
+                            <th className="text-right">Giá sau CK</th>
+                            <th className="text-right">Thành tiền</th>
+                            {detail.items.some((it) => it.cost_unit != null) && (
+                              <th className="text-right" title="Giá vốn đã đưa vào kho theo đơn vị cơ bản">Giá vốn / ĐVCB</th>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.items.map((it) => (
+                            <tr key={it.id}>
+                              <td>
+                                <div className="font-semibold">{it.product_name}</div>
+                                <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
+                                {it.returned_qty > 0 && (
+                                  <div className="text-2xs text-warn font-semibold">Đã trả NCC {fq(it.returned_qty)} {it.unit_name}</div>
+                                )}
+                              </td>
+                              <td>{it.unit_name}</td>
+                              <td className="num">{fq(it.qty)}</td>
+                              <td className="num text-muted-ink">
+                                {it.factor > 1 ? `${fq(it.qty * it.factor)} ${it.base_unit}` : '—'}
+                              </td>
+                              {/* list_price là giá mối báo, price là giá sau chiết khấu.
+                                  Phiếu cũ chưa có list_price thì hai cột bằng nhau. */}
+                              <td className="num text-muted-ink">{money(it.list_price || it.price)}</td>
+                              <td className="num">
+                                {it.discount_percent > 0
+                                  ? <b className="text-accent">{it.discount_percent}%</b>
+                                  : <span className="text-muted-ink">—</span>}
+                              </td>
+                              <td className="num font-semibold">{money(it.price)}</td>
+                              <td className="num font-semibold">{money(it.amount)}</td>
+                              {detail.items.some((x) => x.cost_unit != null) && (
+                                <td className="num">
+                                  {it.cost_unit != null ? <>{money(it.cost_unit)}<span className="text-2xs text-muted-ink">/{it.base_unit}</span></> : '—'}
+                                  {it.line_vat > 0 && detail.vat_in_cost === 1 && (
+                                    <div className="text-2xs text-muted-ink">gồm thuế {money(it.line_vat)}</div>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {detail.custom_items?.length > 0 && (
+                      <div className="rounded-lg border border-red-200 bg-red-50/40 p-2.5">
+                        <div className="text-[13px] font-bold mb-1.5 flex items-center gap-1.5">
+                          <AlertTriangle size={14} className="text-danger" aria-hidden="true" />
+                          Hàng giao sai / ngoài danh mục — tính vào tiền phiếu, không vào kho
+                        </div>
+                        <div className="table-wrap bg-white">
+                          <table className="data">
+                            <thead>
+                              <tr>
+                                <th>Tên hàng</th><th>ĐVT</th>
+                                <th className="text-right">SL</th>
+                                <th className="text-right">Giá NCC</th>
+                                <th className="text-right">Thành tiền</th>
+                                <th>Tình trạng</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {detail.custom_items.map((c) => (
+                                <tr key={c.id}>
+                                  <td className="font-semibold">
+                                    {c.name}
+                                    {c.note && <div className="text-2xs text-muted-ink font-normal">{c.note}</div>}
+                                  </td>
+                                  <td>{c.unit_name || '—'}</td>
+                                  <td className="num">{fq(c.qty)}</td>
+                                  <td className="num">{money(c.price)}</td>
+                                  <td className="num font-semibold">{money(c.amount)}</td>
+                                  <td>
+                                    {c.returnable_qty > 0
+                                      ? <Badge tone="bad">Hàng giao sai - Chờ trả {fq(c.returnable_qty)}</Badge>
+                                      : <Badge tone="ok">Đã trả NCC</Badge>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {detail.returns?.length > 0 && (
+                      <div className="text-[13px]">
+                        <div className="font-bold mb-1">Đã trả hàng NCC theo phiếu này</div>
+                        <ul className="divide-y divide-line border border-line rounded">
+                          {detail.returns.map((rt) => (
+                            <li key={rt.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                              <span className="font-mono font-semibold">{rt.code}</span>
+                              <span className="text-muted-ink">{datetime(rt.ts)}</span>
+                              <span className="flex-1" />
+                              {rt.expense > 0 && <span className="text-2xs text-muted-ink">chi phí trả {money(rt.expense)}</span>}
+                              <span className="tabular font-semibold">NCC trừ {money(rt.total)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <div className="w-full sm:w-72 space-y-1 text-[13px]">
+                        <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
+                        {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
+                        {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
+                        {(detail.vat_in_cost === 1 || (detail.discount > 0 && detail.discount_mode === 'before_vat')) && (
+                          <div className="text-2xs text-muted-ink text-right">
+                            {[detail.vat_in_cost === 1 ? 'VAT tính vào giá vốn' : null,
+                              detail.discount > 0 ? (detail.discount_mode === 'before_vat' ? 'NCC chiết khấu trước VAT' : 'NCC chiết khấu sau VAT') : null]
+                              .filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                        {detail.other_cost > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chi phí khác</span><span className="tabular font-mono">{money(detail.other_cost)}</span></div>}
+                        <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
+                          <span>Tổng cộng</span><span className="tabular font-mono">{money(detail.total)}</span>
+                        </div>
+                        <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
+                        {detail.total - detail.paid > 0 && (
+                          <div className="flex justify-between font-semibold text-danger">
+                            <span>Còn nợ NCC</span><span className="tabular font-mono">{money(detail.total - detail.paid)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {detail.note && <div className="card p-2.5 text-[13px]"><b>Ghi chú:</b> {detail.note}</div>}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
       </Page>
@@ -241,189 +441,6 @@ export default function Purchases() {
         onClose={() => setCreating(false)}
         onSaved={(code) => { setCreating(false); reload(); toast(`Đã lưu phiếu nhập ${code}`, 'ok'); }}
       />
-
-      {/* Chi tiết phiếu nhập */}
-      <Modal
-        open={!!detail}
-        onClose={() => setDetail(null)}
-        title={detail ? `Phiếu nhập ${detail.code}` : ''}
-        subtitle={detail ? `${datetime(detail.ts)} · ${detail.supplier_name || 'Không rõ NCC'}` : ''}
-        size="lg"
-        footer={detail && <>
-          {detail.status === 'done' && (
-            <Button variant="danger" icon={XCircle} onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
-          )}
-          <div className="flex-1" />
-          {detail.status === 'done' && (
-            <Button icon={Undo2} onClick={() => setReturnOf(detail)}>Trả hàng NCC</Button>
-          )}
-          <PermGate perm="data.export">
-            <Button icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
-          </PermGate>
-          <Button icon={Tag} onClick={() => setLabelsOf(detail)}>In tem hàng vừa nhập</Button>
-          <Button onClick={() => setDetail(null)}>Đóng</Button>
-        </>}
-      >
-        {detail && (
-          <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 text-[13px]">
-              <div className="card p-2.5">
-                <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Nhà cung cấp</div>
-                <div className="font-semibold">{detail.supplier_name || '—'}</div>
-                {detail.supplier_phone && <div className="text-muted-ink">{detail.supplier_phone}</div>}
-                {detail.supplier_address && <div className="text-muted-ink">{detail.supplier_address}</div>}
-              </div>
-              <div className="card p-2.5">
-                <div className="text-2xs font-bold text-muted-ink uppercase mb-1">Chứng từ</div>
-                <div>Kho nhận: {detail.warehouse_name}</div>
-                <div>Số HĐ của NCC: {detail.supplier_invoice || '—'}</div>
-                <div>Hạn thanh toán: {detail.due_date ? date(detail.due_date) : '—'}</div>
-                <div>Người lập: {detail.user_name || '—'}</div>
-              </div>
-            </div>
-
-            <div className="table-wrap">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Tên hàng</th><th>ĐVT</th>
-                    <th className="text-right">SL</th>
-                    <th className="text-right">Quy đổi</th>
-                    <th className="text-right">Đơn giá</th>
-                    <th className="text-right">CK %</th>
-                    <th className="text-right">Giá sau CK</th>
-                    <th className="text-right">Thành tiền</th>
-                    {detail.items.some((it) => it.cost_unit != null) && (
-                      <th className="text-right" title="Giá vốn đã đưa vào kho theo đơn vị cơ bản">Giá vốn / ĐVCB</th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {detail.items.map((it) => (
-                    <tr key={it.id}>
-                      <td>
-                        <div className="font-semibold">{it.product_name}</div>
-                        <div className="text-2xs text-muted-ink font-mono">{it.sku}</div>
-                        {it.returned_qty > 0 && (
-                          <div className="text-2xs text-warn font-semibold">Đã trả NCC {fq(it.returned_qty)} {it.unit_name}</div>
-                        )}
-                      </td>
-                      <td>{it.unit_name}</td>
-                      <td className="num">{fq(it.qty)}</td>
-                      <td className="num text-muted-ink">
-                        {it.factor > 1 ? `${fq(it.qty * it.factor)} ${it.base_unit}` : '—'}
-                      </td>
-                      {/* list_price là giá mối báo, price là giá sau chiết khấu.
-                          Phiếu cũ chưa có list_price thì hai cột bằng nhau. */}
-                      <td className="num text-muted-ink">{money(it.list_price || it.price)}</td>
-                      <td className="num">
-                        {it.discount_percent > 0
-                          ? <b className="text-accent">{it.discount_percent}%</b>
-                          : <span className="text-muted-ink">—</span>}
-                      </td>
-                      <td className="num font-semibold">{money(it.price)}</td>
-                      <td className="num font-semibold">{money(it.amount)}</td>
-                      {detail.items.some((x) => x.cost_unit != null) && (
-                        <td className="num">
-                          {it.cost_unit != null ? <>{money(it.cost_unit)}<span className="text-2xs text-muted-ink">/{it.base_unit}</span></> : '—'}
-                          {it.line_vat > 0 && detail.vat_in_cost === 1 && (
-                            <div className="text-2xs text-muted-ink">gồm thuế {money(it.line_vat)}</div>
-                          )}
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {detail.custom_items?.length > 0 && (
-              <div className="rounded-lg border border-red-200 bg-red-50/40 p-2.5">
-                <div className="text-[13px] font-bold mb-1.5 flex items-center gap-1.5">
-                  <AlertTriangle size={14} className="text-danger" aria-hidden="true" />
-                  Hàng giao sai / ngoài danh mục — tính vào tiền phiếu, không vào kho
-                </div>
-                <div className="table-wrap bg-white">
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Tên hàng</th><th>ĐVT</th>
-                        <th className="text-right">SL</th>
-                        <th className="text-right">Giá NCC</th>
-                        <th className="text-right">Thành tiền</th>
-                        <th>Tình trạng</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.custom_items.map((c) => (
-                        <tr key={c.id}>
-                          <td className="font-semibold">
-                            {c.name}
-                            {c.note && <div className="text-2xs text-muted-ink font-normal">{c.note}</div>}
-                          </td>
-                          <td>{c.unit_name || '—'}</td>
-                          <td className="num">{fq(c.qty)}</td>
-                          <td className="num">{money(c.price)}</td>
-                          <td className="num font-semibold">{money(c.amount)}</td>
-                          <td>
-                            {c.returnable_qty > 0
-                              ? <Badge tone="bad">Hàng giao sai - Chờ trả {fq(c.returnable_qty)}</Badge>
-                              : <Badge tone="ok">Đã trả NCC</Badge>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {detail.returns?.length > 0 && (
-              <div className="text-[13px]">
-                <div className="font-bold mb-1">Đã trả hàng NCC theo phiếu này</div>
-                <ul className="divide-y divide-line border border-line rounded">
-                  {detail.returns.map((rt) => (
-                    <li key={rt.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                      <span className="font-mono font-semibold">{rt.code}</span>
-                      <span className="text-muted-ink">{datetime(rt.ts)}</span>
-                      <span className="flex-1" />
-                      {rt.expense > 0 && <span className="text-2xs text-muted-ink">chi phí trả {money(rt.expense)}</span>}
-                      <span className="tabular font-semibold">NCC trừ {money(rt.total)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <div className="flex justify-end">
-              <div className="w-full sm:w-72 space-y-1 text-[13px]">
-                <div className="flex justify-between"><span className="text-muted-ink">Tiền hàng</span><span className="tabular font-mono">{money(detail.subtotal)}</span></div>
-                {detail.discount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chiết khấu</span><span className="tabular font-mono">-{money(detail.discount)}</span></div>}
-                {detail.vat_amount > 0 && <div className="flex justify-between"><span className="text-muted-ink">Thuế GTGT</span><span className="tabular font-mono">{money(detail.vat_amount)}</span></div>}
-                {(detail.vat_in_cost === 1 || (detail.discount > 0 && detail.discount_mode === 'before_vat')) && (
-                  <div className="text-2xs text-muted-ink text-right">
-                    {[detail.vat_in_cost === 1 ? 'VAT tính vào giá vốn' : null,
-                      detail.discount > 0 ? (detail.discount_mode === 'before_vat' ? 'NCC chiết khấu trước VAT' : 'NCC chiết khấu sau VAT') : null]
-                      .filter(Boolean).join(' · ')}
-                  </div>
-                )}
-                {detail.other_cost > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chi phí khác</span><span className="tabular font-mono">{money(detail.other_cost)}</span></div>}
-                <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
-                  <span>Tổng cộng</span><span className="tabular font-mono">{money(detail.total)}</span>
-                </div>
-                <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
-                {detail.total - detail.paid > 0 && (
-                  <div className="flex justify-between font-semibold text-danger">
-                    <span>Còn nợ NCC</span><span className="tabular font-mono">{money(detail.total - detail.paid)}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {detail.note && <div className="card p-2.5 text-[13px]"><b>Ghi chú:</b> {detail.note}</div>}
-          </div>
-        )}
-      </Modal>
 
       {/* In tem cho đúng số lượng vừa nhập về, khỏi phải đếm lại */}
       <PrintLabels

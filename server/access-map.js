@@ -137,6 +137,9 @@ export const ACCESS_RULES = [
   ['GET',  /^\/suppliers\/\d+\/bought-products$/, 'purchase.manage'],
 
   /* --- Hàng mua hộ của chủ vãng lai (tài liệu 24, phần 5) --- */
+  /* Trả gộp nợ nhiều đợt cho một chủ hàng là chi tiền thật — quyền sổ quỹ,
+     không phải quyền sửa hồ sơ đối tác (yêu cầu 28/09, mục II.4). */
+  ['*',    /^\/consign-partners\/\d+\/pay$/, 'cash.manage'],
   /* Thu ngân ngoài quầy cần đọc danh sách chủ hàng để chọn lúc bán. */
   ['GET',  /^\/consign-partners/,          'sale.pos'],
   ['*',    /^\/consign-partners/,          'customer.manage'],

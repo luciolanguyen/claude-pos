@@ -15,7 +15,7 @@ import { useApp, useFetch } from '../lib/store';
 import { money, n, qty as fq, COST_METHOD_LABEL } from '../lib/format';
 import {
   Button, IconButton, Select, Modal, Spinner, Empty, Badge,
-  Field, MoneyInput, Textarea, Input, QtyInput,
+  Field, MoneyInput, Textarea, Input, QtyInput, Tabs,
 } from './ui';
 import { ProductPicker } from './ProductPicker';
 import { CategorySelect } from './CategoryTree';
@@ -146,6 +146,8 @@ export function ProductForm({ open, product, onClose, onSaved }) {
   const [units, setUnits] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /* Tab đang xem. Mở hộp lần nào cũng bắt đầu ở "Cơ bản" cho khỏi lạc chỗ. */
+  const [tab, setTab] = useState('basic');
   const [costOpen, setCostOpen] = useState(false);
   const [costInput, setCostInput] = useState(0);
   const [costBusy, setCostBusy] = useState(false);
@@ -193,6 +195,7 @@ export function ProductForm({ open, product, onClose, onSaved }) {
     if (!open) return;
     setErr('');
     setStaged([]);
+    setTab('basic');
     if (product) {
       setForm({
         ...EMPTY, ...product,
@@ -366,21 +369,24 @@ export function ProductForm({ open, product, onClose, onSaved }) {
   }, [form.base_unit, baseIdx]);
 
   const save = async () => {
-    if (!form.name.trim()) { setErr('Bắt buộc nhập tên hàng hoá.'); return; }
+    /* Thiếu ô nào thì nhảy luôn về tab chứa ô đó — chia tab rồi mà báo lỗi ở tab
+       khác thì người khai đọc xong vẫn không biết sửa ở đâu. */
+    const stop = (msg, where) => { setErr(msg); setTab(where); };
+    if (!form.name.trim()) { stop('Bắt buộc nhập tên hàng hoá.', 'basic'); return; }
     /* Mọi phép soát bảng đơn vị dồn hết vào đây, lúc bấm Lưu (tài liệu 16, mục 1) */
     const bad = unitsError();
-    if (bad) { setErr(bad); return; }
+    if (bad) { stop(bad, 'units'); return; }
     if (!units.some((u) => u.is_sell_main)) {
-      setErr('Chọn ít nhất một đơn vị bán chính (cột BC) — đó là đơn vị tự nhảy vào giỏ khi bán.');
+      stop('Chọn ít nhất một đơn vị bán chính (cột BC) — đó là đơn vị tự nhảy vào giỏ khi bán.', 'units');
       return;
     }
     if (!units.some((u) => u.is_buy_main)) {
-      setErr('Chọn ít nhất một đơn vị mua chính (cột MC) — đó là đơn vị tự nhảy vào phiếu nhập.');
+      stop('Chọn ít nhất một đơn vị mua chính (cột MC) — đó là đơn vị tự nhảy vào phiếu nhập.', 'units');
       return;
     }
     /* Giá vốn ban đầu là con số bắt buộc khai (tài liệu 13, mục 1.2) */
     if (!product && (form.cost_price === '' || form.cost_price === null || Number(form.cost_price) < 0)) {
-      setErr('Bắt buộc khai giá vốn ban đầu. Hàng dịch vụ / tiền công thì ghi 0.');
+      stop('Bắt buộc khai giá vốn ban đầu. Hàng dịch vụ / tiền công thì ghi 0.', 'basic');
       return;
     }
 
@@ -430,6 +436,21 @@ export function ProductForm({ open, product, onClose, onSaved }) {
       </>}
     >
       <div className="space-y-3">
+        {/* Chia tab thay vì một mạch cuộn dài (yêu cầu 28/09, mục II.3a):
+            khai một mặt hàng phải cuộn qua lưới đơn vị tính mấy chục dòng mới
+            tới ô tồn kho, người khai hay bỏ sót. */}
+        <Tabs
+          tabs={[
+            { key: 'basic', label: 'Cơ bản' },
+            { key: 'units', label: 'Đơn vị & giá', count: units.length },
+            { key: 'stock', label: 'Kho · thuế · bảo hành' },
+            ...(product ? [{ key: 'bom', label: 'Định mức' }] : []),
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+
+        <div className={tab === 'basic' ? '' : 'hidden'}>
         {/* ============ VÙNG 1 + VÙNG 2 (tài liệu 18, mục 1) ============ */}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
 
@@ -571,6 +592,9 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           </section>
         </div>
 
+        </div>
+
+        <div className={tab === 'units' ? '' : 'hidden'}>
         {/* ============ VÙNG 3: LƯỚI ĐƠN VỊ TÍNH (tài liệu 18, mục 2.3) ============ */}
         <section aria-labelledby="pf-h-units">
           <div className="flex items-center justify-between mb-1.5">
@@ -770,12 +794,12 @@ export function ProductForm({ open, product, onClose, onSaved }) {
           </p>
         </section>
 
+        </div>
+
+        <div className={tab === 'stock' ? '' : 'hidden'}>
         {/* ============ Phần còn lại: kho, thuế, cấu hình ============ */}
-        <details className="card p-3">
-          <summary className="text-[13px] font-semibold cursor-pointer hover:text-accent">
-            Kho, thuế và bảo hành
-          </summary>
-          <div className="grid gap-3 sm:grid-cols-4 mt-3">
+        <div className="card p-3">
+          <div className="grid gap-3 sm:grid-cols-4">
             <Field label="Hãng sản xuất" htmlFor="pf-brand">
               <Input id="pf-brand" value={form.brand || ''} onChange={set('brand')} placeholder="CADIVI, Panasonic..." />
             </Field>
@@ -871,11 +895,16 @@ export function ProductForm({ open, product, onClose, onSaved }) {
               </label>
             </div>
           </div>
-        </details>
+        </div>
+        </div>
 
-        {/* Định mức nguyên vật liệu — chỉ hiện khi sửa mặt hàng đã có */}
-        {product && <BomEditor product={product} />}
+        {product && (
+          <div className={tab === 'bom' ? '' : 'hidden'}>
+          {/* Định mức nguyên vật liệu — chỉ hiện khi sửa mặt hàng đã có */}
+          {product && <BomEditor product={product} />}
 
+          </div>
+        )}
         {err && <p role="alert" className="text-[13px] text-danger font-semibold bg-red-50 border border-danger/25 rounded p-2.5">{err}</p>}
       </div>
     </Modal>
