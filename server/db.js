@@ -8,6 +8,19 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_PATH = process.env.POS_DB || path.join(DATA_DIR, 'pos.db');
 
+/* CHỐT CHẶN: chỉ máy chủ và lệnh tạo dữ liệu mẫu mới được mở CSDL THẬT.
+   Mở file này là tự chạy nâng cấp cấu trúc — nên một câu `node -e "import(...)"`
+   gõ vội để thử xem mã có nạp được không cũng đủ nâng cấp luôn pos.db của tiệm.
+   Đã dính đúng một lần (29/09/2026). Muốn chạy thử thì đặt POS_DB trỏ sang
+   CSDL nháp: POS_DB=data/test.db node ... */
+const ENTRY = path.basename(process.argv[1] || '');
+if (!process.env.POS_DB && !['index.js', 'seed.js'].includes(ENTRY)) {
+  throw new Error(
+    `Không mở CSDL thật (${DB_PATH}) từ "${ENTRY || 'lệnh gõ tay'}" được.\n`
+    + 'Mở pos.db là nâng cấp luôn cấu trúc của tiệm. Chạy thử thì đặt POS_DB, ví dụ:\n'
+    + '  POS_DB=data/test.db node <lệnh của bạn>');
+}
+
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 /**
