@@ -23,6 +23,7 @@ import DeliveryNotePrint from '../components/DeliveryNotePrint';
 import PickingSlipPrint from '../components/PickingSlipPrint';
 import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
 import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
+import PosAttendance from '../components/PosAttendance';
 import DeliveryInfoModal, {
   normalizeDelivery, deliveryShipCharged, deliveryBody,
 } from '../components/PosDeliveryForm';
@@ -1497,6 +1498,8 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
+        {/* Chấm công cả tiệm: tự bật 7h30 sáng và lúc tan làm (yêu cầu 28/09, III.1) */}
+        <PosAttendance />
         {/* Chỗ sát ô tìm hàng: nút NỢ QUÁ HẠN của cả tiệm.
             Nút Thu nợ trên thanh này đã bỏ hẳn: chưa chọn khách thì nó mờ,
             mà chọn khách có nợ rồi thì dòng nhắc nợ trong giỏ đã có sẵn nút

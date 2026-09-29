@@ -105,7 +105,7 @@ export function UnlockScreen({ onUnlocked }) {
 /* ------------------------------------------------------------------ */
 
 const EMPTY = {
-  full_name: '', phone: '', start_date: today(), cycle_day: '', track_from: '', monthly_wage: 0,
+  full_name: '', phone: '', start_date: today(), cycle_day: '', track_from: '', monthly_wage: 0, allowance: 0,
   work_from: '07:00', work_to: '17:00', pay_mode: 'monthly', note: '', active: 1, end_date: '',
 };
 
@@ -151,7 +151,9 @@ export function EmployeeForm({ employee, onClose, onSaved }) {
       const body = {
         full_name: f.full_name, phone: f.phone, start_date: f.start_date,
         cycle_day: Number(f.cycle_day) || preview?.cycle_day || undefined,
-        track_from: trackFrom, monthly_wage: Number(f.monthly_wage) || 0, work_from: f.work_from, work_to: f.work_to,
+        track_from: trackFrom, monthly_wage: Number(f.monthly_wage) || 0,
+        allowance: daily ? 0 : Number(f.allowance) || 0,
+        work_from: f.work_from, work_to: f.work_to,
         pay_mode: f.pay_mode, note: f.note,
         ...(editing ? { active: f.active ? 1 : 0, end_date: f.end_date || null } : {}),
       };
@@ -211,6 +213,16 @@ export function EmployeeForm({ employee, onClose, onSaved }) {
             <MoneyInput id="ef-wage" size="lg" value={daily ? dayRate : f.monthly_wage}
               onChange={(v) => set('monthly_wage')(daily ? Math.max(0, v) * 30 : Math.max(0, v))} />
           </Field>
+          {/* Phụ cấp cố định hằng tháng (yêu cầu 28/09, phần III.2) */}
+          {!daily && (
+            <Field label="Phụ cấp hằng tháng" htmlFor="ef-allow"
+              hint={Number(f.allowance) > 0
+                ? `Tính y như lương cứng: nghỉ ngày nào trừ ngày đó. Tổng ${n(Number(f.monthly_wage) + Number(f.allowance))} đ/tháng.`
+                : 'Ăn trưa, xăng xe... Để trống nếu không có. Thưởng Tết KHÔNG cộng khoản này.'}>
+              <MoneyInput id="ef-allow" size="lg" value={f.allowance}
+                onChange={(v) => set('allowance')(Math.max(0, v))} />
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <Field label="Giờ vào" htmlFor="ef-from">
               <Input id="ef-from" type="time" value={f.work_from} onChange={set('work_from')} />

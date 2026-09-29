@@ -30,6 +30,10 @@ export const ACCESS_RULES = [
      không thấy số dư. Mọi đường khác còn phải mở bằng PIN (routes/payroll.js). --- */
   ['GET',  /^\/payroll\/employee-names$/,  'sale.pos'],
   ['*',    /^\/payroll/,                   'payroll.manage'],
+  /* Chấm công ngoài quầy (yêu cầu 28/09, phần III.1): quản lý đứng bán hàng chấm
+     hộ cả tiệm, nên chỉ cần quyền bán hàng. Hai đường này chỉ có TÊN và GIỜ,
+     không kèm đồng lương nào — xem routes/pos-extras.js. */
+  ['*',    /^\/attendance\/today$/,        'sale.pos'],
 
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],

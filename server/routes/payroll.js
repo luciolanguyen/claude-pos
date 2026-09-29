@@ -18,6 +18,7 @@ import {
   entryDetail, deleteEntry, savePhotos, deletePhoto, photoFilePath, payrollPhotoUsage, cleanupPayrollPhotos,
   settleCycles, dailyDue, payDaily, settlementDetail, undoSettlement, addClosedDays, removeClosedDay,
   attendanceStatus, decideAward, undoAward, ensureCycles, today, lastCarry, paidThrough,
+  attendanceOfDay, attendanceOfMonth, saveAttendance, tetStatus, decideTet,
 } from '../payroll.js';
 import { solarToLunar, lunarText, cycleContaining, canChi, lunarYearRange } from '../../client/src/lib/lunar.js';
 
@@ -218,11 +219,27 @@ r.get('/payroll/closed-days', wrap((req) => {
 r.post('/payroll/closed-days', wrap((req) => addClosedDays(req.body || {}, req.user)));
 r.delete('/payroll/closed-days/:date', wrap((req) => removeClosedDay(String(req.params.date), req.user)));
 
+/* --------------------- Bảng chấm công hằng ngày ---------------------- *
+ * (yêu cầu 28/09, phần III.1) — xem lại và sửa giờ sau, nằm sau khoá PIN.
+ * Ngoài quầy chấm công bằng /attendance/today, không cần PIN.
+ * -------------------------------------------------------------------- */
+
+r.get('/payroll/attendance', wrap((req) => (req.query.month
+  ? attendanceOfMonth(String(req.query.month))
+  : attendanceOfDay(req.query.date))));
+r.post('/payroll/attendance', wrap((req) => saveAttendance(req.body || {}, req.user)));
+
 /* ------------------------- Thưởng chuyên cần ------------------------- */
 
 r.get('/payroll/employees/:id/attendance', wrap((req) =>
   attendanceStatus(getEmployee(req.params.id), req.query.year)));
 r.post('/payroll/employees/:id/attendance', wrap((req) => decideAward(Number(req.params.id), req.body || {}, req.user)));
 r.delete('/payroll/awards/:id', wrap((req) => undoAward(Number(req.params.id), req.user)));
+
+/* --------- Thưởng Tết / lương tháng 13 (yêu cầu 28/09, III.2) --------- */
+
+r.get('/payroll/employees/:id/tet', wrap((req) =>
+  tetStatus(getEmployee(req.params.id), req.query.year)));
+r.post('/payroll/employees/:id/tet', wrap((req) => decideTet(Number(req.params.id), req.body || {}, req.user)));
 
 export default r;

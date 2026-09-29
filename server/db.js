@@ -359,6 +359,12 @@ addColumns('sale_returns', { salary_refund: 'INTEGER NOT NULL DEFAULT 0' });
 /* Chốt lương sớm theo ngày làm thực tế (BRD nâng cấp, mục 6): kỳ bị cắt làm hai,
    phần còn lại của kỳ mang sẵn số tiền phải trả nốt để cả kỳ vẫn đủ lương tháng. */
 addColumns('payroll_cycles', { base_override: 'INTEGER', split_of: 'INTEGER' });
+/* Phụ cấp cố định hằng tháng (yêu cầu 28/09, phần III.2): chủ tiệm chốt "tính y như
+   lương cứng" — nghỉ ngày nào trừ ngày đó cả lương lẫn phụ cấp, vào/nghỉ giữa kỳ thì
+   chia theo ngày. Chụp ảnh vào kỳ lương y như monthly_wage để kỳ đã chốt không đổi số.
+   Riêng thưởng Tết chỉ tính trên LƯƠNG CỨNG, không cộng phụ cấp. */
+addColumns('employees', { allowance: 'INTEGER NOT NULL DEFAULT 0' });
+addColumns('payroll_cycles', { allowance: 'INTEGER NOT NULL DEFAULT 0' });
 
 /* Mức hoa hồng mặc định của từng chủ hàng (BRD nâng cấp, mục 5): thu ngân không
    được thấy và không gõ hoa hồng nữa, nên máy chủ lấy mức đã thoả thuận sẵn ở

@@ -152,11 +152,21 @@ function checkImports() {
   /* Mấy tên quá ngắn hoặc hay trùng biến cục bộ thì bỏ qua cho đỡ báo nhảm */
   for (const skip of ['n', 'date', 'time', 'range', 'match', 'api', 'short', 'qty', 'pct']) shared.delete(skip);
 
+  /* Hook của React cũng phải import mới dùng được. Quên `useMemo` thì build vẫn
+     chạy, mở đúng màn hình mới nổ "useMemo is not defined" — đã dính một lần. */
+  const REACT_HOOKS = ['useState', 'useEffect', 'useMemo', 'useRef', 'useCallback',
+    'useLayoutEffect', 'useReducer', 'useContext'];
+
   const hits = [];
   for (const { rel, text } of FILES) {
     if (/client\/src\/(lib|components\/ui)/.test(rel)) continue;
     const code = stripNoise(text);
     const known = declaredNames(text);
+    for (const name of REACT_HOOKS) {
+      if (known.has(name)) continue;
+      const m = new RegExp(`(?<![\\w$.])${name}\\s*\\(`, 'g').exec(code);
+      if (m) hits.push({ rel, line: lineOf(code, m.index), msg: `gọi ${name}() mà thiếu import từ react` });
+    }
     for (const name of shared) {
       if (known.has(name)) continue;
       const re = new RegExp(`(?<![\\w$.])${name}\\s*\\(`, 'g');

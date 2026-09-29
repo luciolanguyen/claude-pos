@@ -1185,6 +1185,24 @@ CREATE TABLE IF NOT EXISTS payroll_closed_days (
   user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- Cham cong hang ngay (yeu cau 28/09, phan III).
+-- CHI DE THEO DOI gio giac, KHONG dung de tinh tien: luong van theo nguyen tac
+-- "khong bao nghi nghia la di lam du" nhu cu. Bao nghi trong bang cham cong thi
+-- sinh mot dong payroll_entries nhu thuong, de tien chi co MOT nguon.
+CREATE TABLE IF NOT EXISTS payroll_attendance (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  work_date    TEXT NOT NULL,                         -- ngay Duong YYYY-MM-DD
+  in_at        TEXT,                                  -- gio vao lam HH:MM
+  out_at       TEXT,                                  -- gio tan lam HH:MM
+  status       TEXT NOT NULL DEFAULT 'work',          -- work | off
+  note         TEXT,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ts           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE(employee_id, work_date)
+);
+CREATE INDEX IF NOT EXISTS idx_attendance_date ON payroll_attendance(work_date);
+
 -- Thuong chuyen can theo nam Am lich (28-3): moi nhan vien moi nam mot quyet dinh
 CREATE TABLE IF NOT EXISTS payroll_awards (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

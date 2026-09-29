@@ -28,6 +28,44 @@ export function useChangeReload(reload, match = [], { enabled = true } = {}) {
   }, [keys, enabled]);
 }
 
+/**
+ * Tới giờ thì nhắc một lần trong ngày (yêu cầu 28/09, phần III.1).
+ *
+ * Dùng cho popup chấm công đầu ca 7h30 và bảng giờ tan làm buổi chiều. Nhắc rồi
+ * mà tắt đi thì thôi, hôm sau mới nhắc lại — mốc "đã nhắc" ghi vào localStorage
+ * theo ngày, y như cách chuông đơn đặt nhớ "đã xem tới đơn nào".
+ *
+ * Mở phần mềm sau giờ đó (mở quán muộn, mới bật máy) thì vẫn nhắc ngay, vì việc
+ * cần làm là chấm công chứ không phải đúng khắc 7h30.
+ *
+ * @param hhmm   mốc giờ "07:30"
+ * @param key    tên chỗ nhớ, ví dụ 'thpos.attendance.morning'
+ * @param onFire gọi khi tới giờ mà hôm nay chưa nhắc
+ */
+export function useDailyPrompt(hhmm, key, onFire, { enabled = true } = {}) {
+  const ref = useRef(onFire);
+  ref.current = onFire;
+  useEffect(() => {
+    if (!enabled || !hhmm) return undefined;
+    const today = () => new Date().toLocaleDateString('sv-SE');
+    const seen = () => {
+      try { return localStorage.getItem(key) === today(); } catch { return false; }
+    };
+    const check = () => {
+      if (document.visibilityState !== 'visible' || seen()) return;
+      const now = new Date();
+      const [h, m] = String(hhmm).split(':').map(Number);
+      if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
+      try { localStorage.setItem(key, today()); } catch { /* trình duyệt chặn thì nhắc lại lần sau */ }
+      ref.current?.();
+    };
+    check();
+    const timer = setInterval(check, 60000);
+    window.addEventListener('focus', check);
+    return () => { clearInterval(timer); window.removeEventListener('focus', check); };
+  }, [hhmm, key, enabled]);
+}
+
 export function useLiveReload(reload, { interval = 30000, enabled = true } = {}) {
   const ref = useRef(reload);
   ref.current = reload;
