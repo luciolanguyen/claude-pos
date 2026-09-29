@@ -175,6 +175,11 @@ export const api = {
   customerBuyers: (id) => request('GET', `/customers/${id}/buyers`),
   proxyStats: (id) => request('GET', `/customers/${id}/proxy-stats`),
   voucher: (code) => request('GET', `/vouchers/${encodeURIComponent(code)}`),
+
+  /* Điểm tích luỹ — ví thành viên (yêu cầu 28/09, mục IV.1) */
+  loyaltyConfig: () => request('GET', '/loyalty/config'),
+  customerPoints: (id, params) => request('GET', `/customers/${id}/points` + qs(params)),
+  adjustPoints: (body) => request('POST', '/loyalty/adjust', body),
   codReceivables: () => request('GET', '/cod-receivables'),
   reconcileCod: (id, body) => request('PUT', `/sales/${id}/cod`, body),
 

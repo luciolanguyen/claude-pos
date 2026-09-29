@@ -1218,3 +1218,24 @@ CREATE TABLE IF NOT EXISTS payroll_awards (
   note         TEXT,
   UNIQUE(employee_id, lunar_year)
 );
+
+-- ---------- Diem tich luy (vi thanh vien) ----------
+-- So diem: moi lan cong / tru mot dong, so du = SUM(points). Khong giu cot
+-- tong o bang khach hang de khong bao gio lech (cung loi payroll_entries).
+-- Vi thanh vien KHONG nhan tien khach nap: chu tiem da chot vi chi chua diem.
+CREATE TABLE IF NOT EXISTS loyalty_entries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  points      INTEGER NOT NULL,                  -- am = tru diem
+  kind        TEXT NOT NULL,                     -- earn | redeem | revoke | refund | adjust
+  money       INTEGER NOT NULL DEFAULT 0,        -- tien quy doi khi dung / hoan diem
+  base_amount INTEGER NOT NULL DEFAULT 0,        -- tien hang lam can cu luc tich
+  ref_type    TEXT,                              -- sale | sale_return | sale_cancel | manual
+  ref_id      INTEGER,
+  ref_code    TEXT,
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_loyalty_customer ON loyalty_entries(customer_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_ref ON loyalty_entries(ref_type, ref_id);

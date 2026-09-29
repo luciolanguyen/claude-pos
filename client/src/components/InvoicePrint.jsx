@@ -79,6 +79,14 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
     showNew: sale?.customer_debt_after != null && invoice.show_debt_new !== false
       && sale.customer_debt_after > 0,
   };
+  /* Điểm tích luỹ (yêu cầu 28/09, mục IV.1). In số điểm CỦA HOÁ ĐƠN NÀY — số
+     đã chụp lúc bán, in lại tờ cũ vẫn đúng. Số dư điểm hiện tại không in, vì
+     hôm nay khách đã mua thêm thì con số đó không còn là của tờ hoá đơn kia. */
+  const points = invoice.show_points === false ? null : {
+    used: Number(sale?.points_used) || 0,
+    amount: Number(sale?.points_amount) || 0,
+    earned: Number(sale?.points_earned) || 0,
+  };
 
 
   useEffect(() => {
@@ -161,7 +169,7 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
             <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[45vh]">
               <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>
                 <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl}
-                  k80Width={k80Width} debt={debt} barcode={invoice.show_barcode === true} />
+                  k80Width={k80Width} debt={debt} points={points} barcode={invoice.show_barcode === true} />
               </div>
             </div>
           </div>
@@ -171,7 +179,7 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
       {/* Vùng in thật — ẩn trên màn hình, chỉ hiện khi in */}
       <div className={`print-area size-${format}`}>
         <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl}
-          k80Width={k80Width} debt={debt} barcode={invoice.show_barcode === true} />
+          k80Width={k80Width} debt={debt} points={points} barcode={invoice.show_barcode === true} />
       </div>
     </>
   );
@@ -179,8 +187,8 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
 
 /* ==================================================================== */
 
-function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width, debt, barcode }) {
-  const common = { sale, store, showCost, qrUrl, debt, barcode };
+function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width, debt, points, barcode }) {
+  const common = { sale, store, showCost, qrUrl, debt, points, barcode };
   if (format === 'k80') return <K80 {...common} width={k80Width} />;
   if (format === 'a5') return <Sheet {...common} size="a5" />;
   return <Sheet {...common} size="a4" />;
@@ -188,7 +196,7 @@ function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width, debt, bar
 
 /* ------------------------- Khổ K80 (máy in nhiệt) ------------------- */
 
-function K80({ sale, store, showCost, qrUrl, debt, barcode, width = 72 }) {
+function K80({ sale, store, showCost, qrUrl, debt, points, barcode, width = 72 }) {
   const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   return (
@@ -270,6 +278,10 @@ function K80({ sale, store, showCost, qrUrl, debt, barcode, width = 72 }) {
             <tr><td>(trong đó trừ lương {sale.salary_employee_name || 'nhân viên'})</td>
               <td style={{ textAlign: 'right' }}>{n(sale.salary_amount)}</td></tr>
           )}
+          {points?.amount > 0 && (
+            <tr><td>(trong đó trừ {n(points.used)} điểm tích luỹ)</td>
+              <td style={{ textAlign: 'right' }}>{n(points.amount)}</td></tr>
+          )}
           {sale.change_given > 0 && (
             <tr><td>Tiền thối:</td><td style={{ textAlign: 'right' }}>{n(sale.change_given)}</td></tr>
           )}
@@ -285,6 +297,10 @@ function K80({ sale, store, showCost, qrUrl, debt, barcode, width = 72 }) {
             <tr style={{ fontWeight: 700 }}>
               <td>TỔNG NỢ:</td><td style={{ textAlign: 'right' }}>{n(debt.after)}</td>
             </tr>
+          )}
+          {points?.earned > 0 && (
+            <tr><td>Điểm cộng đơn này:</td>
+              <td style={{ textAlign: 'right' }}>+{n(points.earned)} điểm</td></tr>
           )}
           {showCost && (
             <tr style={{ fontSize: 9, fontStyle: 'italic' }}>
@@ -349,7 +365,7 @@ function K80({ sale, store, showCost, qrUrl, debt, barcode, width = 72 }) {
 
 /* ------------------------- Khổ A5 / A4 ------------------------------ */
 
-function Sheet({ sale, store, showCost, qrUrl, debt, barcode, size }) {
+function Sheet({ sale, store, showCost, qrUrl, debt, points, barcode, size }) {
   const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   const isA4 = size === 'a4';
@@ -483,6 +499,18 @@ function Sheet({ sale, store, showCost, qrUrl, debt, barcode, size }) {
             <tr>
               <td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>Còn nợ lại</td>
               <td style={{ textAlign: 'right', fontWeight: 700 }}>{n(remaining)}</td>
+            </tr>
+          )}
+          {points?.amount > 0 && (
+            <tr>
+              <td colSpan={5} style={{ textAlign: 'right' }}>Trong đó trừ {n(points.used)} điểm tích luỹ</td>
+              <td style={{ textAlign: 'right' }}>{n(points.amount)}</td>
+            </tr>
+          )}
+          {points?.earned > 0 && (
+            <tr>
+              <td colSpan={5} style={{ textAlign: 'right' }}>Điểm cộng cho khách</td>
+              <td style={{ textAlign: 'right' }}>+{n(points.earned)} điểm</td>
             </tr>
           )}
           {debt?.showOld && (

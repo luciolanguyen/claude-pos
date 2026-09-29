@@ -580,6 +580,20 @@ addColumns('pos_featured', { set_id: 'INTEGER' });
 /* Báo giá gõ thẳng trên phiếu báo hết hàng (tài liệu 17, mục 2.2) */
 addColumns('requisition_item_suppliers', { quote_price: 'INTEGER' });
 
+/* Điểm tích luỹ (yêu cầu 28/09, mục IV.1). Chụp lại lúc bán như voucher_amount:
+   in lại tờ hoá đơn cũ phải ra đúng số điểm của hôm đó, chứ không phải số
+   điểm tính lại theo tỷ lệ hiện hành. */
+addColumns('sales', {
+  points_earned: 'INTEGER NOT NULL DEFAULT 0',    // điểm cộng cho khách vì đơn này
+  points_used: 'INTEGER NOT NULL DEFAULT 0',      // điểm khách trừ vào đơn này
+  points_amount: 'INTEGER NOT NULL DEFAULT 0',    // số điểm đó quy ra bao nhiêu tiền
+});
+/* Trả hàng: thu hồi bao nhiêu điểm đã tích, hoàn lại bao nhiêu điểm đã dùng */
+addColumns('sale_returns', {
+  points_revoked: 'INTEGER NOT NULL DEFAULT 0',
+  points_refund: 'INTEGER NOT NULL DEFAULT 0',
+});
+
 /* Bảng hàng ghim đời đầu khoá UNIQUE(kind, ref_id): một mặt hàng chỉ nằm
    được ở đúng một chỗ. Từ đợt 16 mỗi bộ theo mùa là một danh sách riêng,
    nên cùng một món phải nằm được ở nhiều bộ — dựng lại bảng với khoá ba

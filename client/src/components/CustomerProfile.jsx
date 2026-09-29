@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Phone, MapPin, Receipt, HandCoins, AlertTriangle, Save, Package, Building2, Mail, Cake,
-  Clock, Users, Info, Tag, Wallet, KeyRound, FileText, PencilLine,
+  Clock, Users, Info, Tag, Wallet, KeyRound, FileText, PencilLine, Star, Plus, Minus,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
@@ -11,7 +11,7 @@ import {
   money, n, short, date, datetime, smartTime, qty as fq, match, PAYMENT_LABEL,
 } from '../lib/format';
 import {
-  Button, Badge, Stat, Tabs, Spinner, ErrorBox, Empty, Field, MoneyInput, Input, Pager, Combo,
+  Button, Badge, Stat, Tabs, Spinner, ErrorBox, Empty, Field, MoneyInput, Input, Pager, Combo, Modal,
 } from './ui';
 import { StepBadge, CodBadge } from './PosDelivery';
 import { DebtCollectModal } from './PosDebt';
@@ -56,7 +56,7 @@ function payState(s, inv) {
   return owe > 0 ? { label: `Còn nợ ${money(owe)}`, tone: 'warn' } : { label: 'Đã thanh toán', tone: 'ok' };
 }
 
-const TABS = ['info', 'history', 'debt', 'notes'];
+const TABS = ['info', 'history', 'debt', 'notes', 'points'];
 const pickTab = (t) => (TABS.includes(t) ? t : 'info');
 
 export default function CustomerProfile({
@@ -73,6 +73,9 @@ export default function CustomerProfile({
   const [tab, setTab] = useState(pickTab(initialTab));
   /* Phân hệ ghi chú hàng đặc thù có được bật không (tài liệu 24, phần 1) */
   const notesOn = settings?.pos?.customer_notes === true;
+  /* Điểm tích luỹ — "ví thành viên" của khách (yêu cầu 28/09, mục IV.1).
+     Tiệm chưa bật chương trình thì giấu hẳn thẻ đi. */
+  const pointsOn = settings?.pos?.points_enabled === true;
   const [collecting, setCollecting] = useState(false);
   const [history, setHistory] = useState(null);
 
@@ -153,6 +156,7 @@ export default function CustomerProfile({
             /* Khai chỗ này thì ngoài quầy gõ tên khách gọi là ra món thật
                (tài liệu 24, phần 3). Tiệm tắt phân hệ thì giấu thẻ đi. */
             ...(notesOn ? [{ key: 'notes', label: 'Ghi chú hàng đặc thù' }] : []),
+            ...(pointsOn ? [{ key: 'points', label: 'Điểm tích luỹ' }] : []),
           ]}
         />
         {tab === 'info' && <InfoTab c={c} compact={compact} />}
@@ -168,6 +172,7 @@ export default function CustomerProfile({
           <DebtTab c={c} ledger={ledger} onCollect={() => setCollecting(true)} onSaved={changed} />
         )}
         {tab === 'notes' && notesOn && <ProductNotesTab c={c} />}
+        {tab === 'points' && pointsOn && <PointsTab c={c} reloadKey={reloadKey} />}
       </div>
 
       {/* Gắn khi mở: hộp thu nợ chỉ đọc mã khách lúc vừa gắn vào */}
@@ -187,6 +192,164 @@ export default function CustomerProfile({
         subtitle={history?.subtitle}
       />
     </div>
+  );
+}
+
+/* ==================================================================== *
+ * THẺ ĐIỂM TÍCH LUỸ — VÍ THÀNH VIÊN (yêu cầu 28/09, mục IV.1)
+ *
+ * Số dư điểm và sổ điểm: mỗi lần cộng / trừ một dòng, không có đường xoá.
+ * Cộng trừ tay là việc của chủ tiệm / quản lý và bắt buộc ghi lý do.
+ * ==================================================================== */
+const POINT_KINDS = {
+  earn: { label: 'Mua hàng', tone: 'ok' },
+  redeem: { label: 'Dùng điểm', tone: 'info' },
+  revoke: { label: 'Thu hồi do trả hàng', tone: 'warn' },
+  refund: { label: 'Hoàn lại điểm', tone: 'ok' },
+  adjust: { label: 'Chỉnh tay', tone: 'mute' },
+};
+
+function PointsTab({ c, reloadKey = 0 }) {
+  const { can } = useApp();
+  const [page, setPage] = useState(1);
+  const [adjusting, setAdjusting] = useState(null);   // { sign: 1 | -1 }
+  const { data, busy, error, reload } = useFetch(
+    () => api.customerPoints(c.id, { page, page_size: 20 }), [c.id, page, reloadKey]);
+
+  const cfg = data?.config;
+  const quyRa = cfg?.value > 0 ? (data?.balance || 0) * cfg.value : 0;
+
+  if (busy && !data) return <Spinner />;
+  if (error && !data) return <ErrorBox error={error} onRetry={reload} />;
+
+  return (
+    <div className="p-3 space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="rounded-lg bg-accent-soft/60 px-4 py-3">
+          <div className="text-2xs font-bold text-emerald-900/70 uppercase tracking-wide">Điểm đang có</div>
+          <div className="text-3xl font-display font-bold text-emerald-900 tabular leading-tight">
+            {n(data?.balance || 0)}
+          </div>
+          {quyRa > 0 && <div className="text-2xs text-emerald-900/70">đổi được {money(quyRa)}</div>}
+        </div>
+        <div className="text-2xs text-muted-ink flex-1 min-w-[180px]">
+          {cfg?.earn_per > 0 && <div>Mua {money(cfg.earn_per)} tiền hàng được 1 điểm.</div>}
+          {cfg?.value > 0 && <div>1 điểm trừ được {money(cfg.value)} khi mua lần sau.</div>}
+          {cfg?.min_redeem > 0 && <div>Mỗi lần dùng tối thiểu {cfg.min_redeem} điểm.</div>}
+        </div>
+        {can('settings.manage') && (
+          <div className="flex gap-1.5">
+            <Button size="sm" icon={Plus} onClick={() => setAdjusting({ sign: 1 })}>Cộng điểm</Button>
+            <Button size="sm" icon={Minus} onClick={() => setAdjusting({ sign: -1 })}>Trừ điểm</Button>
+          </div>
+        )}
+      </div>
+
+      {!data?.rows?.length ? (
+        <Empty icon={Star} title="Chưa có dòng nào trong sổ điểm"
+          message="Khách mua hàng là máy tự cộng điểm vào đây." />
+      ) : (
+        <>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Lúc</th>
+                  <th>Việc</th>
+                  <th>Chứng từ</th>
+                  <th className="text-right">Điểm</th>
+                  <th className="text-right">Quy ra tiền</th>
+                  <th>Ghi chú</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((r) => {
+                  const k = POINT_KINDS[r.kind] || { label: r.kind, tone: 'mute' };
+                  return (
+                    <tr key={r.id}>
+                      <td className="whitespace-nowrap text-2xs text-muted-ink">{datetime(r.ts)}</td>
+                      <td><Badge tone={k.tone}>{k.label}</Badge></td>
+                      <td className="font-mono text-2xs">{r.ref_code || '—'}</td>
+                      <td className={`text-right tabular font-semibold ${r.points < 0 ? 'text-danger' : 'text-emerald-700'}`}>
+                        {r.points > 0 ? '+' : ''}{n(r.points)}
+                      </td>
+                      <td className="text-right tabular text-muted-ink">{r.money > 0 ? money(r.money) : '—'}</td>
+                      <td className="text-2xs text-muted-ink">
+                        {r.note}{r.user_name ? ` · ${r.user_name}` : ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={page} pageSize={20} total={data.total} onPage={setPage} />
+        </>
+      )}
+
+      {adjusting && (
+        <PointsAdjustModal
+          customer={c}
+          sign={adjusting.sign}
+          onClose={() => setAdjusting(null)}
+          onSaved={() => { setAdjusting(null); setPage(1); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Cộng / trừ điểm bằng tay. Lý do là bắt buộc — điểm là tiền. */
+function PointsAdjustModal({ customer, sign, onClose, onSaved }) {
+  const { toast } = useApp();
+  const [points, setPoints] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const save = async () => {
+    const p = Math.round(Number(points) || 0);
+    if (p <= 0) { setErr('Nhập số điểm lớn hơn 0.'); return; }
+    if (!note.trim()) { setErr('Ghi rõ lý do cộng / trừ điểm.'); return; }
+    setBusy(true);
+    try {
+      const out = await api.adjustPoints({ customer_id: customer.id, points: sign * p, note: note.trim() });
+      toast(`Đã ${sign > 0 ? 'cộng' : 'trừ'} ${p} điểm — khách còn ${out.balance} điểm`, 'ok');
+      onSaved();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={sign > 0 ? 'Cộng điểm cho khách' : 'Trừ điểm của khách'}
+      subtitle={customer.name}
+      size="sm"
+      footer={<>
+        <Button onClick={onClose}>Huỷ</Button>
+        <Button variant="primary" onClick={save} loading={busy}>
+          {sign > 0 ? 'Cộng điểm' : 'Trừ điểm'}
+        </Button>
+      </>}
+    >
+      <div className="space-y-3">
+        <Field label="Số điểm" required htmlFor="pt-adj">
+          <Input id="pt-adj" data-autofocus type="number" min="1" value={points}
+            onChange={(e) => { setPoints(e.target.value); setErr(''); }} />
+        </Field>
+        <Field label="Lý do" required htmlFor="pt-note"
+          hint="Sổ điểm không xoá được dòng nào — người sau đọc lại phải hiểu vì sao.">
+          <Input id="pt-note" value={note} placeholder="VD: bù điểm hoá đơn ghi sót ngày 12/09"
+            onChange={(e) => { setNote(e.target.value); setErr(''); }} />
+        </Field>
+        {err && <p className="error-text" role="alert">{err}</p>}
+      </div>
+    </Modal>
   );
 }
 

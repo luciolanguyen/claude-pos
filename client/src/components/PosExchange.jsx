@@ -20,7 +20,8 @@
    Hoá đơn quá hạn đổi trả, hoặc món thuộc nhóm "không nhận đổi trả" thì
    chặn ngay trên màn hình — máy chủ cũng chặn lại lần nữa.
 
-   Tiệm chưa có chương trình tích điểm, nên không có điểm thưởng để thu hồi.
+   Phần hàng khách trả lại thì máy chủ tự thu hồi điểm tích luỹ đã cộng cho đơn gốc
+   (yêu cầu 28/09, mục IV.1), tính theo tỉ lệ giá trị hàng trả.
    ==================================================================== */
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {

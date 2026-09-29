@@ -314,6 +314,8 @@ function InvoiceDetail({ s, seeCost, mayReturn, dim, onPrint, onExchange }) {
     s.discount > 0 && ['Giảm giá', `-${money(s.discount)}`],
     s.vat_amount > 0 && ['Thuế GTGT', money(s.vat_amount)],
     s.voucher_amount > 0 && ['Trừ phiếu đổi hàng', `-${money(s.voucher_amount)}`],
+    s.points_amount > 0 && [`Trừ điểm tích luỹ (${s.points_used} điểm)`, `-${money(s.points_amount)}`],
+    s.points_earned > 0 && ['Điểm cộng cho khách', `+${s.points_earned} điểm`],
   ].filter(Boolean)), [s]);
 
   return (

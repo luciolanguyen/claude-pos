@@ -280,6 +280,10 @@ function InvoiceSettings() {
         <CheckRow checked={form['show_debt_new'] !== false} onChange={(v) => setForm((f) => ({ ...f, show_debt_new: v }))}
           label="In dòng tổng nợ sau hoá đơn này"
           hint="Nợ cũ cộng phần chưa trả của hoá đơn này." />
+        {/* Giờ đã có phân hệ điểm nên công tắc này làm việc thật (mục IV.1) */}
+        <CheckRow checked={form['show_points'] !== false} onChange={(v) => setForm((f) => ({ ...f, show_points: v }))}
+          label="In dòng điểm tích luỹ"
+          hint="Điểm cộng của chính hoá đơn này, và phần đã trừ bằng điểm. Đơn không dính điểm thì không in dòng nào." />
       </div>
 
       {/* Phiếu thu nợ khổ K80 (tài liệu 14, mục 1.2) */}
@@ -419,6 +423,41 @@ function PosSettings() {
             <Input id="pos-vdays" type="number" min="1" value={form.voucher_days ?? 90} onChange={numSet('voucher_days')} />
           </Field>
         </div>
+      </div>
+
+      {/* Điểm tích luỹ — ví thành viên (yêu cầu 28/09, mục IV.1).
+          Mặc định TẮT: tiệm bật khi thật sự chạy chương trình, chứ không để
+          máy lặng lẽ cộng điểm rồi khách đòi mà tiệm không biết. */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Điểm tích luỹ (ví thành viên)</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Khách mua hàng thì được cộng điểm, lần sau mua trừ thẳng vào tiền phải trả.
+          Không tích cho món mua hộ, phí giao hàng và thuế GTGT. Trả hàng hay huỷ đơn thì máy tự thu hồi điểm.
+        </p>
+        <CheckRow checked={!!form['points_enabled']} onChange={(v) => setForm((f) => ({ ...f, points_enabled: v }))}
+          label="Bật chương trình điểm tích luỹ"
+          hint="Tắt đi thì quầy không cộng, không trừ điểm nữa — điểm khách đang có vẫn còn nguyên trong sổ." />
+        {form.points_enabled && (
+          <div className="grid gap-3 sm:grid-cols-2 mt-3">
+            <Field label="Bao nhiêu tiền hàng được 1 điểm" hint="Mặc định 10.000 đ = 1 điểm." htmlFor="pos-ptearn">
+              <Input id="pos-ptearn" type="number" min="1000" step="1000"
+                value={form.points_earn_per ?? 10000} onChange={numSet('points_earn_per')} />
+            </Field>
+            <Field label="1 điểm trừ được bao nhiêu tiền" hint="Mặc định 1 điểm = 1.000 đ." htmlFor="pos-ptvalue">
+              <Input id="pos-ptvalue" type="number" min="100" step="100"
+                value={form.points_value ?? 1000} onChange={numSet('points_value')} />
+            </Field>
+            <Field label="Mỗi lần dùng tối thiểu (điểm)" hint="Tránh trừ lắt nhắt vài trăm đồng. Mặc định 10 điểm."
+              htmlFor="pos-ptmin">
+              <Input id="pos-ptmin" type="number" min="0" value={form.points_min_redeem ?? 10}
+                onChange={numSet('points_min_redeem')} />
+            </Field>
+            <Field label="Điểm trừ tối đa mỗi hoá đơn (%)" hint="Mặc định 50% tiền hoá đơn." htmlFor="pos-ptmax">
+              <Input id="pos-ptmax" type="number" min="0" max="100" value={form.points_max_percent ?? 50}
+                onChange={numSet('points_max_percent')} />
+            </Field>
+          </div>
+        )}
       </div>
 
       {/* Hiện nút chọn nhanh đơn vị tính trên lưới (tài liệu 13, mục 2.2) */}

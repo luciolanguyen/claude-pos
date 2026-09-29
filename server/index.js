@@ -23,6 +23,7 @@ import consign from './routes/consign.js';
 import debts from './routes/debts.js';
 import barcodes from './routes/barcodes.js';
 import payroll from './routes/payroll.js';
+import loyalty from './routes/loyalty.js';
 import { cleanupPayrollPhotos } from './payroll.js';
 import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
@@ -153,7 +154,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use('/api', payroll, debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
+app.use('/api', payroll, loyalty, debts, barcodes, catalog, partners, purchases, sales, posExtras, orders, requisitions, drafts,
   consign, inventory, production, warranty, cash, reports, system);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy API: ' + req.path }));

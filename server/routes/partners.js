@@ -502,6 +502,8 @@ r.get('/customers', (req, res) => {
     c.total_spent = agg.total;
     c.order_count = agg.n;
     c.last_order = agg.last_ts;
+    /* Điểm tích luỹ (yêu cầu 28/09, mục IV.1) — số dư là tổng sổ điểm */
+    c.points = get('SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries WHERE customer_id = ?', [c.id]).n;
     /* Bóc nợ theo từng hoá đơn tốn công hơn, chỉ làm khi màn hình cần */
     if (wantDetail) Object.assign(c, debtDetail(c));
   }

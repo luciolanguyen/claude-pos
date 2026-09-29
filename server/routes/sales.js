@@ -12,6 +12,10 @@ import { debtBreakdown, overdueInvoices } from '../debt.js';
 import { createVoucher, lookupVoucher, redeemVoucher } from '../vouchers.js';
 import { isLoginRequired } from '../guard.js';
 import { salaryEmployee, recordSalePurchase, reverseSalePurchase } from '../payroll.js';
+import {
+  loyaltyConfig, earnBase, earnPoints, redeemPlan, redeemPoints, revokePoints, refundPoints,
+  pointsBalance,
+} from '../loyalty.js';
 
 const r = Router();
 
@@ -60,8 +64,10 @@ r.get('/sales', (req, res) => {
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.code AS customer_code,
            u.full_name AS user_name, w.name AS warehouse_name,
            (s.total - s.paid) AS remaining,
-           /* Lãi của đơn giao hàng phải trừ tiền xe trả người giao (mục II.1) */
-           (s.total - s.vat_amount - s.cogs - s.shipper_fee) AS profit,
+           /* Lãi của đơn giao hàng phải trừ tiền xe trả người giao (mục II.1),
+              và trừ tiền khách gán bằng điểm tích luỹ — phần đó tiệm không thu
+              được đồng nào (mục IV.1) */
+           (s.total - s.vat_amount - s.cogs - s.shipper_fee - s.points_amount) AS profit,
            (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
            /* Hàng mua hộ vãng lai tách riêng (plan 31, hạng mục 4d): nhìn
               danh sách hoá đơn phải phân biệt được đâu là hàng của tiệm,
@@ -94,7 +100,7 @@ r.get('/sales', (req, res) => {
   const sums = get(`
     SELECT COUNT(*) AS count,
            COALESCE(SUM(s.total), 0) AS revenue,
-           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee), 0) AS profit,
+           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee - s.points_amount), 0) AS profit,
            COALESCE(SUM(s.shipper_fee), 0) AS shipper_fee,
            COALESCE(SUM(MAX(s.total - s.paid, 0)), 0) AS unpaid
     FROM sales s
@@ -110,6 +116,8 @@ r.get('/sales/:id', (req, res) => {
            u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name,
            emp.full_name AS salary_employee_name,
            (SELECT COALESCE(SUM(x.salary_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS salary_refunded,
+           /* Điểm đã hoàn lại của hoá đơn này — hộp trả hàng cần biết còn hoàn được bao nhiêu */
+           (SELECT COALESCE(SUM(x.points_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS points_refunded,
            ca.name AS carrier_name,
            su.full_name AS shipper_user_name,
            (SELECT o.code FROM sale_order_deliveries sod
@@ -339,7 +347,11 @@ export function createSale(b) {
     if (codMode) throw badRequest('Đơn giao thu hộ (COD) không trừ vào lương được.', 'SALARY_COD');
     salaryEmp = salaryEmployee(b.salary_employee_id);
   }
-  const newDebt = codMode ? 0 : Math.max(0, total0 - paid0 - voucherAsked - salaryAsked);
+  /* Điểm tích luỹ cũng là tiền khách gán vào hoá đơn (mục IV.1): không trừ ra
+     thì phép soát hạn mức nợ tính thừa, khách bị chặn oan. */
+  const pointsAsked0 = Math.max(0, Math.round(Number(b.points_used) || 0)) * loyaltyConfig().value;
+  const newDebt = codMode
+    ? 0 : Math.max(0, total0 - paid0 - voucherAsked - salaryAsked - pointsAsked0);
 
   /* 1. Giảm giá quá hạn mức thu ngân tự quyết (tài liệu 06).
         So với BẢNG GIÁ, không so với ô giảm giá — sửa tay đơn giá xuống
@@ -448,9 +460,22 @@ export function createSale(b) {
           || Number.isNaN(Number(b.voucher_amount)) ? v.balance : Math.round(Number(b.voucher_amount));
         voucherUse = Math.max(0, Math.min(asked, v.balance, total - paidMoney));
       }
-      /* Trừ lương trả vào phần còn thiếu sau tiền mặt và phiếu đổi hàng */
-      const salaryUse = salaryEmp ? Math.max(0, Math.min(salaryAsked, total - paidMoney - voucherUse)) : 0;
-      const paid = paidMoney + voucherUse + salaryUse;
+      /* Điểm tích luỹ trả vào phần còn thiếu, sau tiền mặt và phiếu đổi hàng.
+         Soát ở đây rồi mới ghi hoá đơn; sổ điểm bị trừ ở dưới, sau khi hoá đơn
+         đã có số. Báo lỗi thẳng thay vì lặng lẽ hạ số điểm: quầy đã hứa với
+         khách trừ bao nhiêu thì phải biết vì sao không trừ được. */
+      const pointsPlan = redeemPlan({
+        customerId: Number(b.customer_id) || null,
+        points: b.points_used,
+        total,
+        due: total - paidMoney - voucherUse,
+      });
+      const pointsUse = pointsPlan.points;
+      const pointsMoney = pointsPlan.money;
+      /* Trừ lương trả vào phần còn thiếu sau tiền mặt, phiếu đổi hàng và điểm */
+      const salaryUse = salaryEmp
+        ? Math.max(0, Math.min(salaryAsked, total - paidMoney - voucherUse - pointsMoney)) : 0;
+      const paid = paidMoney + voucherUse + pointsMoney + salaryUse;
       const changeGiven = Math.max(0, Math.round(Number(b.received) || 0) - paidMoney);
       const code = b.code?.trim() || nextCode('sales', 'HD');
 
@@ -496,13 +521,15 @@ export function createSale(b) {
                           cod_status, shipper_name, shipper_user_id, shipper_phone,
                           shipper_fee, ship_weight, ship_size,
                           buyer_id, buyer_name, buyer_phone, voucher_amount,
-                          approved_by, approval_note, debt_before, debt_after)
+                          approved_by, approval_note, debt_before, debt_after,
+                          points_used, points_amount)
         VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?,
                ?, ?, ?,
                ?, ?, ?, ?,
-               ?, ?, ?, ?)`,
+               ?, ?, ?, ?,
+               ?, ?)`,
         [code, b.ts || null, b.customer_id || null, warehouseId, b.user_id || null,
           b.price_list_id || null, subtotal, discount, discountType, discountPercent,
           vatAmount, total, cogs, paid, changeGiven,
@@ -522,7 +549,8 @@ export function createSale(b) {
           String(b.ship_size || '').trim() || null,
           buyerId, buyerName, buyerPhone, voucherUse,
           approvedBy, approvedBy ? approvalNotes.join('; ') : null,
-          debtBefore, debtAfter]);
+          debtBefore, debtAfter,
+          pointsUse, pointsMoney]);
       const saleId = Number(info.lastInsertRowid);
 
       for (const c of consign) {
@@ -538,6 +566,21 @@ export function createSale(b) {
       if (voucherUse > 0) {
         redeemVoucher({ code: voucherCode, amount: voucherUse, saleId, customerId: b.customer_id });
       }
+      /* Điểm tích luỹ (mục IV.1): trừ điểm khách dùng, rồi cộng điểm của đơn này.
+         Không đồng nào chạy qua quỹ — điểm không phải tiền mặt. Khách lẻ không có
+         hồ sơ thì không tích, không dùng. */
+      if (pointsUse > 0) {
+        redeemPoints({
+          customerId: Number(b.customer_id), points: pointsUse, money: pointsMoney,
+          saleId, saleCode: code, userId: b.user_id || null, ts: b.ts || null,
+        });
+      }
+      const pointsEarned = earnPoints({
+        customerId: Number(b.customer_id) || null,
+        base: earnBase({ subtotal, discount, consignTotal: consign.reduce((a, c) => a + c.amount, 0) }),
+        saleId, saleCode: code, userId: b.user_id || null, ts: b.ts || null,
+      });
+      if (pointsEarned > 0) run('UPDATE sales SET points_earned = ? WHERE id = ?', [pointsEarned, saleId]);
       /* Không vào quỹ (không đồng nào vào két), không thành nợ khách: ghi một dòng
          trừ vào sổ lương, cùng giao dịch với hoá đơn */
       if (salaryUse > 0) {
@@ -628,6 +671,7 @@ export function createSale(b) {
       return {
         id: saleId, code, total, paid, change_given: changeGiven,
         cod_amount: codAmount, voucher_used: voucherUse, approved_by: approvedBy, salary_amount: salaryUse,
+        points_used: pointsUse, points_amount: pointsMoney, points_earned: pointsEarned,
       };
   });
 }
@@ -707,7 +751,26 @@ r.post('/sales/:id/cancel', (req, res) => {
         refCode: s.code, saleCode: s.code, userId: req.user?.id || null, reason: `Huỷ hoá đơn ${s.code}`,
       });
     }
-    const cashBack = s.paid - salaryPaid;
+    /* Điểm tích luỹ (mục IV.1): huỷ đơn thì thu hồi điểm đã tích và trả lại
+       điểm khách đã dùng. Trừ phần đã xử lý qua phiếu trả hàng trước đó. */
+    if (s.customer_id) {
+      const done = get(`SELECT COALESCE(SUM(points_revoked), 0) AS rev,
+                               COALESCE(SUM(points_refund), 0) AS ref
+                        FROM sale_returns WHERE sale_id = ?`, [s.id]);
+      revokePoints({
+        customerId: s.customer_id, points: (s.points_earned || 0) - done.rev,
+        refType: 'sale_cancel', refId: s.id, refCode: s.code,
+        userId: req.user?.id || null, note: `Huỷ hoá đơn ${s.code}`,
+      });
+      refundPoints({
+        customerId: s.customer_id, points: (s.points_used || 0) - done.ref,
+        money: s.points_amount || 0,
+        refType: 'sale_cancel', refId: s.id, refCode: s.code,
+        userId: req.user?.id || null, note: `Hoàn điểm do huỷ hoá đơn ${s.code}`,
+      });
+    }
+    /* Phần khách gán bằng điểm không hoàn tiền mặt — đã trả lại bằng điểm ở trên */
+    const cashBack = s.paid - salaryPaid - (s.points_amount || 0);
     if (cashBack > 0) {
       const accountId = defaultCashAccount();
       const cust = s.customer_id ? get('SELECT name FROM customers WHERE id = ?', [s.customer_id]) : null;
@@ -895,7 +958,7 @@ function returnedByLine(saleId, lines) {
   return done;
 }
 
-const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher', 'salary'];
+const REFUND_METHODS = ['cash', 'transfer', 'debt', 'voucher', 'salary', 'points'];
 
 /**
  * Lập phiếu khách trả hàng. Dùng chung cho màn hình Hoá đơn và cho việc
@@ -981,6 +1044,11 @@ export function createSaleReturn(b) {
   if (method === 'salary' && !(sale && sale.salary_amount > 0 && sale.salary_employee_id)) {
     throw badRequest('Chỉ hoá đơn trả bằng cách trừ vào lương mới hoàn lại vào lương được.', 'SALARY_REFUND_NOT_ALLOWED');
   }
+  /* Hoàn vào điểm (mục IV.1): chỉ hoá đơn gốc đã trừ điểm. Khách trả bằng điểm
+     thì hoàn lại bằng điểm, không moi tiền mặt ra khỏi két. */
+  if (method === 'points' && !(sale && sale.points_used > 0)) {
+    throw badRequest('Chỉ hoá đơn có trừ điểm tích luỹ mới hoàn lại vào điểm được.', 'POINTS_REFUND_NOT_ALLOWED');
+  }
 
   return tx(() => {
     const defectWh = items.some((i) => i.condition === 'defect') ? ensureDefectWarehouse() : null;
@@ -1000,7 +1068,7 @@ export function createSaleReturn(b) {
 
     /* Tiền mặt / chuyển khoản mới chi ra quỹ. Cấn trừ nợ và phiếu đổi hàng
        thì không đụng tới quỹ. */
-    const moneyBack = method === 'debt' || method === 'voucher' || method === 'salary'
+    const moneyBack = method === 'debt' || method === 'voucher' || method === 'salary' || method === 'points'
       ? 0
       : Math.min(Math.max(0, Math.round(Number(b.refunded) || 0)), Math.max(total, 0));
     const code = nextCode('sale_returns', 'TH');
@@ -1068,6 +1136,50 @@ export function createSaleReturn(b) {
       reverseSalePurchase({
         employeeId: sale.salary_employee_id, amount: total, refType: 'sale_return', refId: returnId, refCode: code,
         saleCode: sale.code, userId: b.user_id || null, reason: `Trả hàng ${code} của hoá đơn ${sale.code}`,
+      });
+    }
+    /* Thu hồi điểm đã tích của phần hàng khách trả lại (tài liệu 02, mục 23).
+       Tính theo tỉ lệ giá trị hàng trả trên tiền hàng của hoá đơn gốc, và không
+       bao giờ thu quá số điểm hoá đơn đó đã cộng. */
+    if (sale && customerId && sale.points_earned > 0 && subtotal > 0) {
+      const consignAmt = get('SELECT COALESCE(SUM(amount), 0) AS n FROM sale_consign_items WHERE sale_id = ?',
+        [sale.id]).n;
+      const earnedOn = Math.max(1, sale.subtotal - sale.discount - consignAmt);
+      const took = get(`SELECT COALESCE(SUM(points_revoked), 0) AS n FROM sale_returns
+                        WHERE sale_id = ? AND id <> ?`, [sale.id, returnId]).n;
+      const room = Math.max(0, sale.points_earned - took);
+      const take = Math.min(room, Math.round(sale.points_earned * subtotal / earnedOn));
+      if (take > 0) {
+        run('UPDATE sale_returns SET points_revoked = ? WHERE id = ?', [take, returnId]);
+        revokePoints({
+          customerId, points: take, refType: 'sale_return', refId: returnId, refCode: code,
+          userId: b.user_id || null, note: `Trả hàng ${code} của hoá đơn ${sale.code}`, ts: b.ts || null,
+        });
+      }
+    }
+    /* Hoàn lại điểm khách đã dùng, không vượt số điểm hoá đơn gốc đã trừ */
+    if (method === 'points' && total > 0) {
+      const cfg = loyaltyConfig();
+      if (cfg.value <= 0) throw badRequest('Chưa khai 1 điểm đổi được bao nhiêu tiền.', 'POINTS_NO_VALUE');
+      const gave = get(`SELECT COALESCE(SUM(points_refund), 0) AS n FROM sale_returns
+                        WHERE sale_id = ? AND id <> ?`, [sale.id, returnId]).n;
+      const room = Math.max(0, sale.points_used - gave);
+      const want = Math.floor(total / cfg.value);
+      if (want <= 0) {
+        throw badRequest(`Tiền trả lại ${Math.round(total).toLocaleString('vi-VN')} đ chưa đủ 1 điểm.`,
+          'POINTS_REFUND_TOO_SMALL');
+      }
+      if (want > room) {
+        throw badRequest(`Hoá đơn ${sale.code} chỉ trừ ${sale.points_used} điểm`
+          + `${gave ? `, đã hoàn ${gave} điểm` : ''} — hoàn lại tối đa ${room} điểm `
+          + `(${(room * cfg.value).toLocaleString('vi-VN')} đ). Phần khách trả bằng tiền thì lập phiếu trả riêng, hoàn bằng tiền.`,
+        'POINTS_REFUND_EXCEEDED');
+      }
+      run('UPDATE sale_returns SET points_refund = ? WHERE id = ?', [want, returnId]);
+      refundPoints({
+        customerId, points: want, money: want * cfg.value,
+        refType: 'sale_return', refId: returnId, refCode: code,
+        userId: b.user_id || null, note: `Hoàn điểm khi trả hàng ${code}`, ts: b.ts || null,
       });
     }
     if (method === 'voucher' && total > 0) {
@@ -1388,6 +1500,9 @@ r.get('/customers/:id/quick', (req, res) => {
 
   c.debt = customerDebt(c.id);
   c.over_limit = c.debt_limit > 0 && c.debt > c.debt_limit;
+  /* Điểm tích luỹ (mục IV.1): quầy chọn khách là biết ngay còn bao nhiêu điểm */
+  c.points = pointsBalance(c.id);
+  c.points_config = loyaltyConfig();
   c.recent_sales = all(`
     SELECT s.id, s.code, s.ts, s.total, s.paid, s.payment_method,
            (s.total - s.paid) AS remaining,

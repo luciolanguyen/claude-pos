@@ -166,6 +166,12 @@ export const ACCESS_RULES = [
   ['GET',  /^\/dashboard/,                'report.view'],
   ['GET',  /^\/activity/,                 'settings.manage'],
 
+  /* --- Điểm tích luỹ (yêu cầu 28/09, mục IV.1) ---
+     Sổ điểm của khách nằm dưới /customers nên ăn theo luật khách hàng ở trên.
+     Còn cộng trừ điểm bằng tay là việc của chủ tiệm / quản lý. */
+  ['GET',  /^\/loyalty\/config$/,          'sale.pos'],
+  ['*',    /^\/loyalty/,                   'settings.manage'],
+
   /* --- Thiết lập --- */
   ['PUT',  /^\/settings/,                 'settings.manage'],
   ['*',    /^\/users/,                    'settings.manage'],

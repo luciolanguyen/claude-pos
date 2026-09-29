@@ -17,7 +17,7 @@
 import { useState, useEffect } from 'react';
 import {
   Wallet, CreditCard, HandCoins, Tag, Printer, Truck, Lock, ShieldCheck,
-  AlertTriangle, Ticket, X, Pencil, KeyRound, IdCard,
+  AlertTriangle, Ticket, X, Pencil, KeyRound, IdCard, Star,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { money, n } from '../lib/format';
@@ -53,6 +53,8 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
   const [voucher, setVoucher] = useState(null);
   const [vBusy, setVBusy] = useState(false);
   const [vErr, setVErr] = useState('');
+  /* Điểm tích luỹ khách dùng cho đơn này (yêu cầu 28/09, mục IV.1) */
+  const [pointsUse, setPointsUse] = useState(0);
   const [print, setPrint] = useState({ invoice: true, note: true });
   /* In kèm phiếu soạn hàng cho nhân viên đi lấy hàng (BRD nâng cấp, mục 3) */
   const [pickSlip, setPickSlip] = useState(false);
@@ -63,7 +65,21 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
   const [salaryEmp, setSalaryEmp] = useState('');
 
   const voucherUse = voucher ? Math.min(voucher.balance, totals.total) : 0;
-  const due = Math.max(0, totals.total - voucherUse);
+
+  /* --------------------- Điểm tích luỹ (mục IV.1) --------------------- */
+  /* Số dư điểm đi kèm câu hỏi công nợ ở trên, không gọi thêm lượt nào. */
+  const pcfg = credit?.points_config || null;
+  const pointsBal = credit?.points || 0;
+  const pointsOn = !!(pcfg?.enabled && pcfg.value > 0 && customer?.id && pointsBal > 0);
+  /* Trần: vừa theo % hoá đơn, vừa không quá phần khách còn phải trả */
+  const pointsCap = pointsOn
+    ? Math.min(pointsBal,
+      Math.floor(Math.floor(totals.total * pcfg.max_percent / 100) / pcfg.value),
+      Math.floor(Math.max(0, totals.total - voucherUse) / pcfg.value))
+    : 0;
+  const pointsMoney = pointsOn ? Math.min(pointsUse, pointsCap) * pcfg.value : 0;
+  const due = Math.max(0, totals.total - voucherUse - pointsMoney);
+
 
   useEffect(() => {
     if (!open) return;
@@ -78,6 +94,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     setVCode('');
     setVoucher(null);
     setVErr('');
+    setPointsUse(0);
     setPrint(delivery ? { invoice: true, note: true, ...(delivery.print || {}) } : { invoice: true, note: false });
     setPickSlip(false);
     setErr('');
@@ -87,11 +104,11 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  /* Áp phiếu đổi hàng xong thì tiền khách đưa bám theo số còn phải trả */
+  /* Áp phiếu đổi hàng hay trừ điểm xong thì tiền khách đưa bám theo số còn phải trả */
   useEffect(() => {
-    if (open) setReceived(Math.max(0, totals.total - voucherUse));
+    if (open) setReceived(due);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voucherUse]);
+  }, [voucherUse, pointsMoney]);
 
   useEffect(() => {
     if (!open || access?.login_required === false) { setStaff([]); return undefined; }
@@ -172,6 +189,7 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
     cash_amount: cashAmount,
     transfer_amount: transferAmt,
     ...(voucher ? { voucher_code: voucher.code, voucher_amount: voucherUse } : {}),
+    ...(pointsMoney > 0 ? { points_used: Math.min(pointsUse, pointsCap) } : {}),
     ...(!codMode && method === 'salary' ? { salary_amount: due, salary_employee_id: Number(salaryEmp) || null } : {}),
     ...(approval ? { approval_token: approval.token } : {}),
     ...(delivery ? { _print: print } : {}),
@@ -181,6 +199,10 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
 
   const run = async (extra = {}) => {
     setErr('');
+    if (pointsUse > 0 && pointsUse < (pcfg?.min_redeem || 0)) {
+      setErr(`Mỗi lần dùng tối thiểu ${pcfg.min_redeem} điểm.`);
+      return;
+    }
     if (!codMode && method === 'salary' && !salaryEmp) {
       setErr('Chọn nhân viên mua hàng — phần mềm không tự chọn ai.');
       return;
@@ -278,9 +300,11 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
             {totals.shipCharged > 0 && (
               <div className="text-2xs text-emerald-900/70 mt-0.5">đã gồm {money(totals.shipCharged)} phí giao hàng</div>
             )}
-            {voucherUse > 0 && (
+            {(voucherUse > 0 || pointsMoney > 0) && (
               <div className="text-[13px] text-emerald-900 mt-1">
-                Trừ phiếu đổi hàng −{money(voucherUse)} → còn phải trả <b className="tabular">{money(due)}</b>
+                {voucherUse > 0 && <>Trừ phiếu đổi hàng −{money(voucherUse)} </>}
+                {pointsMoney > 0 && <>Trừ điểm −{money(pointsMoney)} </>}
+                → còn phải trả <b className="tabular">{money(due)}</b>
               </div>
             )}
           </div>
@@ -481,6 +505,50 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
                 </p>
               )}
             </>
+          )}
+
+          {/* Điểm tích luỹ của khách — trừ thẳng vào tiền phải trả (mục IV.1).
+              Khách lẻ hoặc khách chưa có điểm thì ẩn hẳn, không để ô xám gây hỏi. */}
+          {pointsOn && (
+            <div className="rounded border border-line p-2.5">
+              <div className="flex items-center gap-2 text-[13px]">
+                <Star size={16} className="text-amber-600 shrink-0" aria-hidden="true" />
+                <span className="flex-1 min-w-0">
+                  Khách có <b className="tabular">{n(pointsBal)}</b> điểm
+                  <span className="text-2xs text-muted-ink"> · 1 điểm = {money(pcfg.value)}</span>
+                </span>
+                {pointsUse > 0 && (
+                  <IconButton icon={X} size={14} label="Bỏ dùng điểm" onClick={() => setPointsUse(0)} />
+                )}
+              </div>
+              <div className="flex items-end gap-1.5 mt-1.5">
+                <div className="flex-1">
+                  <label className="label" htmlFor="pay-points">Dùng bao nhiêu điểm</label>
+                  <input
+                    id="pay-points"
+                    data-own-enter="1"
+                    type="number"
+                    min="0"
+                    max={pointsCap}
+                    className="field field-sm tabular"
+                    value={pointsUse || ''}
+                    onChange={(e) => setPointsUse(
+                      Math.max(0, Math.min(pointsCap, Math.round(Number(e.target.value) || 0))))}
+                    placeholder="0"
+                  />
+                </div>
+                <Button size="sm" onClick={() => setPointsUse(pointsCap)}
+                  disabled={pointsCap < (pcfg.min_redeem || 1)}>
+                  Dùng tối đa
+                </Button>
+              </div>
+              <p className="text-2xs text-muted-ink mt-1">
+                {pointsMoney > 0
+                  ? `Trừ ${money(pointsMoney)} vào hoá đơn này.`
+                  : `Tối thiểu ${pcfg.min_redeem} điểm · đơn này trừ được tối đa ${n(pointsCap)} điểm `
+                    + `(${money(pointsCap * pcfg.value)}).`}
+              </p>
+            </div>
           )}
 
           {/* Phiếu đổi hàng khách mang tới — trừ thẳng vào tiền phải trả */}

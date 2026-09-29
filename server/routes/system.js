@@ -151,6 +151,8 @@ const TABLES = [
   'payroll_closed_days', 'payroll_awards',
   /* Chấm công hằng ngày (yêu cầu 28/09, phần III) — là chứng từ, có sao lưu */
   'payroll_attendance',
+  /* Sổ điểm tích luỹ (yêu cầu 28/09, mục IV.1) — điểm là tiền, phải có trong sao lưu */
+  'loyalty_entries',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -216,6 +218,8 @@ r.post('/clear-transactions', (req, res) => {
     // Chỉ xoá chứng từ. Giữ lại danh mục: hàng hoá, định mức, khách, NCC, nhà xe.
     /* Gán tiền thu nợ và phiếu đổi hàng là chứng từ, xoá trước bảng cha */
     for (const t of ['voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+      /* Sổ điểm tích luỹ đi theo hoá đơn — xoá chứng từ thì điểm cũng đi theo */
+      'loyalty_entries',
       /* Sổ lương, kỳ lương, phiếu lương là chứng từ (nối với phiếu chi quỹ bị xoá
          bên dưới). Hồ sơ nhân viên là DANH MỤC nên giữ lại (plan 28, §4.5). */
       'payroll_awards', 'payroll_photos', 'payroll_attendance', 'payroll_entries', 'payroll_cycles',
@@ -269,7 +273,8 @@ r.post('/reset-all', (req, res) => {
 
   /* Thứ tự xoá đi từ bảng con lên bảng cha, để khoá ngoại không chặn */
   const ORDER = [
-    'voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
+    'voucher_uses', 'vouchers', 'loyalty_entries',
+    'debt_allocations', 'debt_adjustments', 'debt_closings',
     /* Lương: thưởng năm, ảnh -> sổ lương -> kỳ -> phiếu lương -> nhân viên */
     'payroll_awards', 'payroll_photos', 'payroll_attendance', 'payroll_entries', 'payroll_cycles',
     'payroll_settlements', 'payroll_closed_days', 'employees',
