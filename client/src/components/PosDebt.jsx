@@ -25,6 +25,7 @@ import {
   Button, Input, Select, Modal, Field, MoneyInput, Empty, Spinner,
   Badge, SearchInput, TotalRow, ErrorBox,
 } from './ui';
+import CashVoucherPrint from './CashVoucherPrint';
 
 /* =================== NÚT NỢ QUÁ HẠN TRÊN THANH POS ================= */
 
@@ -324,6 +325,7 @@ function DebtLedgerModal({ customerId, onBack, onClose, onDone }) {
   const [note, setNote] = useState('');
   const [view, setView] = useState('all');
   const [saving, setSaving] = useState(false);
+  const [voucher, setVoucher] = useState(null);     // phiếu thu vừa lập, đang chờ in
 
   const debt = Math.max(0, L?.debt || 0);
   const invoices = L?.invoices || [];
@@ -379,7 +381,19 @@ function DebtLedgerModal({ customerId, onBack, onClose, onDone }) {
           : `Đã thu ${money(amt)}. ${L.customer.name} trả hết nợ.`,
         'ok', 7000);
       onDone?.(res);
-      onClose();
+      /* Nút ghi "Xác nhận thu nợ & In" thì phải ra tờ phiếu. Việc in nằm ngay
+         trong hộp này chứ không nhờ nơi gọi: trước đây thu nợ từ hồ sơ khách và
+         từ danh sách khách hàng bấm xong chẳng thấy gì, vì hai chỗ đó không tự in. */
+      let printing = false;
+      if (res?.transaction?.id) {
+        try {
+          setVoucher(await api.get(`/cash/transactions/${res.transaction.id}`));
+          printing = true;
+        } catch (e) {
+          toast(`Đã thu tiền nhưng chưa lấy được phiếu để in: ${e.message}`, 'warn', 7000);
+        }
+      }
+      if (!printing) onClose();
     } catch (e) {
       toast(e.message, 'bad', 7000);
     } finally {
@@ -388,6 +402,16 @@ function DebtLedgerModal({ customerId, onBack, onClose, onDone }) {
   };
 
   const c = L?.customer;
+
+  /* Thu xong là hiện thẳng tờ phiếu thu đè lên hộp, đóng phiếu thì đóng luôn hộp */
+  if (voucher) {
+    return (
+      <CashVoucherPrint
+        voucher={voucher}
+        onClose={() => { setVoucher(null); onClose(); }}
+      />
+    );
+  }
 
   return (
     <Modal

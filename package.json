@@ -11,7 +11,10 @@
     "build": "vite build --config client/vite.config.js",
     "start": "node server/index.js",
     "seed": "node server/seed.js",
-    "reset": "node server/seed.js --reset"
+    "reset": "node server/seed.js --reset",
+    "check": "node tools/check-client.mjs",
+    "test": "node tests/run-all.mjs",
+    "verify": "npm run build && npm run check && npm test"
   },
   "dependencies": {
     "express": "^4.21.2"

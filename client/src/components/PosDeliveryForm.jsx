@@ -361,7 +361,7 @@ export default function DeliveryInfoModal({
 
                 <Field
                   label="Tiền trả cho tài xế"
-                  hint="Chi phí của tiệm, không phải phí thu của khách. Ghi để cuối ngày đối chiếu."
+                  hint="Chi phí của tiệm, không phải phí thu của khách. Bấm 'đã giao xong' là máy chi tiền này khỏi quỹ."
                   htmlFor="dv-shipperfee"
                 >
                   <MoneyInput id="dv-shipperfee" value={d.shipperFee}

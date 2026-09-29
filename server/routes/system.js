@@ -149,6 +149,8 @@ const TABLES = [
      chèn theo thứ tự này còn xoá thì đi ngược lại */
   'employees', 'payroll_settlements', 'payroll_cycles', 'payroll_entries', 'payroll_photos',
   'payroll_closed_days', 'payroll_awards',
+  /* Chấm công hằng ngày (yêu cầu 28/09, phần III) — là chứng từ, có sao lưu */
+  'payroll_attendance',
 ];
 
 /** Xuất toàn bộ dữ liệu ra một file JSON. */
@@ -216,8 +218,8 @@ r.post('/clear-transactions', (req, res) => {
     for (const t of ['voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
       /* Sổ lương, kỳ lương, phiếu lương là chứng từ (nối với phiếu chi quỹ bị xoá
          bên dưới). Hồ sơ nhân viên là DANH MỤC nên giữ lại (plan 28, §4.5). */
-      'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
-      'payroll_closed_days',
+      'payroll_awards', 'payroll_photos', 'payroll_attendance', 'payroll_entries', 'payroll_cycles',
+      'payroll_settlements', 'payroll_closed_days',
       /* Hàng mua hộ vãng lai là chứng từ. Riêng consign_partners là DANH MỤC
          (hồ sơ chủ hàng) nên giữ lại, như khách và nhà cung cấp. */
       'sale_consign_items', 'consign_payments', 'consign_settlements',
@@ -269,8 +271,8 @@ r.post('/reset-all', (req, res) => {
   const ORDER = [
     'voucher_uses', 'vouchers', 'debt_allocations', 'debt_adjustments', 'debt_closings',
     /* Lương: thưởng năm, ảnh -> sổ lương -> kỳ -> phiếu lương -> nhân viên */
-    'payroll_awards', 'payroll_photos', 'payroll_entries', 'payroll_cycles', 'payroll_settlements',
-    'payroll_closed_days', 'employees',
+    'payroll_awards', 'payroll_photos', 'payroll_attendance', 'payroll_entries', 'payroll_cycles',
+    'payroll_settlements', 'payroll_closed_days', 'employees',
     'activity_log', 'draft_sales', 'doc_drafts',
     /* Phiếu báo hết hàng: dòng -> mối được chọn -> phiếu */
     'requisition_item_suppliers', 'requisition_items', 'requisitions',

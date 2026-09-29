@@ -106,6 +106,15 @@ export function hoursPerDay(from, to) {
   return (minutesOf(to) - minutesOf(from)) / 60;
 }
 
+/**
+ * Lương tháng dùng cho MỌI phép chia: lương cứng + phụ cấp (yêu cầu 28/09, phần III.2).
+ * Chủ tiệm chốt "phụ cấp tính y như lương cứng" — nghỉ ngày nào trừ ngày đó cả hai,
+ * vào hay nghỉ giữa kỳ thì chia theo ngày. Riêng thưởng Tết chỉ tính trên lương cứng
+ * nên chỗ đó KHÔNG gọi hàm này.
+ */
+export const payBaseOf = (x) => Math.max(0, Number(x?.monthly_wage) || 0)
+  + Math.max(0, Number(x?.allowance) || 0);
+
 export const dayRateOf = (wage) => Math.round(Number(wage) / 30);
 /** Lương 1 giờ = lương tháng / 30 / số giờ làm mặc định — không làm tròn trước khi nhân */
 export const hourRateOf = (wage, hpd) => (hpd > 0 ? Number(wage) / 30 / hpd : 0);
@@ -136,6 +145,8 @@ function normEmployee(b, cur) {
     note: String(pick('note', cur?.note) || '').trim() || null,
     user_id: Number(pick('user_id', cur?.user_id)) || null,
     monthly_wage: money(pick('monthly_wage', cur?.monthly_wage)),
+    /* Phụ cấp cố định hằng tháng: ăn trưa, xăng xe... (yêu cầu 28/09, phần III.2) */
+    allowance: money(pick('allowance', cur?.allowance)),
     work_from: String(pick('work_from', cur?.work_from) || '07:00'),
     work_to: String(pick('work_to', cur?.work_to) || '17:00'),
     pay_mode: pick('pay_mode', cur?.pay_mode) === 'daily' ? 'daily' : 'monthly',
@@ -179,10 +190,10 @@ export function createEmployee(b, user) {
     }
     const info = run(`
       INSERT INTO employees(code, full_name, phone, user_id, start_date, start_lunar, cycle_day, track_from,
-                            monthly_wage, work_from, work_to, pay_mode, active, end_date, note)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            monthly_wage, allowance, work_from, work_to, pay_mode, active, end_date, note)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [code, e.full_name, e.phone, e.user_id, e.start_date, e.start_lunar, e.cycle_day, e.track_from,
-      e.monthly_wage, e.work_from, e.work_to, e.pay_mode, e.active, e.end_date, e.note]);
+      e.monthly_wage, e.allowance, e.work_from, e.work_to, e.pay_mode, e.active, e.end_date, e.note]);
     const id = Number(info.lastInsertRowid);
     /* Ngày tiệm nghỉ đã khai sẵn (Tết sắp tới) cũng áp luôn cho người mới */
     const emp = getEmployee(id);
@@ -228,14 +239,17 @@ export function updateEmployee(id, b, user) {
       run('DELETE FROM payroll_cycles WHERE employee_id = ? AND date_from > ? AND status = \'open\'', [id, e.end_date]);
     }
     run(`UPDATE employees SET full_name = ?, phone = ?, user_id = ?, start_date = ?, start_lunar = ?, cycle_day = ?,
-           track_from = ?, monthly_wage = ?, work_from = ?, work_to = ?, pay_mode = ?, active = ?, end_date = ?, note = ?
+           track_from = ?, monthly_wage = ?, allowance = ?, work_from = ?, work_to = ?, pay_mode = ?,
+           active = ?, end_date = ?, note = ?
          WHERE id = ?`,
     [e.full_name, e.phone, e.user_id, e.start_date, e.start_lunar, e.cycle_day, e.track_from,
-      e.monthly_wage, e.work_from, e.work_to, e.pay_mode, e.active, e.end_date, e.note, id]);
+      e.monthly_wage, e.allowance, e.work_from, e.work_to, e.pay_mode, e.active, e.end_date, e.note, id]);
     /* Sửa lương / giờ làm: KHÔNG hồi tố kỳ đã chốt (PAY-208), chỉ áp cho kỳ chưa chốt */
-    if (e.monthly_wage !== cur.monthly_wage || e.work_from !== cur.work_from || e.work_to !== cur.work_to) {
-      run(`UPDATE payroll_cycles SET monthly_wage = ?, hours_per_day = ? WHERE employee_id = ? AND status = 'open'`,
-        [e.monthly_wage, hoursPerDay(e.work_from, e.work_to), id]);
+    if (e.monthly_wage !== cur.monthly_wage || e.allowance !== cur.allowance
+        || e.work_from !== cur.work_from || e.work_to !== cur.work_to) {
+      run(`UPDATE payroll_cycles SET monthly_wage = ?, allowance = ?, hours_per_day = ?
+           WHERE employee_id = ? AND status = 'open'`,
+      [e.monthly_wage, e.allowance, hoursPerDay(e.work_from, e.work_to), id]);
       for (const c of all(`SELECT id FROM payroll_cycles WHERE employee_id = ? AND status = 'open'`, [id])) {
         recalcAttendance(c.id);
       }
@@ -266,10 +280,11 @@ export function deleteEmployee(id, user) {
 function insertCycle(emp, c) {
   const info = run(`
     INSERT INTO payroll_cycles(employee_id, label, lunar_month, lunar_year, lunar_leap, lunar_from, lunar_to,
-                               date_from, date_to, days, monthly_wage, hours_per_day)
-    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               date_from, date_to, days, monthly_wage, allowance, hours_per_day)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   [emp.id, c.label, c.lunar_month, c.lunar_year, c.lunar_leap, c.lunar_from, c.lunar_to,
-    c.date_from, c.date_to, c.days, emp.monthly_wage, hoursPerDay(emp.work_from, emp.work_to)]);
+    c.date_from, c.date_to, c.days, emp.monthly_wage, emp.allowance || 0,
+    hoursPerDay(emp.work_from, emp.work_to)]);
   return get('SELECT * FROM payroll_cycles WHERE id = ?', [Number(info.lastInsertRowid)]);
 }
 
@@ -348,11 +363,11 @@ export function assignCycle(emp, date, { money: isMoney = false } = {}) {
 /** Số tiền của dòng chấm công theo đơn giá của kỳ. */
 function attendanceAmount(emp, cycle, type, hours, counted) {
   if (type === 'absent_hour') {
-    return counted ? -Math.round(hours * hourRateOf(cycle.monthly_wage, cycle.hours_per_day)) : 0;
+    return counted ? -Math.round(hours * hourRateOf(payBaseOf(cycle), cycle.hours_per_day)) : 0;
   }
   /* Người trả theo ngày: ngày nghỉ đơn giản là không có dòng lương ngày đó */
   if (emp.pay_mode === 'daily') return 0;
-  return -dayRateOf(cycle.monthly_wage);
+  return -dayRateOf(payBaseOf(cycle));
 }
 
 /** Tính lại tiền các dòng chấm công chưa chốt của một kỳ (sau khi sửa lương / giờ làm). */
@@ -363,7 +378,7 @@ function recalcAttendance(cycleId) {
                        AND type IN ('absent_day', 'absent_hour', 'closed_day')`, [cycleId])) {
     run('UPDATE payroll_entries SET amount = ?, day_rate = ?, hour_rate = ? WHERE id = ?',
       [attendanceAmount(emp, c, e.type, Number(e.hours) || 0, e.counted),
-        dayRateOf(c.monthly_wage), Math.round(hourRateOf(c.monthly_wage, c.hours_per_day)), e.id]);
+        dayRateOf(payBaseOf(c)), Math.round(hourRateOf(payBaseOf(c), c.hours_per_day)), e.id]);
   }
 }
 
@@ -374,8 +389,8 @@ function insertEntry(emp, cycle, e) {
     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   [e.work_date, emp.id, cycle?.id || null, e.settlement_id || null, e.type, money(e.amount), e.hours ?? null,
     e.counted === 0 ? 0 : 1, e.merged === 0 ? 0 : 1, e.ref_type || null, e.ref_id || null, e.ref_code || null,
-    e.cash_tx_id || null, cycle ? dayRateOf(cycle.monthly_wage) : null,
-    cycle ? Math.round(hourRateOf(cycle.monthly_wage, cycle.hours_per_day)) : null,
+    e.cash_tx_id || null, cycle ? dayRateOf(payBaseOf(cycle)) : null,
+    cycle ? Math.round(hourRateOf(payBaseOf(cycle), cycle.hours_per_day)) : null,
     String(e.reason || '').trim().slice(0, 500) || null, e.user_id || null, e.note || null]);
   return Number(info.lastInsertRowid);
 }
@@ -388,6 +403,140 @@ function assertDayOpen(emp, date) {
     throw httpError(`Đã trả lương ngày cho ${emp.full_name} tới hết ngày ${vn(pt)} — không ghi nghỉ vào ngày đó được.`,
       409, 'DAY_PAID');
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Chấm công hằng ngày (yêu cầu 28/09, phần III.1)                     */
+/*                                                                     */
+/* CHỈ ĐỂ THEO DÕI GIỜ GIẤC. Tiền lương vẫn theo nguyên tắc cũ:        */
+/* "không báo nghỉ nghĩa là đi làm đủ". Hôm nào quên chấm thì không    */
+/* ai mất công, chỉ là bảng chấm công thiếu một ô — chủ tiệm chốt vậy  */
+/* (28/09). Tích "báo nghỉ" ở bảng chấm công thì gọi thẳng addAbsence  */
+/* để tiền vẫn chỉ có MỘT nguồn là sổ payroll_entries.                 */
+/* ------------------------------------------------------------------ */
+
+/** Nhân viên đang trong thời gian làm việc của một ngày. */
+function workingOn(date) {
+  return all(`SELECT * FROM employees
+              WHERE active = 1 AND start_date <= ?
+                AND (end_date IS NULL OR end_date >= ?)
+              ORDER BY full_name`, [date, date]);
+}
+
+/**
+ * Bảng chấm công của cả tiệm trong một ngày: ai đi làm, ai nghỉ, ai chưa chấm.
+ * Dùng cho popup đầu ca / cuối ca ngoài quầy và cho màn hình lương.
+ */
+export function attendanceOfDay(date = today()) {
+  const d = String(date).slice(0, 10);
+  const rows = all('SELECT * FROM payroll_attendance WHERE work_date = ?', [d]);
+  const byEmp = new Map(rows.map((r) => [r.employee_id, r]));
+  const closed = get('SELECT date, note FROM payroll_closed_days WHERE date = ?', [d]);
+  const staff = workingOn(d).map((e) => {
+    const rec = byEmp.get(e.id) || null;
+    /* Đã có dòng nghỉ trong sổ lương thì bảng chấm công phải nói đúng như vậy,
+       kể cả khi hôm đó chưa ai bấm chấm công. */
+    const off = get(`SELECT type, reason FROM payroll_entries
+                     WHERE employee_id = ? AND work_date = ? AND type IN ('absent_day','closed_day')
+                     LIMIT 1`, [e.id, d]);
+    return {
+      employee_id: e.id,
+      code: e.code,
+      full_name: e.full_name,
+      work_from: e.work_from,
+      work_to: e.work_to,
+      pay_mode: e.pay_mode,
+      in_at: rec?.in_at || null,
+      out_at: rec?.out_at || null,
+      status: off ? 'off' : (rec?.status || null),
+      off_type: off?.type || null,
+      off_reason: off?.reason || null,
+      note: rec?.note || null,
+      done: !!off || !!(rec && rec.in_at),
+    };
+  });
+  return {
+    date: d,
+    shop_closed: !!closed,
+    shop_closed_note: closed?.note || null,
+    staff,
+    pending: staff.filter((x) => !x.done).length,
+  };
+}
+
+/**
+ * Ghi chấm công cho nhiều người một lượt (quản lý chấm hộ cả tiệm — chủ tiệm chốt
+ * 28/09). Mỗi dòng: { employee_id, in_at, out_at, off, reason, note }.
+ *
+ *   off = true  → ghi dòng NGHỈ CẢ NGÀY vào sổ lương (tiền trừ ở đó, không trừ ở đây)
+ *   off = false → chỉ lưu giờ vào / giờ ra
+ */
+export function saveAttendance(b, user) {
+  const d = String(b?.date || today()).slice(0, 10);
+  if (!ISO.test(d)) throw httpError('Ngày chấm công không hợp lệ', 400, 'BAD_DATE');
+  if (d > today()) throw httpError('Chưa tới ngày đó, chấm công trước không được', 400, 'FUTURE');
+  const rows = Array.isArray(b?.rows) ? b.rows : [];
+  if (!rows.length) throw httpError('Chưa chọn nhân viên nào để chấm công', 400, 'NO_ROW');
+
+  return tx(() => {
+    const done = [];
+    const skipped = [];
+    for (const r of rows) {
+      const id = Number(r.employee_id);
+      if (!id) continue;
+      const emp = get('SELECT * FROM employees WHERE id = ?', [id]);
+      if (!emp) { skipped.push({ employee_id: id, reason: 'Không còn hồ sơ nhân viên' }); continue; }
+      const hhmm = (v) => (v && HHMM.test(String(v)) ? String(v) : null);
+      const off = r.off === true || r.off === 1 || r.status === 'off';
+
+      if (off) {
+        /* Nghỉ cả ngày: tiền do sổ lương lo. Đã có dòng nghỉ rồi thì thôi, đừng ghi hai lần. */
+        const had = get(`SELECT id FROM payroll_entries WHERE employee_id = ? AND work_date = ?
+                         AND type IN ('absent_day','closed_day') LIMIT 1`, [id, d]);
+        if (!had) {
+          try {
+            addAbsence(id, { date: d, kind: 'day', reason: r.reason || 'Báo nghỉ khi chấm công' }, user);
+          } catch (e) {
+            skipped.push({ employee_id: id, name: emp.full_name, reason: e.message });
+            continue;
+          }
+        }
+      }
+
+      run(`INSERT INTO payroll_attendance(employee_id, work_date, in_at, out_at, status, note, user_id)
+           VALUES(?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(employee_id, work_date) DO UPDATE SET
+             in_at = COALESCE(excluded.in_at, payroll_attendance.in_at),
+             out_at = COALESCE(excluded.out_at, payroll_attendance.out_at),
+             status = excluded.status,
+             note = COALESCE(excluded.note, payroll_attendance.note),
+             user_id = excluded.user_id,
+             ts = datetime('now','localtime')`,
+      [id, d, off ? null : hhmm(r.in_at), off ? null : hhmm(r.out_at), off ? 'off' : 'work',
+        String(r.note || '').trim() || null, user?.id || null]);
+      done.push(id);
+    }
+    if (done.length) {
+      logActivity(user, 'update', 'attendance', null,
+        `Chấm công ngày ${vn(d)} cho ${done.length} người`);
+    }
+    return { ...attendanceOfDay(d), saved: done.length, skipped };
+  });
+}
+
+/** Bảng chấm công một tháng: lưới ngày × nhân viên, để xem lại và sửa. */
+export function attendanceOfMonth(month) {
+  const m = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : today().slice(0, 7);
+  const from = `${m}-01`;
+  const to = `${m}-31`;
+  const rows = all(`SELECT * FROM payroll_attendance WHERE work_date BETWEEN ? AND ? ORDER BY work_date`,
+    [from, to]);
+  const offs = all(`SELECT employee_id, work_date, type FROM payroll_entries
+                    WHERE work_date BETWEEN ? AND ? AND type IN ('absent_day','closed_day')`, [from, to]);
+  const staff = all(`SELECT id, code, full_name, work_from, work_to FROM employees
+                     WHERE start_date <= ? AND (end_date IS NULL OR end_date >= ?)
+                     ORDER BY full_name`, [to, from]);
+  return { month: m, staff, rows, offs, closed_days: all('SELECT date, note FROM payroll_closed_days WHERE date BETWEEN ? AND ?', [from, to]) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -743,8 +892,8 @@ export function computeCycle(cycle, emp) {
     return {
       ...cycle, entries, summary: summarize(entries), base: cycle.base_amount, net: cycle.net_amount,
       gift_day: emp.pay_mode !== 'daily' && !cycle.is_partial && cycle.days === 29,
-      day_rate: dayRateOf(cycle.monthly_wage),
-      hour_rate: Math.round(hourRateOf(cycle.monthly_wage, cycle.hours_per_day)),
+      day_rate: dayRateOf(payBaseOf(cycle)),
+      hour_rate: Math.round(hourRateOf(payBaseOf(cycle), cycle.hours_per_day)),
       ended: true,
     };
   }
@@ -756,9 +905,11 @@ export function computeCycle(cycle, emp) {
      Kỳ lẻ (vào làm / nghỉ việc giữa kỳ) tính theo ngày thực tế, mẫu số 30. */
   /* base_override: phần còn lại của một kỳ đã chốt sớm theo ngày làm thực tế
      (BRD nâng cấp, mục 6) — trả nốt cho đủ lương tháng, không tính lại theo ngày. */
+  /* Tiền nền của kỳ = lương cứng + phụ cấp (yêu cầu 28/09, phần III.2) */
+  const monthPay = payBaseOf(cycle);
   const base = emp.pay_mode === 'daily' ? 0
     : cycle.base_override !== null && cycle.base_override !== undefined ? cycle.base_override
-      : isPartial ? Math.round(cycle.monthly_wage * workDays / 30) : cycle.monthly_wage;
+      : isPartial ? Math.round(monthPay * workDays / 30) : monthPay;
   const net = base + entries.filter(countsInNet).reduce((a, e) => a + e.amount, 0);
   return {
     ...cycle, entries, summary: summarize(entries),
@@ -768,8 +919,11 @@ export function computeCycle(cycle, emp) {
     /* Kỳ bị cắt đôi vì chốt sớm thì không in dòng "chủ tặng" ở cả hai nửa */
     gift_day: emp.pay_mode !== 'daily' && !isPartial && cycle.days === 29
       && cycle.base_override === null && !cycle.split_of,
-    day_rate: dayRateOf(cycle.monthly_wage),
-    hour_rate: Math.round(hourRateOf(cycle.monthly_wage, cycle.hours_per_day)),
+    day_rate: dayRateOf(monthPay),
+    hour_rate: Math.round(hourRateOf(monthPay, cycle.hours_per_day)),
+    /* Tách ra để phiếu lương in được hai dòng "lương cứng" và "phụ cấp" */
+    wage_part: cycle.monthly_wage,
+    allowance_part: cycle.allowance || 0,
     ended: cycle.date_to < today() || (!!emp.end_date && emp.end_date < today() && cycle.date_from <= emp.end_date),
   };
 }
@@ -788,6 +942,9 @@ const payslipCycle = (c) => ({
   id: c.id, label: c.label, lunar_from: c.lunar_from, lunar_to: c.lunar_to, date_from: c.date_from,
   date_to: c.date_to, days: c.days, work_days: c.work_days, is_partial: c.is_partial, gift_day: c.gift_day,
   monthly_wage: c.monthly_wage, hours_per_day: c.hours_per_day, day_rate: c.day_rate, hour_rate: c.hour_rate,
+  /* Chụp riêng lương cứng và phụ cấp để phiếu lương in được hai dòng — phiếu đã
+     chốt in lại sau này vẫn ra đúng con số hôm đó (yêu cầu 28/09, phần III.2) */
+  wage_part: c.wage_part ?? c.monthly_wage, allowance_part: c.allowance_part ?? (c.allowance || 0),
   base: c.base, net: c.net, summary: c.summary,
   entries: c.entries.map((e) => ({
     id: e.id, type: e.type, label: e.label, work_date: e.work_date, amount: e.amount, hours: e.hours,
@@ -829,18 +986,19 @@ export function settleCycles(empId, b, user) {
       }
       const startWork = maxIso(c.date_from, emp.track_from, emp.start_date);
       const workDays = Math.max(0, daysBetween(startWork, upTo) + 1);
-      const baseNow = Math.round(c.monthly_wage * workDays / 30);
+      const baseNow = Math.round(payBaseOf(c) * workDays / 30);
       const rest = cycleAfter(upTo, emp.cycle_day);        // chỉ để lấy ngày Âm cho phần còn lại
       const restFrom = addDays(upTo, 1);
       const lunarRest = lunarText(solarToLunar(restFrom), true);
       void rest;
       const info = run(`
         INSERT INTO payroll_cycles(employee_id, label, lunar_month, lunar_year, lunar_leap, lunar_from, lunar_to,
-                                   date_from, date_to, days, monthly_wage, hours_per_day, base_override, split_of)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                   date_from, date_to, days, monthly_wage, allowance, hours_per_day,
+                                   base_override, split_of)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [emp.id, `${c.label} (phần còn lại)`, c.lunar_month, c.lunar_year, c.lunar_leap,
-        lunarRest, c.lunar_to, restFrom, c.date_to, c.days, c.monthly_wage, c.hours_per_day,
-        Math.max(0, c.monthly_wage - baseNow), c.id]);
+        lunarRest, c.lunar_to, restFrom, c.date_to, c.days, c.monthly_wage, c.allowance || 0,
+        c.hours_per_day, Math.max(0, payBaseOf(c) - baseNow), c.id]);
       const restId = Number(info.lastInsertRowid);
       /* Khoản đã ghi vào những ngày sau ngày chốt phải theo sang kỳ mới */
       run('UPDATE payroll_entries SET cycle_id = ? WHERE cycle_id = ? AND work_date > ?', [restId, c.id, upTo]);
@@ -897,7 +1055,7 @@ export function settleCycles(empId, b, user) {
 export function dailyDue(emp, upto = today()) {
   const from = addDays(paidThrough(emp), 1);
   const to = minIso(upto, emp.end_date, today());
-  const rate = dayRateOf(emp.monthly_wage);
+  const rate = dayRateOf(payBaseOf(emp));
   const days = [];
   if (from <= to) {
     const n = Math.min(daysBetween(from, to) + 1, 400);
@@ -1076,6 +1234,62 @@ export function decideAward(empId, b, user) {
     logActivity(user, 'create', 'payroll_award', awardId,
       `${decision === 'approve' ? 'Thưởng' : 'Không thưởng'} chuyên cần năm ${st.year} — ${emp.full_name}`);
     return attendanceStatus(emp, st.year);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Thưởng Tết — lương tháng 13 (yêu cầu 28/09, phần III.2)             */
+/*                                                                     */
+/* Khoản RIÊNG, không dính gì tới thưởng chuyên cần: chuyên cần xét    */
+/* theo số ngày nghỉ, còn thưởng Tết thì ai cũng có. Gợi ý một tháng   */
+/* LƯƠNG CỨNG — chủ tiệm chốt rõ là KHÔNG cộng phụ cấp vào khoản này.  */
+/* Người vào làm giữa năm thì gợi ý chia theo số tháng đã làm; chủ     */
+/* tiệm sửa lại số nào cũng được.                                      */
+/* ------------------------------------------------------------------ */
+
+export function tetStatus(emp, year) {
+  const y = Math.round(Number(year)) || solarToLunar(today()).year;
+  const r = lunarYearRange(y);
+  /* Đã thưởng Tết năm này chưa — nhận ra bằng dấu ref_type trên dòng thưởng */
+  const given = get(`SELECT id, amount, ts, reason FROM payroll_entries
+                     WHERE employee_id = ? AND type = 'bonus' AND ref_type = 'tet'
+                       AND work_date BETWEEN ? AND ? LIMIT 1`, [emp.id, r.from, r.to]);
+  /* Số tháng làm trong năm Âm đó, làm tròn tới nửa tháng cho dễ nói chuyện.
+     Tính tới HẾT NĂM chứ không tới hôm nay: thưởng Tết xét vào tháng Chạp, người
+     làm cả năm phải được trọn một tháng lương — cắt theo ngày hôm xét thì ai cũng
+     bị hụt. Chỉ người vào làm giữa năm (hoặc nghỉ việc giữa năm) mới bị chia. */
+  const from = maxIso(r.from, emp.track_from, emp.start_date);
+  const to = minIso(r.to, emp.end_date || r.to);
+  const days = to >= from ? daysBetween(from, to) + 1 : 0;
+  const months = Math.min(r.months, Math.round((days / 30) * 2) / 2);
+  const full = months >= r.months;
+  const lastMonthStart = addDays(r.to, -(solarToLunar(r.to).day - 1));
+  return {
+    year: y, from: r.from, to: r.to, months: r.months,
+    worked_months: months, worked_days: days, full_year: full,
+    monthly_wage: emp.monthly_wage,
+    allowance: emp.allowance || 0,
+    suggest_amount: full ? emp.monthly_wage : Math.round(emp.monthly_wage * months / r.months),
+    open_from: lastMonthStart, is_open: today() >= lastMonthStart,
+    given: given || null,
+  };
+}
+
+export function decideTet(empId, b, user) {
+  const emp = getEmployee(empId);
+  const st = tetStatus(emp, b.year);
+  if (st.given) throw httpError(`Năm ${st.year} đã thưởng Tết cho ${emp.full_name} rồi.`, 409, 'ALREADY_DECIDED');
+  const amount = money(b.amount ?? st.suggest_amount);
+  if (amount <= 0) throw httpError('Số tiền thưởng phải lớn hơn 0', 400, 'BAD_AMOUNT');
+  return tx(() => {
+    const reason = String(b.reason || '').trim()
+      || `Thưởng Tết (lương tháng 13) năm ${st.year}`
+        + (st.full_year ? '' : ` — làm ${st.worked_months} tháng`);
+    const entry = addBonus(emp.id, { amount, reason, merged: b.merged, account_id: b.account_id }, user,
+      { ref_type: 'tet' });
+    logActivity(user, 'create', 'payroll_tet', entry.id,
+      `Thưởng Tết năm ${st.year} — ${emp.full_name}: ${amount.toLocaleString('vi-VN')} đ`);
+    return { ...tetStatus(emp, st.year), entry };
   });
 }
 

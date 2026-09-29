@@ -33,9 +33,25 @@ function periodRows(p, daily) {
       });
     }
   } else {
-    rows.push(p.is_partial
-      ? { kind: 'line', label: `Lương ${n(p.work_days)} ngày (kỳ lẻ: ${n(p.monthly_wage)} ÷ 30 × ${n(p.work_days)})`, amount: p.base }
-      : { kind: 'line', label: 'Lương tháng', amount: p.base });
+    /* Có phụ cấp thì tách làm hai dòng cho nhân viên nhìn ra đâu là lương cứng,
+       đâu là phụ cấp (yêu cầu 28/09, phần III.2). Cả hai chia theo ngày như nhau
+       ở kỳ lẻ, nên tỉ lệ dòng nào cũng bằng tỉ lệ tiền nền. */
+    const allowance = Number(p.allowance_part ?? p.allowance) || 0;
+    const wagePart = Number(p.wage_part ?? p.monthly_wage) || 0;
+    const monthPay = wagePart + allowance;
+    if (allowance > 0 && monthPay > 0) {
+      const wageShare = Math.round(p.base * wagePart / monthPay);
+      rows.push(p.is_partial
+        ? { kind: 'line', label: `Lương cứng ${n(p.work_days)} ngày (kỳ lẻ: ${n(wagePart)} ÷ 30 × ${n(p.work_days)})`, amount: wageShare }
+        : { kind: 'line', label: 'Lương cứng tháng', amount: wageShare });
+      rows.push(p.is_partial
+        ? { kind: 'line', label: `Phụ cấp ${n(p.work_days)} ngày (kỳ lẻ: ${n(allowance)} ÷ 30 × ${n(p.work_days)})`, amount: p.base - wageShare }
+        : { kind: 'line', label: 'Phụ cấp tháng', amount: p.base - wageShare });
+    } else {
+      rows.push(p.is_partial
+        ? { kind: 'line', label: `Lương ${n(p.work_days)} ngày (kỳ lẻ: ${n(p.monthly_wage)} ÷ 30 × ${n(p.work_days)})`, amount: p.base }
+        : { kind: 'line', label: 'Lương tháng', amount: p.base });
+    }
     /* Dòng "khoe cái tâm của chủ": chỉ kỳ tròn rơi vào tháng Âm thiếu */
     if (p.gift_day) rows.push({ kind: 'gift', label: 'Số ngày chủ tặng thêm: +1 ngày công (Tháng thiếu)', amount: null });
     if (s.absent_days) {

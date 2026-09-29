@@ -14,6 +14,7 @@ import { verifyPin, issueApproval, posPolicy, maxDebtDaysFor } from '../policy.j
 import { customerBuyers, proxyStats } from '../customers.js';
 import { customerLedger, overdueInvoices, debtBreakdown } from '../debt.js';
 import { lookupVoucher } from '../vouchers.js';
+import { attendanceOfDay, saveAttendance } from '../payroll.js';
 
 const r = Router();
 const fail = (res, e) => res.status(e.status || 400).json({ error: e.message, code: e.code });
@@ -253,6 +254,22 @@ r.get('/cod-receivables', (req, res) => {
     GROUP BY partner
     ORDER BY amount DESC`);
   res.json({ rows, total: rows.reduce((a, x) => a + x.amount, 0) });
+});
+
+/* ==================== CHẤM CÔNG NGOÀI QUẦY ======================== *
+ * (yêu cầu 28/09, phần III.1)
+ *
+ * Hai đường này KHÔNG nằm dưới /payroll vì cả nhánh đó bị khoá bằng mã PIN —
+ * quản lý đứng quầy chấm công cho cả tiệm thì không thể bắt gõ PIN mỗi sáng.
+ * Bù lại chúng chỉ trả TÊN và GIỜ, tuyệt đối không kèm đồng lương nào.
+ * ================================================================== */
+
+r.get('/attendance/today', (req, res) => {
+  try { res.json(attendanceOfDay(req.query.date)); } catch (e) { fail(res, e); }
+});
+
+r.post('/attendance/today', (req, res) => {
+  try { res.json(saveAttendance(req.body, req.user)); } catch (e) { fail(res, e); }
 });
 
 export default r;

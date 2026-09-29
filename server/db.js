@@ -8,6 +8,19 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_PATH = process.env.POS_DB || path.join(DATA_DIR, 'pos.db');
 
+/* CHỐT CHẶN: chỉ máy chủ và lệnh tạo dữ liệu mẫu mới được mở CSDL THẬT.
+   Mở file này là tự chạy nâng cấp cấu trúc — nên một câu `node -e "import(...)"`
+   gõ vội để thử xem mã có nạp được không cũng đủ nâng cấp luôn pos.db của tiệm.
+   Đã dính đúng một lần (29/09/2026). Muốn chạy thử thì đặt POS_DB trỏ sang
+   CSDL nháp: POS_DB=data/test.db node ... */
+const ENTRY = path.basename(process.argv[1] || '');
+if (!process.env.POS_DB && !['index.js', 'seed.js'].includes(ENTRY)) {
+  throw new Error(
+    `Không mở CSDL thật (${DB_PATH}) từ "${ENTRY || 'lệnh gõ tay'}" được.\n`
+    + 'Mở pos.db là nâng cấp luôn cấu trúc của tiệm. Chạy thử thì đặt POS_DB, ví dụ:\n'
+    + '  POS_DB=data/test.db node <lệnh của bạn>');
+}
+
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 /**
@@ -359,6 +372,12 @@ addColumns('sale_returns', { salary_refund: 'INTEGER NOT NULL DEFAULT 0' });
 /* Chốt lương sớm theo ngày làm thực tế (BRD nâng cấp, mục 6): kỳ bị cắt làm hai,
    phần còn lại của kỳ mang sẵn số tiền phải trả nốt để cả kỳ vẫn đủ lương tháng. */
 addColumns('payroll_cycles', { base_override: 'INTEGER', split_of: 'INTEGER' });
+/* Phụ cấp cố định hằng tháng (yêu cầu 28/09, phần III.2): chủ tiệm chốt "tính y như
+   lương cứng" — nghỉ ngày nào trừ ngày đó cả lương lẫn phụ cấp, vào/nghỉ giữa kỳ thì
+   chia theo ngày. Chụp ảnh vào kỳ lương y như monthly_wage để kỳ đã chốt không đổi số.
+   Riêng thưởng Tết chỉ tính trên LƯƠNG CỨNG, không cộng phụ cấp. */
+addColumns('employees', { allowance: 'INTEGER NOT NULL DEFAULT 0' });
+addColumns('payroll_cycles', { allowance: 'INTEGER NOT NULL DEFAULT 0' });
 
 /* Mức hoa hồng mặc định của từng chủ hàng (BRD nâng cấp, mục 5): thu ngân không
    được thấy và không gõ hoa hồng nữa, nên máy chủ lấy mức đã thoả thuận sẵn ở
@@ -488,6 +507,11 @@ addColumns('requisition_items', {
   split_draft_id: 'INTEGER',
 });
 addColumns('requisitions', { merged_into: 'INTEGER' });
+/* Số dự mua của TỪNG MỐI cho một dòng phiếu báo hết hàng (yêu cầu 28/09, mục II.3b).
+   Trước đây số dự mua chỉ có một ô cho cả dòng, mà một món lại chọn được nhiều mối —
+   tách phiếu mua tạm thì số lượng bị NHÂN ĐÔI sang cả hai mối. Giờ mua 100 cái thì
+   chia 60 mối A, 40 mối B; `requisition_items.buy_qty` giữ lại làm TỔNG. */
+addColumns('requisition_item_suppliers', { buy_qty: 'REAL NOT NULL DEFAULT 0' });
 
 /* Giao hàng: phí trả cho tài xế (khác phí thu của khách), và số đo đóng gói
    để khai với hãng vận chuyển (tài liệu 14, mục 5). */
@@ -495,6 +519,15 @@ addColumns('sales', {
   shipper_fee: 'INTEGER NOT NULL DEFAULT 0',
   ship_weight: 'REAL NOT NULL DEFAULT 0',
   ship_size: 'TEXT',
+  /* Phiếu chi tiền xe của đơn này (yêu cầu 28/09, mục I.2). Có số ở đây nghĩa là
+     đã chi rồi — bấm "đã giao xong" lần nữa cũng không chi lần thứ hai. */
+  shipper_paid_tx_id: 'INTEGER',
+  /* Nợ khách TRƯỚC và SAU hoá đơn này, chụp lại lúc bán để in lên hoá đơn
+     (yêu cầu 28/09, mục I.4). Chụp chứ không tính lại: in lại tờ hoá đơn cũ phải
+     ra đúng con số hôm đó, chứ không phải số nợ của hôm nay. NULL = khách lẻ
+     hoặc hoá đơn lập trước khi có tính năng này. */
+  debt_before: 'INTEGER',
+  debt_after: 'INTEGER',
 });
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_customers_phone2 ON customers(phone2)');

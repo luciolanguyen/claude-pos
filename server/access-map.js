@@ -30,6 +30,10 @@ export const ACCESS_RULES = [
      không thấy số dư. Mọi đường khác còn phải mở bằng PIN (routes/payroll.js). --- */
   ['GET',  /^\/payroll\/employee-names$/,  'sale.pos'],
   ['*',    /^\/payroll/,                   'payroll.manage'],
+  /* Chấm công ngoài quầy (yêu cầu 28/09, phần III.1): quản lý đứng bán hàng chấm
+     hộ cả tiệm, nên chỉ cần quyền bán hàng. Hai đường này chỉ có TÊN và GIỜ,
+     không kèm đồng lương nào — xem routes/pos-extras.js. */
+  ['*',    /^\/attendance\/today$/,        'sale.pos'],
 
   /* --- Bán hàng: phần việc của thu ngân --- */
   ['POST', /^\/sales\/\d+\/cancel$/,      'sale.void'],
@@ -137,6 +141,9 @@ export const ACCESS_RULES = [
   ['GET',  /^\/suppliers\/\d+\/bought-products$/, 'purchase.manage'],
 
   /* --- Hàng mua hộ của chủ vãng lai (tài liệu 24, phần 5) --- */
+  /* Trả gộp nợ nhiều đợt cho một chủ hàng là chi tiền thật — quyền sổ quỹ,
+     không phải quyền sửa hồ sơ đối tác (yêu cầu 28/09, mục II.4). */
+  ['*',    /^\/consign-partners\/\d+\/pay$/, 'cash.manage'],
   /* Thu ngân ngoài quầy cần đọc danh sách chủ hàng để chọn lúc bán. */
   ['GET',  /^\/consign-partners/,          'sale.pos'],
   ['*',    /^\/consign-partners/,          'customer.manage'],

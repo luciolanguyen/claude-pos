@@ -29,6 +29,8 @@ export const CASH_CATEGORIES = {
     { code: 'rent', label: 'Tiền thuê mặt bằng' },
     { code: 'utility', label: 'Điện, nước, internet' },
     { code: 'transport', label: 'Vận chuyển, xăng xe' },
+    /* Sinh tự động khi bấm "đã giao xong" một đơn có tiền xe (yêu cầu 28/09, mục I.2) */
+    { code: 'shipper_out', label: 'Tiền xe trả người giao hàng' },
     { code: 'tax', label: 'Thuế, lệ phí' },
     { code: 'capital_out', label: 'Chủ rút vốn' },
     { code: 'consign_out', label: 'Trả tiền hàng gửi bán của chủ vãng lai' },

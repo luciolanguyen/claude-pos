@@ -20,9 +20,9 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
-import { n } from '../lib/format';
+import { n, match } from '../lib/format';
 import {
-  Button, IconButton, Input, Select, Modal, Spinner, Empty, ErrorBox, Badge,
+  Button, IconButton, Input, Select, Modal, Spinner, Empty, ErrorBox, Badge, Combo,
 } from './ui';
 
 /** Cấp sâu nhất cho phép thêm nữa. Tài liệu yêu cầu tối thiểu 3 cấp. */
@@ -415,38 +415,38 @@ function MoveContents({ category, message, all, onClose, onDone }) {
 /**
  * Ô chọn nhóm hàng dạng cây, dùng cho bộ lọc và cho thẻ hàng hoá.
  *
- * Thụt đầu dòng theo cấp để nhìn ra ngay quan hệ cha con. Dùng thẻ
- * <select> thường chứ không dựng cây bấm mở — ở bộ lọc thì người dùng
- * cần chọn nhanh một cái rồi thôi.
+ * Thụt đầu dòng theo cấp để nhìn ra ngay quan hệ cha con. Có ô GÕ TÌM (yêu cầu
+ * 28/09, mục II.3a): cây nhóm của tiệm đã mấy chục dòng, cuộn tay tìm "Ổ cắm"
+ * giữa đám nhóm con là mất thì giờ.
+ *
+ * Vẫn trả ra CHUỖI như thẻ <select> cũ, để tám chỗ đang gọi không phải sửa gì.
  */
 export function CategorySelect({
   value, onChange, categories, placeholder = 'Mọi nhóm hàng',
   size = 'md', className = '', leafOnly = false, id, ariaLabel,
 }) {
   const list = categories || [];
+  const label = (c) => '   '.repeat(Math.max(0, (c.level || 1) - 1))
+    + ((c.level || 1) > 1 ? '└ ' : '') + c.name;
   return (
-    <Select
+    <Combo
       id={id}
       size={size}
       className={className}
-      value={value ?? ''}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label={ariaLabel}
-    >
-      <option value="">{placeholder}</option>
-      {list.map((c) => (
-        <option
-          key={c.id}
-          value={c.id}
-          /* Gán hàng thì chỉ cho chọn nhóm lá, theo đúng quy tắc "sản phẩm
-             nằm ở nhóm nhỏ nhất". Lọc thì chọn cấp nào cũng được. */
-          disabled={leafOnly && c.has_children}
-        >
-          {'   '.repeat(Math.max(0, (c.level || 1) - 1))}
-          {(c.level || 1) > 1 ? '└ ' : ''}{c.name}
-          {leafOnly && c.has_children ? ' (có nhóm con)' : ''}
-        </option>
-      ))}
-    </Select>
+      items={list}
+      value={value === '' || value === null || value === undefined ? null : Number(value)}
+      onChange={(v) => onChange(v === null || v === undefined ? '' : String(v))}
+      placeholder={placeholder}
+      emptyText="Không có nhóm hàng nào khớp"
+      filter={(c, q) => match(c.name, q)}
+      render={(c) => ({
+        label: label(c),
+        /* Gán hàng thì gán vào nhóm NHỎ NHẤT của nhánh. Nhóm còn con vẫn hiện ra
+           cho thấy cây, nhưng bấm không được. */
+        sub: leafOnly && c.has_children ? 'có nhóm con — chọn nhóm nhỏ hơn' : '',
+      })}
+      disabledOf={(c) => leafOnly && !!c.has_children}
+      ariaLabel={ariaLabel}
+    />
   );
 }

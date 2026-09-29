@@ -60,7 +60,8 @@ r.get('/sales', (req, res) => {
     SELECT s.*, c.name AS customer_name, c.phone AS customer_phone, c.code AS customer_code,
            u.full_name AS user_name, w.name AS warehouse_name,
            (s.total - s.paid) AS remaining,
-           (s.total - s.vat_amount - s.cogs) AS profit,
+           /* Lãi của đơn giao hàng phải trừ tiền xe trả người giao (mục II.1) */
+           (s.total - s.vat_amount - s.cogs - s.shipper_fee) AS profit,
            (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
            /* Hàng mua hộ vãng lai tách riêng (plan 31, hạng mục 4d): nhìn
               danh sách hoá đơn phải phân biệt được đâu là hàng của tiệm,
@@ -72,18 +73,29 @@ r.get('/sales', (req, res) => {
            (SELECT COALESCE(SUM(ci.commission), 0) FROM sale_consign_items ci
              WHERE ci.sale_id = s.id) AS consign_commission,
            (SELECT COUNT(*) FROM warranty_tickets wt
-             WHERE wt.sale_id = s.id AND wt.status <> 'cancelled') AS warranty_count
+             WHERE wt.sale_id = s.id AND wt.status <> 'cancelled') AS warranty_count,
+           /* Hai dấu nhận biết cho danh sách và cho hộp "Hoá đơn trong ngày"
+              (yêu cầu 28/09, mục I.1 và II.1): đơn có giao tận nơi là ai cầm đi,
+              và hoá đơn này có phải xuất từ đơn khách đặt trước hay không. */
+           ca.name AS carrier_name,
+           su.full_name AS shipper_user_name,
+           (SELECT o.code FROM sale_order_deliveries sod
+             JOIN sale_orders o ON o.id = sod.order_id
+             WHERE sod.sale_id = s.id LIMIT 1) AS order_code
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN warehouses w ON w.id = s.warehouse_id
+    LEFT JOIN carriers ca ON ca.id = s.carrier_id
+    LEFT JOIN users su ON su.id = s.shipper_user_id
     ${w}
     ORDER BY s.id DESC LIMIT ${size} OFFSET ${offset}`, params);
   /* Tổng của cả bộ lọc, để thẻ số liệu phía trên không phụ thuộc trang */
   const sums = get(`
     SELECT COUNT(*) AS count,
            COALESCE(SUM(s.total), 0) AS revenue,
-           COALESCE(SUM(s.total - s.vat_amount - s.cogs), 0) AS profit,
+           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee), 0) AS profit,
+           COALESCE(SUM(s.shipper_fee), 0) AS shipper_fee,
            COALESCE(SUM(MAX(s.total - s.paid, 0)), 0) AS unpaid
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
@@ -97,13 +109,23 @@ r.get('/sales/:id', (req, res) => {
            c.code AS customer_code, c.tax_code AS customer_tax_code, c.company_name AS customer_company,
            u.full_name AS user_name, w.name AS warehouse_name, pl.name AS price_list_name,
            emp.full_name AS salary_employee_name,
-           (SELECT COALESCE(SUM(x.salary_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS salary_refunded
+           (SELECT COALESCE(SUM(x.salary_refund), 0) FROM sale_returns x WHERE x.sale_id = s.id) AS salary_refunded,
+           ca.name AS carrier_name,
+           su.full_name AS shipper_user_name,
+           (SELECT o.code FROM sale_order_deliveries sod
+             JOIN sale_orders o ON o.id = sod.order_id
+             WHERE sod.sale_id = s.id LIMIT 1) AS order_code,
+           /* Nợ cũ / nợ mới chụp lúc bán, để in lên hoá đơn (mục I.4) */
+           s.debt_before AS customer_debt_before,
+           s.debt_after AS customer_debt_after
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     LEFT JOIN employees emp ON emp.id = s.salary_employee_id
     LEFT JOIN users u ON u.id = s.user_id
     LEFT JOIN warehouses w ON w.id = s.warehouse_id
     LEFT JOIN price_lists pl ON pl.id = s.price_list_id
+    LEFT JOIN carriers ca ON ca.id = s.carrier_id
+    LEFT JOIN users su ON su.id = s.shipper_user_id
     WHERE s.id = ?`, [req.params.id]);
   if (!s) return res.status(404).json({ error: 'Không tìm thấy hoá đơn' });
   s.items = all(`
@@ -459,6 +481,11 @@ export function createSale(b) {
 
       const approvedBy = approvalNotes.length && approval ? approval.approver.id : null;
 
+      /* Nợ khách trước hoá đơn này — đọc TRƯỚC khi chèn dòng bán, vì `customerDebt`
+         cộng cả hoá đơn chưa trả hết (yêu cầu 28/09, mục I.4) */
+      const debtBefore = b.customer_id ? customerDebt(Number(b.customer_id)) : null;
+      const debtAfter = debtBefore === null ? null : debtBefore + Math.max(0, total - paid);
+
       const info = run(`
         INSERT INTO sales(code, ts, customer_id, warehouse_id, user_id, price_list_id,
                           subtotal, discount, discount_type, discount_percent,
@@ -469,13 +496,13 @@ export function createSale(b) {
                           cod_status, shipper_name, shipper_user_id, shipper_phone,
                           shipper_fee, ship_weight, ship_size,
                           buyer_id, buyer_name, buyer_phone, voucher_amount,
-                          approved_by, approval_note)
+                          approved_by, approval_note, debt_before, debt_after)
         VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?,
                ?, ?, ?,
                ?, ?, ?, ?,
-               ?, ?)`,
+               ?, ?, ?, ?)`,
         [code, b.ts || null, b.customer_id || null, warehouseId, b.user_id || null,
           b.price_list_id || null, subtotal, discount, discountType, discountPercent,
           vatAmount, total, cogs, paid, changeGiven,
@@ -494,7 +521,8 @@ export function createSale(b) {
           Math.max(0, Number(b.ship_weight) || 0),
           String(b.ship_size || '').trim() || null,
           buyerId, buyerName, buyerPhone, voucherUse,
-          approvedBy, approvedBy ? approvalNotes.join('; ') : null]);
+          approvedBy, approvedBy ? approvalNotes.join('; ') : null,
+          debtBefore, debtAfter]);
       const saleId = Number(info.lastInsertRowid);
 
       for (const c of consign) {
@@ -589,6 +617,13 @@ export function createSale(b) {
           refType: 'sale', refId: saleId, refCode: code, userId: b.user_id || null,
           note: `Thu chuyển khoản hoá đơn ${code}`, ts: b.ts || null,
         });
+      }
+      /* Chốt lại "nợ mới" theo ĐÚNG sổ nợ, sau khi hoá đơn và các bút toán đã ghi
+         xong (yêu cầu 28/09, mục I.4). Cộng tay total − paid thì sai ở đơn thu hộ
+         COD: tiền đang nằm chỗ người giao nên sổ nợ chưa tính khách nợ, mà hoá đơn
+         lại in như khách đang nợ. */
+      if (b.customer_id) {
+        run('UPDATE sales SET debt_after = ? WHERE id = ?', [customerDebt(Number(b.customer_id)), saleId]);
       }
       return {
         id: saleId, code, total, paid, change_given: changeGiven,
@@ -1445,7 +1480,7 @@ r.get('/deliveries', (req, res) => {
 
   const rows = all(`
     SELECT s.id, s.code, s.ts, s.total, s.paid, s.ship_fee, s.ship_payer,
-           s.shipper_fee, s.ship_weight, s.ship_size,
+           s.shipper_fee, s.ship_weight, s.ship_size, s.shipper_paid_tx_id,
            s.delivery_status, s.delivery_name, s.delivery_phone, s.delivery_address,
            s.tracking_code, s.delivery_note,
            s.shipper_name, s.shipper_phone, s.shipper_user_id, su.full_name AS shipper_user_name,
@@ -1531,6 +1566,58 @@ r.put('/sales/:id/delivery', (req, res) => {
         b.ship_weight === undefined ? sale.ship_weight : Math.max(0, Number(b.ship_weight) || 0),
         keep(b.ship_size, sale.ship_size),
         sale.id]);
+
+      /* Giao xong là tiền xe ra khỏi két ngay (yêu cầu 28/09, mục I.2). Trước đây
+         số tiền này chỉ nằm trên hoá đơn để cuối ca đối chiếu bằng tay, nên quỹ thật
+         với quỹ trên máy lệch nhau đúng bằng tiền xe đã trả. */
+      const fee = b.shipper_fee === undefined
+        ? sale.shipper_fee : Math.max(0, Math.round(Number(b.shipper_fee) || 0));
+      if (changed && next === 'delivered' && fee > 0 && !sale.shipper_paid_tx_id) {
+        const acc = Number(b.ship_account_id) || defaultCashAccount();
+        if (!acc) throw Object.assign(new Error('Chưa thiết lập quỹ tiền để chi tiền xe.'), { status: 400 });
+        const who = b.shipper_name || sale.shipper_name
+          || get('SELECT full_name FROM users WHERE id = ?', [sale.shipper_user_id])?.full_name
+          || get('SELECT name FROM carriers WHERE id = ?', [sale.carrier_id])?.name
+          || 'người giao hàng';
+        const cash = addCashTx({
+          accountId: acc,
+          direction: 'out',
+          amount: fee,
+          category: 'shipper_out',
+          partnerType: sale.carrier_id ? 'carrier' : null,
+          partnerId: sale.carrier_id || null,
+          partnerName: who,
+          refType: 'sale_delivery',
+          refId: sale.id,
+          refCode: sale.code,
+          userId: b.user_id || req.user?.id || null,
+          note: `Tiền xe giao đơn ${sale.code} — ${who}`,
+        });
+        run('UPDATE sales SET shipper_paid_tx_id = ? WHERE id = ?', [cash.id, sale.id]);
+      }
+      /* Bấm nhầm "đã giao" rồi sửa lại: ghi phiếu thu hoàn tiền xe, giữ nguyên phiếu
+         chi cũ để còn dấu vết, và bỏ đánh dấu để lần giao sau chi lại được. */
+      if (changed && sale.delivery_status === 'delivered' && next !== 'delivered'
+          && sale.shipper_paid_tx_id) {
+        const old = get('SELECT * FROM cash_transactions WHERE id = ?', [sale.shipper_paid_tx_id]);
+        if (old) {
+          addCashTx({
+            accountId: old.account_id,
+            direction: 'in',
+            amount: old.amount,
+            category: 'shipper_out',
+            partnerType: old.partner_type,
+            partnerId: old.partner_id,
+            partnerName: old.partner_name,
+            refType: 'sale_delivery',
+            refId: sale.id,
+            refCode: sale.code,
+            userId: b.user_id || req.user?.id || null,
+            note: `Hoàn tiền xe đơn ${sale.code} — bỏ đánh dấu đã giao (phiếu ${old.code})`,
+          });
+        }
+        run('UPDATE sales SET shipper_paid_tx_id = NULL WHERE id = ?', [sale.id]);
+      }
 
       if (changed && next === 'failed' && sale.cod_status === 'pending') {
         run("UPDATE sales SET cod_status = 'cancelled' WHERE id = ?", [sale.id]);

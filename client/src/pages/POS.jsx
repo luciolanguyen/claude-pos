@@ -23,12 +23,12 @@ import DeliveryNotePrint from '../components/DeliveryNotePrint';
 import PickingSlipPrint from '../components/PickingSlipPrint';
 import WarrantyCardPrint, { warrantyItemsOf } from '../components/WarrantyCardPrint';
 import { DeliveryBell, DeliveryBoard } from '../components/PosDelivery';
+import PosAttendance from '../components/PosAttendance';
 import DeliveryInfoModal, {
   normalizeDelivery, deliveryShipCharged, deliveryBody,
 } from '../components/PosDeliveryForm';
 import QuickReturnModal from '../components/PosQuickReturn';
 import ExchangeModal from '../components/PosExchange';
-import CashVoucherPrint from '../components/CashVoucherPrint';
 import CustomerForm from '../components/CustomerForm';
 import CustomerProfile from '../components/CustomerProfile';
 import { TileImageButton, ProductInfoModal } from '../components/ProductImages';
@@ -406,7 +406,6 @@ export default function POS() {
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);        // bảng theo dõi giao hàng
   const [quickReturn, setQuickReturn] = useState(false);    // trả hàng không hoá đơn
-  const [voucher, setVoucher] = useState(null);             // phiếu thu vừa lập, để in
   const [draftsOpen, setDraftsOpen] = useState(false);
   const [orderOpen, setOrderOpen] = useState(false);        // giỏ hàng -> đơn đặt
   const [pickOrderOpen, setPickOrderOpen] = useState(false); // mở đơn đặt để giao
@@ -478,17 +477,6 @@ export default function POS() {
   };
 
   const maySeeCost = canSeeCost(user, can);
-
-  /* Lấy tờ phiếu thu vừa lập rồi mở hộp in. Không in được cũng không
-     sao — tiền đã thu và đã ghi sổ rồi, chỉ là thiếu tờ giấy. */
-  const showVoucher = async (id) => {
-    if (!id) return;
-    try {
-      setVoucher(await api.get(`/cash/transactions/${id}`));
-    } catch {
-      toast('Đã thu tiền xong, nhưng chưa lấy được phiếu để in. Vào Sổ quỹ in lại được.', 'warn', 7000);
-    }
-  };
 
   useEffect(() => { if (defaultWarehouse && !warehouseId) setWarehouseId(defaultWarehouse); }, [defaultWarehouse, warehouseId]);
 
@@ -1510,6 +1498,8 @@ export default function POS() {
 
         <OrderBell onOpen={() => setPickOrderOpen(true)} />
         <DeliveryBell onOpen={() => setBoardOpen(true)} />
+        {/* Chấm công cả tiệm: tự bật 7h30 sáng và lúc tan làm (yêu cầu 28/09, III.1) */}
+        <PosAttendance />
         {/* Chỗ sát ô tìm hàng: nút NỢ QUÁ HẠN của cả tiệm.
             Nút Thu nợ trên thanh này đã bỏ hẳn: chưa chọn khách thì nó mờ,
             mà chọn khách có nợ rồi thì dòng nhắc nợ trong giỏ đã có sẵn nút
@@ -2246,7 +2236,8 @@ export default function POS() {
         open={debtOpen && !!tab.customerId}
         customerId={tab.customerId}
         onClose={() => setDebtOpen(false)}
-        onDone={(res) => { reloadCustomers(); reloadOverdue(); showVoucher(res?.transaction?.id); }}
+        /* Hộp thu nợ tự in phiếu rồi, ở đây chỉ nạp lại số liệu */
+        onDone={() => { reloadCustomers(); reloadOverdue(); }}
       />
 
       {/* Thêm một món mua hộ vãng lai vào giỏ (tài liệu 24, phần 5.1) */}
@@ -2289,7 +2280,8 @@ export default function POS() {
         open={!!debtFor}
         customerId={debtFor}
         onClose={() => setDebtFor(null)}
-        onDone={(res) => { reloadCustomers(); reloadOverdue(); showVoucher(res?.transaction?.id); }}
+        /* Hộp thu nợ tự in phiếu rồi, ở đây chỉ nạp lại số liệu */
+        onDone={() => { reloadCustomers(); reloadOverdue(); }}
       />
 
       {/* Ảnh và mô tả hàng hoá để tư vấn nhanh (tài liệu 13, mục 3.1) */}
@@ -2307,6 +2299,7 @@ export default function POS() {
         onClose={() => setDayOpen(false)}
         onExchange={(sale) => { setDayOpen(false); setExchangeOpen({ sale }); }}
         onQuickExchange={() => { setDayOpen(false); setExchangeOpen(true); }}
+        onQuickReturn={() => { setDayOpen(false); setQuickReturn(true); }}
       />
 
       <ExchangeModal
@@ -2360,7 +2353,6 @@ export default function POS() {
         )}
       />
 
-      {voucher && <CashVoucherPrint voucher={voucher} onClose={() => setVoucher(null)} />}
 
       <PriceHistoryModal
         line={priceHistOf}
@@ -2409,7 +2401,7 @@ export default function POS() {
 
       {printing?.kind === 'invoice' && (
         <InvoicePrint key={printing.key} sale={printing.sale} store={store}
-          invoice={settings?.invoice || {}} onClose={nextPrint} />
+          invoice={settings?.invoice || {}} onClose={nextPrint} autoPrint />
       )}
       {printing?.kind === 'note' && (
         <DeliveryNotePrint key={printing.key} note={printing.note} onClose={nextPrint} />

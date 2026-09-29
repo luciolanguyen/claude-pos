@@ -482,15 +482,37 @@ function DoneTab() {
   const rows = data?.rows || [];
   const [detailOf, setDetailOf] = useState(null);
   const [paying, setPaying] = useState(null);       // đợt chốt "trả sau" đang chi tiền
+  const [payingPartner, setPayingPartner] = useState(null);   // trả gộp cho một chủ hàng
+  const owingPartners = data?.owing_by_partner || [];
 
   return (
     <div className="p-3 space-y-3">
-      {/* Tiền còn nợ các chủ hàng — trả thiếu thì phần còn lại nằm đây (BRD mục 4) */}
-      {data?.sums?.owing > 0 && (
-        <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-[13px] text-amber-900">
-          Tiệm còn nợ các chủ hàng <b className="tabular">{money(data.sums.owing)}</b> trong các đợt đã chốt.
-          Bấm <b>Trả tiếp</b> ở đợt còn nợ để trả thêm — trả bao nhiêu cũng được.
-        </p>
+      {/* Còn nợ ai bao nhiêu, gom theo người — đưa tiền một lần cho một người thì
+          bấm "Trả gộp", máy tự trả dần từ đợt cũ nhất (yêu cầu 28/09, mục II.4) */}
+      {owingPartners.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 space-y-2">
+          <p role="status" className="text-[13px] text-amber-900">
+            Tiệm còn nợ <b className="tabular">{money(owingPartners.reduce((a, x) => a + x.owing, 0))}</b> của{' '}
+            <b>{n(owingPartners.length)} chủ hàng</b>. Đưa tiền một lần cho ai thì bấm <b>Trả gộp</b> của người đó.
+          </p>
+          <ul className="divide-y divide-amber-200">
+            {owingPartners.map((x) => (
+              <li key={x.partner_id} className="flex flex-wrap items-center gap-2 py-1.5 text-[13px]">
+                <span className="font-semibold min-w-0 flex-1 truncate">
+                  {x.partner_name}
+                  {x.phone && <span className="text-2xs text-muted-ink font-normal"> · {x.phone}</span>}
+                </span>
+                <span className="text-2xs text-muted-ink whitespace-nowrap">
+                  {n(x.settlement_count)} đợt · cũ nhất {date(x.oldest_ts)}
+                </span>
+                <span className="tabular font-bold text-amber-900">{money(x.owing)}</span>
+                <Button size="sm" variant="primary" icon={Banknote} onClick={() => setPayingPartner(x)}>
+                  Trả gộp
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {busy && !data ? <Spinner />
         : error ? <ErrorBox error={error} onRetry={reload} />
@@ -565,7 +587,160 @@ function DoneTab() {
         onClose={() => setPaying(null)}
         onDone={() => reload()}
       />
+      <PayPartnerModal
+        partner={payingPartner}
+        onClose={() => setPayingPartner(null)}
+        onDone={() => reload()}
+      />
     </div>
+  );
+}
+
+/**
+ * TRẢ GỘP cho một chủ hàng (yêu cầu 28/09, mục II.4).
+ *
+ * Chủ hàng thường có mấy đợt còn nợ. Đưa tiền một lần thì gõ đúng số đưa, máy trả
+ * dần từ đợt CŨ NHẤT và chỉ lập MỘT phiếu chi — khỏi mở từng đợt mà trả.
+ */
+function PayPartnerModal({ partner, onClose, onDone }) {
+  const { meta, toast, user } = useApp();
+  const accounts = meta.accounts || [];
+  const [accountId, setAccountId] = useState('');
+  const [amount, setAmount] = useState(0);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [paid, setPaid] = useState(null);
+  const [voucher, setVoucher] = useState(null);
+  const owing = partner?.owing || 0;
+
+  /* Các đợt còn nợ của đúng người này, để hiện trước tiền sẽ chia về đâu */
+  const { data: owingList } = useFetch(
+    () => api.consignSettlements({ partner_id: partner.partner_id, page_size: 50 }),
+    [partner?.partner_id], { skip: !partner });
+  const open = (owingList?.rows || []).filter((x) => x.owing > 0).slice().reverse();
+
+  useEffect(() => {
+    if (partner) {
+      setAccountId((accounts.find((a) => a.type === 'cash') || accounts[0])?.id || '');
+      setAmount(partner.owing || 0);
+      setNote(''); setErr(''); setPaid(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partner?.partner_id]);
+
+  /* Chia thử số tiền đang gõ cho từng đợt, đúng thứ tự máy chủ sẽ chia */
+  let left = amount;
+  const plan = open.map((st) => {
+    const take = Math.max(0, Math.min(left, st.owing));
+    left -= take;
+    return { ...st, take };
+  });
+
+  const pay = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      const res = await api.payConsignPartner(partner.partner_id, {
+        amount, account_id: accountId || undefined, user_id: user?.id, note: note.trim() || undefined,
+      });
+      setPaid(res);
+      onDone?.();
+      toast(`Đã chi ${money(res.paid)} cho ${partner.partner_name} — phiếu ${res.cash_code}`
+        + (res.owing > 0 ? ` · còn nợ ${money(res.owing)}` : ''), 'ok', 7000);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const printVoucher = async () => {
+    try { setVoucher(await api.get(`/cash/transactions/${paid.cash_tx_id}`)); }
+    catch (e) { toast(`Chưa in được phiếu chi: ${e.message}. Vào Quỹ tiền in lại được.`, 'warn', 7000); }
+  };
+
+  return (
+    <>
+      <Modal
+        open={!!partner && !voucher}
+        onClose={onClose}
+        title={paid ? 'Đã chi tiền' : `Trả gộp — ${partner?.partner_name || ''}`}
+        subtitle={partner ? `${n(partner.settlement_count)} đợt còn nợ · tổng ${money(owing)}` : ''}
+        size="md"
+        footer={paid ? <>
+          <Button onClick={onClose}>Xong</Button>
+          <Button variant="primary" icon={Printer} onClick={printVoucher}>In phiếu chi</Button>
+        </> : <>
+          <Button onClick={onClose}>Huỷ</Button>
+          <Button variant="primary" icon={Banknote} onClick={pay} loading={busy}
+            disabled={!(amount > 0) || amount > owing}>
+            Chi {money(amount)}
+          </Button>
+        </>}
+      >
+        {partner && (paid ? (
+          <p className="text-[13px]">
+            Đã lập phiếu chi <b className="font-mono">{paid.cash_code}</b> trả <b>{money(paid.paid)}</b> cho{' '}
+            <b>{partner.partner_name}</b>, chia vào <b>{n(paid.settlement_count)} đợt</b>.
+            {paid.owing > 0
+              ? <> Còn nợ <b className="text-warn">{money(paid.owing)}</b>.</>
+              : ' Đã trả hết nợ cho người này.'}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {err && <ErrorBox error={err} />}
+            <Field label="Lần này trả" htmlFor="cpp-amount"
+              hint="Trả bao nhiêu cũng được. Máy trả dần từ đợt cũ nhất, phần còn lại vẫn nằm trong sổ nợ.">
+              <MoneyInput id="cpp-amount" size="lg" value={amount} autoFocus
+                onChange={(v) => setAmount(Math.max(0, Math.min(v, owing)))} />
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                <button type="button" onClick={() => setAmount(owing)}
+                  className={`btn btn-sm ${amount === owing ? 'btn-soft' : 'btn-outline'}`}>
+                  Trả hết {n(owing)}
+                </button>
+                {owing >= 2 && (
+                  <button type="button" onClick={() => setAmount(Math.round(owing / 2))}
+                    className={`btn btn-sm ${amount === Math.round(owing / 2) ? 'btn-soft' : 'btn-outline'}`}>
+                    Một nửa
+                  </button>
+                )}
+              </div>
+            </Field>
+
+            {/* Tiền này chia về đâu — xem trước rồi mới bấm chi */}
+            <div className="card p-2.5 text-[13px] space-y-1">
+              <div className="text-2xs font-bold text-muted-ink uppercase">Chia vào các đợt</div>
+              {plan.length === 0 ? <div className="text-muted-ink">Đang tải các đợt còn nợ…</div> : plan.map((st) => (
+                <div key={st.id} className="flex justify-between gap-2">
+                  <span className="min-w-0 truncate">
+                    <b className="font-mono text-2xs">{st.code}</b>
+                    <span className="text-2xs text-muted-ink"> · {date(st.ts)} · còn {money(st.owing)}</span>
+                  </span>
+                  <b className={`tabular ${st.take > 0 ? '' : 'text-muted-ink font-normal'}`}>
+                    {st.take > 0 ? money(st.take) : '—'}
+                  </b>
+                </div>
+              ))}
+              {amount < owing && (
+                <div className="flex justify-between border-t border-line pt-1 font-semibold text-warn">
+                  <span>Còn nợ sau lần trả này</span><span className="tabular">{money(owing - amount)}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Chi từ quỹ" htmlFor="cpp-acc">
+                <Select id="cpp-acc" value={accountId} onChange={(e) => setAccountId(Number(e.target.value))}>
+                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="Ghi chú" htmlFor="cpp-note">
+                <Input id="cpp-note" value={note} onChange={(e) => setNote(e.target.value)}
+                  placeholder="Trả tiền hàng tháng 9" />
+              </Field>
+            </div>
+          </div>
+        ))}
+      </Modal>
+      {voucher && <CashVoucherPrint voucher={voucher} onClose={() => { setVoucher(null); onClose(); }} />}
+    </>
   );
 }
 

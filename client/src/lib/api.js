@@ -214,6 +214,8 @@ export const api = {
   consignSettlement: (id) => request('GET', `/consign-settlements/${id}`),
   settleConsign: (body) => request('POST', '/consign-settlements', body),
   payConsignSettlement: (id, body) => request('POST', `/consign-settlements/${id}/pay`, body),
+  /* Trả gộp nhiều đợt của cùng một chủ hàng, một phiếu chi (yêu cầu 28/09, mục II.4) */
+  payConsignPartner: (id, body) => request('POST', `/consign-partners/${id}/pay`, body),
   consignStatement: (params) => request('GET', '/consign-statement' + qs(params)),
   consignSuggest: (params) => request('GET', '/consign-suggest' + qs(params)),
 

@@ -8,17 +8,16 @@
    Mọi con số hiện ở đây đều do máy chủ tính — màn hình chỉ bày ra. Trang
    khoá thêm bằng mã PIN, và đóng hẳn khi tiệm tắt đăng nhập (§2.4).
    ==================================================================== */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  IdCard, UserRoundPlus, CalendarOff, Settings as Cog, Lock, CalendarX, HandCoins, Gift, CirclePlus,
-  ChevronLeft, Pencil, AlertTriangle, Wallet, ChevronDown, ChevronRight, Trash2, Receipt, Camera, Clock,
+  IdCard, UserRoundPlus, CalendarOff, Settings as Cog, Lock, CalendarX, HandCoins, Gift, CirclePlus, ChevronLeft, Pencil, AlertTriangle, Wallet, ChevronDown, ChevronRight, Trash2, Receipt, Camera, Clock, CalendarCheck,
 } from 'lucide-react';
 import { api, setPayrollToken } from '../lib/api';
 import { useApp } from '../lib/store';
 import { money, n, datetime } from '../lib/format';
 import { signedMoney } from '../lib/payslip';
-import { Button, Badge, Stat, Spinner, ErrorBox, Empty, Confirm } from '../components/ui';
+import { Button, Badge, Stat, Spinner, ErrorBox, Empty, Confirm, Modal, Input, Field } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import {
   UnlockScreen, EmployeeForm, AbsenceModal, AdvanceModal, BonusModal, AdjustModal, SettleModal, DailyPayModal,
@@ -122,6 +121,7 @@ function PayrollHome({ onLocked }) {
         title="Lương nhân viên"
         subtitle={m ? `Hôm nay ${vn(m.today)} · Âm lịch ${m.today_lunar.slice(0, 5)} năm ${m.lunar_year_name}` : 'Theo lịch Âm, gối đầu theo ngày vào làm'}
         actions={<>
+          <Button icon={CalendarCheck} onClick={() => setModal({ kind: 'attendance' })}>Bảng chấm công</Button>
           <Button icon={CalendarOff} onClick={() => setModal({ kind: 'closed' })}>Ngày tiệm nghỉ</Button>
           <Button icon={Cog} onClick={() => setModal({ kind: 'settings' })} disabled={!m}>Thiết lập</Button>
           <Button icon={Lock} onClick={lock}>Khoá</Button>
@@ -286,6 +286,9 @@ function PayrollHome({ onLocked }) {
       {modal?.kind === 'absence' && <AbsenceModal employee={modal.employee} onClose={() => setModal(null)} onSaved={after} />}
       {modal?.kind === 'advance' && <AdvanceModal employee={modal.employee} onClose={() => setModal(null)} onSaved={after} />}
       {modal?.kind === 'bonus' && <BonusModal employee={modal.employee} onClose={() => setModal(null)} onSaved={after} />}
+      {modal?.kind === 'attendance' && (
+        <AttendanceGridModal onClose={() => setModal(null)} onChanged={list.reload} />
+      )}
       {modal?.kind === 'closed' && (
         <ClosedDaysModal lunarYear={m?.lunar_year || new Date().getFullYear()} onClose={() => setModal(null)} onChanged={list.reload} />
       )}
@@ -432,7 +435,10 @@ function EmployeeDetail({ id, onBack, onLocked, payrollMeta }) {
           </>
         )}
 
-        <AttendanceCard e={e} payrollMeta={payrollMeta} onChanged={d.reload} />
+        <div className="grid gap-3 lg:grid-cols-2 lg:items-start">
+          <AttendanceCard e={e} payrollMeta={payrollMeta} onChanged={d.reload} />
+          <TetCard e={e} payrollMeta={payrollMeta} onChanged={d.reload} />
+        </div>
 
         {e.settlements?.length > 0 && (
           <section className="card p-3">
@@ -592,6 +598,252 @@ function DailyPanel({ e, onPay, onEntry, onDelete, onToggle }) {
         </ul>
       )}
       <EntryList entries={dd.entries} locked={false} onEntry={onEntry} onDelete={onDelete} onToggle={onToggle} />
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Lưới chấm công cả tháng (yêu cầu 28/09, phần III.1)                 */
+/*                                                                     */
+/* Ngoài quầy chấm theo ngày; ở đây xem lại cả tháng và sửa giờ cho    */
+/* ngày đã qua — ví dụ hôm nào quên bấm thì điền bù.                   */
+/* ------------------------------------------------------------------ */
+
+function AttendanceGridModal({ onClose, onChanged }) {
+  const { toast } = useApp();
+  const [month, setMonth] = useState(() => new Date().toLocaleDateString('sv-SE').slice(0, 7));
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(null);   // { employee_id, date, in_at, out_at }
+
+  const load = useCallback(() => {
+    setBusy(true);
+    api.get('/payroll/attendance', { month })
+      .then(setData)
+      .catch((e) => toast(e.message, 'bad', 6000))
+      .finally(() => setBusy(false));
+  }, [month, toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const days = useMemo(() => {
+    const [y, mo] = month.split('-').map(Number);
+    const last = new Date(y, mo, 0).getDate();
+    return Array.from({ length: last }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  }, [month]);
+
+  const byKey = useMemo(() => {
+    const m = new Map();
+    for (const r of data?.rows || []) m.set(`${r.employee_id}|${r.work_date}`, r);
+    return m;
+  }, [data]);
+  const offKey = useMemo(() => {
+    const m = new Map();
+    for (const o of data?.offs || []) m.set(`${o.employee_id}|${o.work_date}`, o.type);
+    return m;
+  }, [data]);
+  const closed = useMemo(() => new Set((data?.closed_days || []).map((x) => x.date)), [data]);
+  const today = new Date().toLocaleDateString('sv-SE');
+
+  const saveOne = async () => {
+    if (!editing) return;
+    try {
+      await api.post('/payroll/attendance', {
+        date: editing.date,
+        rows: [{ employee_id: editing.employee_id, in_at: editing.in_at || null, out_at: editing.out_at || null }],
+      });
+      setEditing(null);
+      load();
+      onChanged?.();
+    } catch (e) { toast(e.message, 'bad', 6000); }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Bảng chấm công"
+      subtitle="Giờ vào – giờ ra từng ngày. Chỉ để theo dõi, không trừ lương; ô nghỉ mới trừ."
+      size="full"
+      footer={<Button onClick={onClose}>Đóng</Button>}
+    >
+      <div className="space-y-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input type="month" size="sm" className="!w-40" value={month}
+            onChange={(e) => setMonth(e.target.value)} aria-label="Chọn tháng" />
+          {busy && <span className="text-2xs text-muted-ink">đang tải…</span>}
+          <div className="flex-1" />
+          <span className="text-2xs text-muted-ink">
+            <b className="text-emerald-700">V</b> đã chấm đủ giờ vào–ra ·
+            <b className="text-amber-700"> /</b> mới có giờ vào ·
+            <b className="text-danger"> N</b> nghỉ · <b>T</b> tiệm nghỉ
+          </span>
+        </div>
+
+        {!data?.staff?.length ? (
+          <Empty icon={CalendarCheck} title="Chưa có nhân viên nào" message="Khai hồ sơ nhân viên trước." />
+        ) : (
+          <div className="table-wrap max-h-[60vh]">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th className="sticky left-0 bg-card z-10">Nhân viên</th>
+                  {days.map((d) => (
+                    <th key={d} className={`text-center !px-1 ${closed.has(d) ? 'bg-muted' : ''}`}
+                      title={closed.has(d) ? 'Tiệm nghỉ' : ''}>
+                      {Number(d.slice(-2))}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.staff.map((s) => (
+                  <tr key={s.id}>
+                    <td className="sticky left-0 bg-card z-10 whitespace-nowrap">
+                      <div className="font-medium">{s.full_name}</div>
+                      <div className="text-2xs text-muted-ink">{s.work_from}–{s.work_to}</div>
+                    </td>
+                    {days.map((d) => {
+                      const rec = byKey.get(`${s.id}|${d}`);
+                      const off = offKey.get(`${s.id}|${d}`);
+                      const future = d > today;
+                      const mark = off === 'closed_day' ? 'T'
+                        : off ? 'N'
+                          : rec?.in_at && rec?.out_at ? 'V'
+                            : rec?.in_at ? '/' : '';
+                      const tone = mark === 'V' ? 'text-emerald-700'
+                        : mark === '/' ? 'text-amber-700'
+                          : mark === 'N' ? 'text-danger' : 'text-muted-ink';
+                      return (
+                        <td key={d} className={`text-center !px-1 ${closed.has(d) ? 'bg-muted/60' : ''}`}>
+                          <button
+                            type="button"
+                            disabled={future || !!off}
+                            title={off ? (off === 'closed_day' ? 'Tiệm nghỉ' : 'Đã báo nghỉ')
+                              : rec ? `${rec.in_at || '—'} → ${rec.out_at || '—'}` : 'Chưa chấm — bấm để điền bù'}
+                            onClick={() => setEditing({
+                              employee_id: s.id, name: s.full_name, date: d,
+                              in_at: rec?.in_at || s.work_from, out_at: rec?.out_at || s.work_to,
+                            })}
+                            className={`w-6 h-6 rounded text-[13px] font-bold ${tone}
+                                        ${future || off ? 'cursor-default' : 'cursor-pointer hover:bg-accent-soft'}`}
+                          >
+                            {mark || (future ? '' : '·')}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {editing && (
+        <Modal
+          open
+          onClose={() => setEditing(null)}
+          title={`Sửa giờ — ${editing.name}`}
+          subtitle={vn(editing.date)}
+          size="sm"
+          footer={<>
+            <Button onClick={() => setEditing(null)}>Huỷ</Button>
+            <Button variant="primary" onClick={saveOne}>Lưu giờ</Button>
+          </>}
+        >
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Giờ vào" htmlFor="ag-in">
+              <Input id="ag-in" type="time" value={editing.in_at || ''}
+                onChange={(e) => setEditing((x) => ({ ...x, in_at: e.target.value }))} />
+            </Field>
+            <Field label="Giờ ra" htmlFor="ag-out">
+              <Input id="ag-out" type="time" value={editing.out_at || ''}
+                onChange={(e) => setEditing((x) => ({ ...x, out_at: e.target.value }))} />
+            </Field>
+          </div>
+        </Modal>
+      )}
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Thưởng Tết — lương tháng 13 (yêu cầu 28/09, phần III.2)             */
+/*                                                                     */
+/* Khoản riêng, không dính ngưỡng ngày nghỉ như chuyên cần. Gợi ý một  */
+/* tháng LƯƠNG CỨNG, không cộng phụ cấp.                               */
+/* ------------------------------------------------------------------ */
+
+function TetCard({ e, payrollMeta, onChanged }) {
+  const { toast } = useApp();
+  const year = payrollMeta?.lunar_year;
+  const [st, setSt] = useState(null);
+  const [amount, setAmount] = useState(0);
+  const [merged, setMerged] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    if (!year) return;
+    api.get(`/payroll/employees/${e.id}/tet`, { year })
+      .then((x) => { setSt(x); setAmount(x.suggest_amount); })
+      .catch(() => setSt(null));
+  }, [e.id, year]);
+  useEffect(() => { load(); }, [load]);
+  if (!st) return null;
+
+  const give = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/payroll/employees/${e.id}/tet`, { year: st.year, amount, merged });
+      toast(`Đã ghi thưởng Tết ${money(amount)}`, 'ok');
+      load();
+      onChanged?.();
+    } catch (err) {
+      toast(err.message, 'bad', 6000);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <section className="card p-3 space-y-2 text-[13px]">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-bold text-sm">Thưởng Tết năm Âm lịch {st.year}</h2>
+        <span className="text-2xs text-muted-ink">
+          làm {st.full_year ? 'trọn năm' : `${st.worked_months} / ${st.months} tháng`}
+        </span>
+      </div>
+      <p className="text-2xs text-muted-ink">
+        Tính trên <b>lương cứng</b> {money(st.monthly_wage)}
+        {st.allowance > 0 ? ` — không cộng phụ cấp ${money(st.allowance)}` : ''}.
+      </p>
+      {st.given ? (
+        <p className="text-emerald-800 font-semibold">
+          Đã thưởng {money(st.given.amount)}
+          <span className="text-2xs font-normal text-muted-ink"> ({datetime(st.given.ts)})</span>
+        </p>
+      ) : !st.is_open ? (
+        <p className="text-muted-ink">
+          Tới tháng cuối năm Âm lịch ({vn(st.open_from)}) sẽ mở thưởng Tết.
+          Dự kiến <b>{money(st.suggest_amount)}</b>.
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5">
+            Thưởng
+            <input className="field field-sm num !w-32" inputMode="numeric" value={n(amount)}
+              onChange={(ev) => setAmount(Number(ev.target.value.replace(/\D/g, '')) || 0)}
+              aria-label="Số tiền thưởng Tết" />
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" className="w-4 h-4 accent-emerald-700" checked={merged}
+              onChange={(ev) => setMerged(ev.target.checked)} />
+            Gộp vào lương
+          </label>
+          <Button variant="primary" loading={busy} disabled={!(amount > 0)} onClick={give}>
+            Thưởng Tết
+          </Button>
+        </div>
+      )}
     </section>
   );
 }

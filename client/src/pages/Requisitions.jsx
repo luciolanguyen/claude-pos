@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, useSearchMode } from '../lib/store';
-import { money, n, qty as fq, date, datetime, match } from '../lib/format';
+import { money, n, qty as fq, date, datetime, match, smartTime } from '../lib/format';
 import {
   Button, IconButton, Input, Select, Modal, Field, Empty, Spinner, Badge,
   Textarea, QtyInput, SearchInput, ErrorBox, Confirm, Pager, MoneyInput, Combo,
@@ -672,8 +672,11 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                         <th>Tên hàng hoá</th>
                         <th className="text-right" style={{ width: 88 }}>Tồn hệ thống</th>
                         <th className="text-right" style={{ width: 104 }}>Tồn thực tế</th>
-                        <th className="text-right" style={{ width: 96 }}>Dự mua</th>
-                        <th style={{ width: 260 }}>Nhà cung cấp có thể mua</th>
+                        {/* Gộp hai cột cũ "Dự mua" và "NCC có thể mua" làm một
+                            (yêu cầu 28/09, mục II.3b): mua mỗi mối bao nhiêu là
+                            một câu hỏi, tách hai cột thì gõ số một nơi, chọn mối
+                            một nơi, tách phiếu ra số lượng nhân đôi. */}
+                        <th style={{ width: 400 }}>NCC chọn mua</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -693,6 +696,19 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                               />
                             </td>
                             <td>
+                              <div className="flex items-start gap-2">
+                                {/* Ảnh đại diện: nhìn ra món hàng nhanh hơn đọc tên (mục II.3b) */}
+                                {it.image ? (
+                                  <img src={api.imageUrl(it.image)} alt=""
+                                    className="w-10 h-10 rounded border border-line object-cover shrink-0" />
+                                ) : (
+                                  <span className="w-10 h-10 rounded border border-line bg-muted/50 shrink-0
+                                                   flex items-center justify-center text-muted-ink"
+                                    aria-hidden="true">
+                                    <PackageX size={14} />
+                                  </span>
+                                )}
+                                <div className="min-w-0">
                               <div className="font-medium">{it.name_snapshot}</div>
                               <div className="text-2xs text-muted-ink font-mono">
                                 {it.sku}
@@ -714,6 +730,8 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                                   {' '}— không sửa được nữa
                                 </div>
                               )}
+                                </div>
+                              </div>
                             </td>
                             <td className="num text-muted-ink">
                               {fq(it.system_qty)}
@@ -741,20 +759,15 @@ function RequisitionDetail({ id, onClose, onChanged }) {
                               )}
                             </td>
                             <td>
-                              {rq.status === 'open' && !it.locked ? (
-                                <QtyInput value={it.buy_qty} min={0}
-                                  onChange={(v) => patchItem(it, { buy_qty: v })}
-                                  aria-label={`Dự mua ${it.name_snapshot}`} />
-                              ) : <div className="num">{fq(it.buy_qty)}</div>}
-                            </td>
-                            <td>
-                              <SupplierTags
+                              <SupplierBuyBoard
                                 item={it}
                                 suppliers={suppliers || []}
                                 readOnly={rq.status !== 'open' || it.locked}
                                 onChange={(ids) => patchItem(it, { supplier_ids: ids })}
                                 onQuote={(supplierId, quotePrice) =>
                                   patchItem(it, { quote: { supplier_id: supplierId, quote_price: quotePrice } })}
+                                onQty={(supplierId, buyQty) =>
+                                  patchItem(it, { supplier_qty: { supplier_id: supplierId, buy_qty: buyQty } })}
                               />
                             </td>
                           </tr>
@@ -825,22 +838,29 @@ function RequisitionDetail({ id, onClose, onChanged }) {
 /* ==================== CHỌN MỐI CHO TỪNG DÒNG ======================== */
 
 /**
- * Các mối bán món này, tích chọn được nhiều.
- * Mối đã khai sẵn cho mặt hàng hiện thành nút bấm nhanh; muốn mối khác
- * thì chọn trong danh sách đầy đủ.
+ * Bảng "NCC chọn mua" của một dòng phiếu báo hết hàng (yêu cầu 28/09, mục II.3b).
+ *
+ * Gộp hai cột cũ làm một: mỗi mối một dòng, có ô BÁO GIÁ và ô SỐ LƯỢNG DỰ MUA
+ * riêng. Dưới ô báo giá ghi giá mua lần trước và mua hồi nào, để so ngay tại chỗ
+ * xem mối có tăng giá không. Mua 100 cái thì chia 60 mối này, 40 mối kia — tách
+ * phiếu mua tạm ra đúng số đó (trước đây nhân đôi cho cả hai mối).
+ *
+ * Gõ số cho mối nào là mối đó tự được chọn; xoá số về 0 thì vẫn giữ mối trong
+ * danh sách, chỉ là lần này không mua của họ.
  */
-function SupplierTags({ item, suppliers, readOnly, onChange, onQuote }) {
+function SupplierBuyBoard({ item, suppliers, readOnly, onChange, onQuote, onQty }) {
   const chosen = new Set(item.chosen || []);
   const known = item.suppliers || [];
   const knownIds = new Set(known.map((s) => s.supplier_id));
-  /* Mối được chọn nhưng chưa khai cho mặt hàng này — vẫn phải hiện ra,
-     nếu không thì nhìn vào tưởng chưa chọn mối nào. */
+  /* Mối được chọn nhưng chưa từng bán món này — vẫn phải hiện, không thì nhìn vào
+     tưởng chưa chọn mối nào. */
   const extra = (item.chosen || []).filter((id) => !knownIds.has(id))
     .map((id) => suppliers.find((s) => s.id === id))
     .filter(Boolean)
     .map((s) => ({ supplier_id: s.id, name: s.name, is_primary: 0 }));
-
   const list = [...known, ...extra];
+  const qtyOf = (sid) => Number(item.buy_qtys?.[sid]) || 0;
+  const total = list.reduce((a, s) => a + qtyOf(s.supplier_id), 0);
 
   const toggle = (sid) => {
     const next = new Set(chosen);
@@ -849,50 +869,72 @@ function SupplierTags({ item, suppliers, readOnly, onChange, onQuote }) {
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap gap-1">
-        {list.length === 0 && (
-          <span className="text-2xs text-muted-ink italic">Chưa khai mối cho món này</span>
-        )}
-        {list.map((s) => (
-          <button
-            key={s.supplier_id}
-            type="button"
-            disabled={readOnly}
-            onClick={() => toggle(s.supplier_id)}
-            title={s.is_primary ? 'Mối ưu tiên chính' : ''}
-            className={`text-2xs px-1.5 py-0.5 rounded border transition-colors duration-100
-                        ${chosen.has(s.supplier_id)
-                          ? 'bg-accent text-white border-accent font-semibold'
-                          : 'bg-card text-muted-ink border-line hover:border-accent'}
-                        ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
-          >
-            {chosen.has(s.supplier_id) ? '✓ ' : ''}{s.name}
-            {s.is_primary ? ' ★' : ''}
-          </button>
-        ))}
-      </div>
-      {/* Báo giá gõ thẳng cho từng mối đã chọn (tài liệu 17, mục 2.2).
-          Gõ thì phiếu mua tạm lấy đúng con số này; để trống thì rơi về giá
-          nhập mặc định của mặt hàng. */}
-      {!readOnly && chosen.size > 0 && onQuote && (
-        <div className="space-y-1">
-          {list.filter((x) => chosen.has(x.supplier_id)).map((x) => (
-            <div key={`q${x.supplier_id}`} className="flex items-center gap-1">
-              <span className="text-2xs text-muted-ink truncate flex-1" title={x.name}>
-                Giá {x.name} báo
-              </span>
-              <MoneyInput
-                size="sm"
-                className="!w-28"
-                value={item.quotes?.[x.supplier_id] || 0}
-                onChange={(v) => onQuote(x.supplier_id, v)}
-                aria-label={`Giá ${x.name} báo cho ${item.name_snapshot}`}
-              />
+    <div className="space-y-1.5">
+      {list.length === 0 && (
+        <span className="text-2xs text-muted-ink italic">Chưa mối nào từng bán món này</span>
+      )}
+      {list.map((s) => {
+        const on = chosen.has(s.supplier_id);
+        const qty = qtyOf(s.supplier_id);
+        return (
+          <div key={s.supplier_id}
+            className={`rounded border p-1.5 ${on ? 'border-accent bg-accent-soft/30' : 'border-line'}`}>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => toggle(s.supplier_id)}
+                aria-pressed={on}
+                title={s.is_primary ? 'Mối ưu tiên chính' : 'Bấm để chọn / bỏ chọn mối này'}
+                className={`min-w-0 flex-1 text-left text-2xs font-semibold truncate
+                            ${on ? 'text-emerald-900' : 'text-muted-ink'}
+                            ${readOnly ? 'cursor-default' : 'cursor-pointer hover:underline'}`}
+              >
+                {on ? '✓ ' : ''}{s.name}{s.is_primary ? ' ★' : ''}
+              </button>
+              {!readOnly && (
+                <QtyInput
+                  value={qty || ''}
+                  min={0}
+                  className="!w-16"
+                  placeholder="SL"
+                  onChange={(v) => onQty(s.supplier_id, v)}
+                  aria-label={`Số lượng mua của ${s.name} cho ${item.name_snapshot}`}
+                />
+              )}
+              {readOnly && <span className="text-2xs tabular">{qty ? fq(qty) : '—'}</span>}
             </div>
-          ))}
+            {!readOnly && (
+              <div className="flex items-center gap-1.5 mt-1">
+                <MoneyInput
+                  size="sm"
+                  className="!w-28"
+                  value={item.quotes?.[s.supplier_id] || 0}
+                  onChange={(v) => onQuote(s.supplier_id, v)}
+                  aria-label={`Giá ${s.name} báo cho ${item.name_snapshot}`}
+                />
+                {/* So ngay với lần mua trước — mối có tăng giá hay không nhìn là biết */}
+                <span className="text-2xs text-muted-ink truncate">
+                  {s.last_purchase_price > 0
+                    ? `lần trước ${money(s.last_purchase_price)}${s.last_ts ? ` · ${smartTime(s.last_ts)}` : ''}`
+                    : 'chưa mua của mối này bao giờ'}
+                </span>
+              </div>
+            )}
+            {readOnly && item.quotes?.[s.supplier_id] > 0 && (
+              <div className="text-2xs text-muted-ink">báo giá {money(item.quotes[s.supplier_id])}</div>
+            )}
+          </div>
+        );
+      })}
+
+      {total > 0 && (
+        <div className="text-2xs font-semibold text-right">
+          Tổng dự mua: <span className="tabular">{fq(total)}</span>
+          {list.filter((s) => qtyOf(s.supplier_id) > 0).length > 1 && ' (chia nhiều mối)'}
         </div>
       )}
+
       {!readOnly && (
         /* Gõ vài ký tự là lọc ra mối, khỏi cuộn danh sách dài (tài liệu 17, mục 2.1) */
         <Combo

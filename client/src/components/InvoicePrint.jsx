@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { barcodeSvg } from '../lib/barcode';
 import { Printer, X, Check } from 'lucide-react';
 import { money, n, qty as fq, datetime, date, readMoney, PAYMENT_LABEL } from '../lib/format';
 import { Button, Modal } from './ui';
@@ -60,12 +61,24 @@ function bankQr(store, amount, content) {
   return `https://img.vietqr.io/image/${code}-${store.bank_account}-compact.png?${params}`;
 }
 
-export default function InvoicePrint({ sale, store, invoice = {}, onClose, defaultFormat }) {
+export default function InvoicePrint({ sale, store, invoice = {}, onClose, defaultFormat, autoPrint = false }) {
   // Khổ giấy mặc định lấy từ Thiết lập, cho phép ghi đè khi gọi
   const [format, setFormat] = useState(defaultFormat || invoice.default_format || 'k80');
   // Bề rộng vùng in K80 tính bằng mm — chỉnh được khi máy in lệch mép
   const k80Width = Number(invoice.k80_width) || 72;
-  const [showCost, setShowCost] = useState(false);
+  /* Mấy công tắc này trước đây chỉ nằm trong Thiết lập chứ không ai đọc tới, nên
+     bật tắt chẳng thấy gì đổi. Giờ đọc thật (yêu cầu 28/09, mục I.4). */
+  const [showCost, setShowCost] = useState(invoice.show_cost === true);
+  /* Nợ cũ (trước hoá đơn này) và nợ mới (sau hoá đơn này) — máy chủ chụp lại lúc
+     bán nên in lại tờ cũ vẫn ra đúng con số hôm đó. Khách lẻ thì không có. */
+  const debt = {
+    before: sale?.customer_debt_before,
+    after: sale?.customer_debt_after,
+    showOld: sale?.customer_debt_after != null && invoice.show_debt_old !== false
+      && sale.customer_debt_before > 0,
+    showNew: sale?.customer_debt_after != null && invoice.show_debt_new !== false
+      && sale.customer_debt_after > 0,
+  };
 
 
   useEffect(() => {
@@ -77,11 +90,20 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  /* "Tự mở hộp thoại in ngay sau khi thanh toán" — công tắc này trước đây chỉ nằm
+     trong Thiết lập chứ không ai đọc. Chỉ tự in ở đường bán hàng (nơi gọi truyền
+     autoPrint), in lại hoá đơn cũ thì không tự bung hộp thoại máy in. */
+  useEffect(() => {
+    if (!autoPrint || !sale || invoice.auto_print !== true) return undefined;
+    const t = setTimeout(() => window.print(), 400);
+    return () => clearTimeout(t);
+  }, [autoPrint, sale?.id, invoice.auto_print]);
+
   const qrUrl = useMemo(() => {
-    if (!sale) return null;
+    if (!sale || invoice.show_qr_bank === false) return null;
     const due = sale.total - sale.paid > 0 ? sale.total - sale.paid : sale.total;
     return bankQr(store, due, sale.code);
-  }, [store, sale]);
+  }, [store, sale, invoice.show_qr_bank]);
 
   if (!sale) return null;
 
@@ -138,7 +160,8 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
             <span className="label">Xem trước</span>
             <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[45vh]">
               <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>
-                <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl} k80Width={k80Width} />
+                <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl}
+                  k80Width={k80Width} debt={debt} barcode={invoice.show_barcode === true} />
               </div>
             </div>
           </div>
@@ -147,7 +170,8 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
 
       {/* Vùng in thật — ẩn trên màn hình, chỉ hiện khi in */}
       <div className={`print-area size-${format}`}>
-        <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl} k80Width={k80Width} />
+        <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl}
+          k80Width={k80Width} debt={debt} barcode={invoice.show_barcode === true} />
       </div>
     </>
   );
@@ -155,15 +179,16 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
 
 /* ==================================================================== */
 
-function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width }) {
-  if (format === 'k80') return <K80 sale={sale} store={store} showCost={showCost} qrUrl={qrUrl} width={k80Width} />;
-  if (format === 'a5') return <Sheet sale={sale} store={store} showCost={showCost} qrUrl={qrUrl} size="a5" />;
-  return <Sheet sale={sale} store={store} showCost={showCost} qrUrl={qrUrl} size="a4" />;
+function InvoiceBody({ sale, store, format, showCost, qrUrl, k80Width, debt, barcode }) {
+  const common = { sale, store, showCost, qrUrl, debt, barcode };
+  if (format === 'k80') return <K80 {...common} width={k80Width} />;
+  if (format === 'a5') return <Sheet {...common} size="a5" />;
+  return <Sheet {...common} size="a4" />;
 }
 
 /* ------------------------- Khổ K80 (máy in nhiệt) ------------------- */
 
-function K80({ sale, store, showCost, qrUrl, width = 72 }) {
+function K80({ sale, store, showCost, qrUrl, debt, barcode, width = 72 }) {
   const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   return (
@@ -253,6 +278,14 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
               <td>CÒN NỢ:</td><td style={{ textAlign: 'right' }}>{n(remaining)}</td>
             </tr>
           )}
+          {debt?.showOld && (
+            <tr><td>Nợ cũ:</td><td style={{ textAlign: 'right' }}>{n(debt.before)}</td></tr>
+          )}
+          {debt?.showNew && (
+            <tr style={{ fontWeight: 700 }}>
+              <td>TỔNG NỢ:</td><td style={{ textAlign: 'right' }}>{n(debt.after)}</td>
+            </tr>
+          )}
           {showCost && (
             <tr style={{ fontSize: 9, fontStyle: 'italic' }}>
               <td>[Vốn {n(sale.cogs)} — Lãi {n(sale.total - sale.vat_amount - sale.cogs)}]</td><td />
@@ -299,6 +332,12 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
           *** PHIẾU TẠM TÍNH — CHƯA THANH TOÁN ***
         </div>
       )}
+      {/* Mã vạch số hoá đơn: quét là ra đúng tờ này lúc khách mang tới đổi trả
+          (công tắc trong Thiết lập, trước đây bật tắt chẳng thấy gì) */}
+      {barcode && (
+        <div style={{ textAlign: 'center', padding: '2px 0' }}
+          dangerouslySetInnerHTML={{ __html: barcodeSvg(sale.code, { width: 1.1, height: 26, fontSize: 7 }) }} />
+      )}
       <div style={{ textAlign: 'center', fontSize: 9, lineHeight: 1.4 }}>
         {store.footer_note || 'Cảm ơn Quý khách!'}
         {store.warranty_note && <div>{store.warranty_note}</div>}
@@ -310,7 +349,7 @@ function K80({ sale, store, showCost, qrUrl, width = 72 }) {
 
 /* ------------------------- Khổ A5 / A4 ------------------------------ */
 
-function Sheet({ sale, store, showCost, qrUrl, size }) {
+function Sheet({ sale, store, showCost, qrUrl, debt, barcode, size }) {
   const lines = printLines(sale);
   const remaining = sale.total - sale.paid;
   const isA4 = size === 'a4';
@@ -446,6 +485,18 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
               <td style={{ textAlign: 'right', fontWeight: 700 }}>{n(remaining)}</td>
             </tr>
           )}
+          {debt?.showOld && (
+            <tr>
+              <td colSpan={5} style={{ textAlign: 'right' }}>Nợ cũ</td>
+              <td style={{ textAlign: 'right' }}>{n(debt.before)}</td>
+            </tr>
+          )}
+          {debt?.showNew && (
+            <tr>
+              <td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>Tổng nợ sau hoá đơn này</td>
+              <td style={{ textAlign: 'right', fontWeight: 700 }}>{n(debt.after)}</td>
+            </tr>
+          )}
         </tfoot>
       </table>
 
@@ -474,6 +525,11 @@ function Sheet({ sale, store, showCost, qrUrl, size }) {
         <div style={{ fontSize: isA4 ? 12 : 10, marginTop: 6 }}>
           <b>Ghi chú:</b> {sale.note}
         </div>
+      )}
+
+      {barcode && (
+        <div style={{ marginTop: 6 }}
+          dangerouslySetInnerHTML={{ __html: barcodeSvg(sale.code, { width: 1.3, height: 30, fontSize: 9 }) }} />
       )}
 
       {/* Chữ ký + QR */}

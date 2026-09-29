@@ -564,10 +564,15 @@ export function Pager({ page, pageSize, total, onPage, onPageSize, sizes = PAGE_
 export function Combo({
   items, value, onChange, placeholder = 'Chọn...', render, filter,
   size = 'md', emptyText = 'Không tìm thấy', allowClear = true, className = '',
+  /* Dòng chỉ để nhìn, không chọn được — ví dụ nhóm hàng còn nhóm con: vẫn phải
+     hiện ra cho thấy cây nhóm, nhưng gán hàng thì chỉ gán vào nhóm nhỏ nhất. */
+  disabledOf = null,
   /* id để nhãn <Field htmlFor> trỏ tới, và để nơi khác đưa con trỏ về ô này */
   id,
   /* Mở hộp thoại là con trỏ vào ngay ô chọn này (Modal đọc dấu data-autofocus) */
   autoFocus = false,
+  /* Ô lọc không có nhãn nhìn thấy được thì phải có nhãn cho trình đọc màn hình */
+  ariaLabel,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -599,7 +604,11 @@ export function Combo({
   const onKey = (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, list.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (list[hi]) choose(list[hi]); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      /* Enter trên dòng chỉ để nhìn thì đừng chọn — giống như bấm chuột vào nó */
+      if (list[hi] && !(disabledOf && disabledOf(list[hi]))) choose(list[hi]);
+    }
     else if (e.key === 'Escape') { setOpen(false); }
   };
 
@@ -611,6 +620,7 @@ export function Combo({
         type="button"
         id={id}
         data-autofocus={autoFocus ? '' : undefined}
+        aria-label={ariaLabel}
         className={`field ${s} flex items-center justify-between gap-2 text-left cursor-pointer`}
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
@@ -652,6 +662,7 @@ export function Combo({
             )}
             {list.slice(0, 200).map((item, i) => {
               const r = render(item);
+              const off = disabledOf ? disabledOf(item) : false;
               return (
                 <li key={item.id}>
                   <button
@@ -659,8 +670,10 @@ export function Combo({
                     data-hi={i === hi ? '1' : '0'}
                     role="option"
                     aria-selected={item.id === value}
+                    disabled={off}
                     className={`w-full text-left px-2.5 py-1.5 transition-colors duration-100
-                                ${i === hi ? 'bg-accent-soft' : 'hover:bg-muted'}
+                                ${off ? 'opacity-55 cursor-not-allowed' : ''}
+                                ${i === hi && !off ? 'bg-accent-soft' : off ? '' : 'hover:bg-muted'}
                                 ${item.id === value ? 'font-semibold' : ''}`}
                     onMouseEnter={() => setHi(i)}
                     onClick={() => choose(item)}

@@ -20,10 +20,10 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useFetch, usePaged, useDebounced, fetchAllPages, useSearchMode } from '../lib/store';
-import { money, n, short, qty as fq, datetime, date, MOVE_LABEL } from '../lib/format';
+import { money, n, short, qty as fq, datetime, date, match, MOVE_LABEL } from '../lib/format';
 import {
   Button, IconButton, SearchInput, Select, Modal, Spinner, Empty, ErrorBox, Badge,
-  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager, PermGate,
+  Confirm, Field, MoneyInput, Textarea, Stat, Input, QtyInput, Tabs, Pager, PermGate, Combo,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import CategoryTree, { CategorySelect } from '../components/CategoryTree';
@@ -299,16 +299,32 @@ export default function Products() {
               {meta.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
             </Select>
           )}
-          <Select value={col.brand} onChange={(e) => setColField('brand')(e.target.value)} size="sm"
-            className="!w-auto" aria-label="Lọc theo hãng">
-            <option value="">Mọi hãng</option>
-            {(filterOpts?.brands || []).map((b) => <option key={b} value={b}>{b}</option>)}
-          </Select>
-          <Select value={col.location} onChange={(e) => setColField('location')(e.target.value)} size="sm"
-            className="!w-auto" aria-label="Lọc theo vị trí để hàng">
-            <option value="">Mọi vị trí</option>
-            {(filterOpts?.locations || []).map((l) => <option key={l} value={l}>{l}</option>)}
-          </Select>
+          {/* Hãng và vị trí kệ gõ tìm được (yêu cầu 28/09, mục II.3a): danh sách này
+              dài theo số hàng trong kho, cuộn tay mỏi tay mà vẫn trượt. */}
+          <Combo
+            items={(filterOpts?.brands || []).map((x) => ({ id: x, name: x }))}
+            value={col.brand || null}
+            onChange={(v) => setColField('brand')(v || '')}
+            placeholder="Mọi hãng"
+            emptyText="Không có hãng nào khớp"
+            filter={(x, q) => match(x.name, q)}
+            render={(x) => ({ label: x.name })}
+            size="sm"
+            className="!w-44"
+            ariaLabel="Lọc theo hãng"
+          />
+          <Combo
+            items={(filterOpts?.locations || []).map((x) => ({ id: x, name: x }))}
+            value={col.location || null}
+            onChange={(v) => setColField('location')(v || '')}
+            placeholder="Mọi vị trí"
+            emptyText="Không có vị trí nào khớp"
+            filter={(x, q) => match(x.name, q)}
+            render={(x) => ({ label: x.name })}
+            size="sm"
+            className="!w-44"
+            ariaLabel="Lọc theo vị trí để hàng"
+          />
           <Select value={active} onChange={(e) => setActive(e.target.value)} size="sm" className="!w-auto"
             aria-label="Lọc theo trạng thái kinh doanh">
             <option value="1">Đang kinh doanh</option>
