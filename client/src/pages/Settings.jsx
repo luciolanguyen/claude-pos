@@ -456,6 +456,21 @@ function PosSettings() {
               <Input id="pos-ptmax" type="number" min="0" max="100" value={form.points_max_percent ?? 50}
                 onChange={numSet('points_max_percent')} />
             </Field>
+            {/* Hạn dùng điểm (chủ tiệm chốt 30/09). Hết kỳ thì điểm cũ ngừng dùng được,
+                nhưng KHÔNG xoá dòng nào trong sổ — khách hỏi vẫn tra ra. */}
+            <Field label="Hạn dùng điểm" htmlFor="pos-ptexp"
+              hint={form.points_expiry === 'year'
+                ? 'Điểm tích trong năm nào chỉ dùng trong năm đó; sang 01/01 khách tính lại từ đầu.'
+                : form.points_expiry === 'lunar'
+                  ? 'Điểm dùng tới hết năm Âm; qua Tết khách tính lại từ đầu.'
+                  : 'Điểm cộng rồi thì còn mãi, không mất theo thời gian.'}>
+              <Select id="pos-ptexp" value={form.points_expiry || 'none'}
+                onChange={(e) => setForm((f) => ({ ...f, points_expiry: e.target.value }))}>
+                <option value="none">Không hết hạn — điểm tồn mãi</option>
+                <option value="year">Hết năm dương lịch (31/12) là bỏ</option>
+                <option value="lunar">Hết năm Âm lịch (trước Tết) là bỏ</option>
+              </Select>
+            </Field>
           </div>
         )}
       </div>

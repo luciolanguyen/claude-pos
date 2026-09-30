@@ -231,11 +231,21 @@ function PointsTab({ c, reloadKey = 0 }) {
             {n(data?.balance || 0)}
           </div>
           {quyRa > 0 && <div className="text-2xs text-emerald-900/70">đổi được {money(quyRa)}</div>}
+          {data?.period && (
+            <div className="text-2xs text-warn font-semibold mt-0.5">Dùng {data.period.label}</div>
+          )}
         </div>
         <div className="text-2xs text-muted-ink flex-1 min-w-[180px]">
           {cfg?.earn_per > 0 && <div>Mua {money(cfg.earn_per)} tiền hàng được 1 điểm.</div>}
           {cfg?.value > 0 && <div>1 điểm trừ được {money(cfg.value)} khi mua lần sau.</div>}
           {cfg?.min_redeem > 0 && <div>Mỗi lần dùng tối thiểu {cfg.min_redeem} điểm.</div>}
+          {data?.period && (
+            <div>
+              {data.expired > 0
+                ? `Đã có ${n(data.expired)} điểm hết hạn của kỳ trước — vẫn nằm trong sổ, chỉ không dùng được nữa.`
+                : 'Hết kỳ thì điểm chưa dùng sẽ bỏ, sổ vẫn giữ nguyên để tra lại.'}
+            </div>
+          )}
         </div>
         {can('settings.manage') && (
           <div className="flex gap-1.5">
@@ -266,8 +276,11 @@ function PointsTab({ c, reloadKey = 0 }) {
                 {data.rows.map((r) => {
                   const k = POINT_KINDS[r.kind] || { label: r.kind, tone: 'mute' };
                   return (
-                    <tr key={r.id}>
-                      <td className="whitespace-nowrap text-2xs text-muted-ink">{datetime(r.ts)}</td>
+                    <tr key={r.id} className={r.expired ? 'opacity-55' : ''}>
+                      <td className="whitespace-nowrap text-2xs text-muted-ink">
+                        {datetime(r.ts)}
+                        {r.expired && <span className="ml-1 text-warn">· hết hạn</span>}
+                      </td>
                       <td><Badge tone={k.tone}>{k.label}</Badge></td>
                       <td className="font-mono text-2xs">{r.ref_code || '—'}</td>
                       <td className={`text-right tabular font-semibold ${r.points < 0 ? 'text-danger' : 'text-emerald-700'}`}>

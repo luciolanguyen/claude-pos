@@ -516,6 +516,9 @@ export default function PaymentModal({ open, onClose, totals, customer, onSubmit
                 <span className="flex-1 min-w-0">
                   Khách có <b className="tabular">{n(pointsBal)}</b> điểm
                   <span className="text-2xs text-muted-ink"> · 1 điểm = {money(pcfg.value)}</span>
+                  {pcfg.period && (
+                    <span className="text-2xs text-warn"> · dùng {pcfg.period.label}</span>
+                  )}
                 </span>
                 {pointsUse > 0 && (
                   <IconButton icon={X} size={14} label="Bỏ dùng điểm" onClick={() => setPointsUse(0)} />

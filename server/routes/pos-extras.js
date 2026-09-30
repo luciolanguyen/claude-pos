@@ -14,7 +14,7 @@ import { verifyPin, issueApproval, posPolicy, maxDebtDaysFor } from '../policy.j
 import { customerBuyers, proxyStats } from '../customers.js';
 import { customerLedger, overdueInvoices, debtBreakdown } from '../debt.js';
 import { lookupVoucher } from '../vouchers.js';
-import { pointsBalance, loyaltyConfig } from '../loyalty.js';
+import { pointsBalance, loyaltyConfig, pointsPeriod } from '../loyalty.js';
 import { attendanceOfDay, saveAttendance } from '../payroll.js';
 
 const r = Router();
@@ -62,7 +62,7 @@ r.get('/customers/:id/credit-status', (req, res) => {
     /* Điểm tích luỹ (mục IV.1): hộp thanh toán đã hỏi công nợ ở đây rồi,
        gửi kèm luôn số điểm để không phải gọi thêm một lượt nữa */
     points: pointsBalance(c.id),
-    points_config: loyaltyConfig(),
+    points_config: { ...loyaltyConfig(), period: pointsPeriod() },
     max_debt_days: maxDays,
     blocked_overdue: overdue.length > 0,
     overdue: overdue.map((i) => ({
@@ -134,7 +134,7 @@ r.get('/customers/:id/ledger', (req, res) => {
     ...led,
     /* Điểm tích luỹ của khách (mục IV.1) — quầy mở sổ nợ là thấy luôn */
     points: pointsBalance(c.id),
-    points_config: loyaltyConfig(),
+    points_config: { ...loyaltyConfig(), period: pointsPeriod() },
     max_debt_days: maxDays,
     overdue_count: overdue.length,
     over_limit: c.debt_limit > 0 && led.debt > c.debt_limit,

@@ -13,6 +13,7 @@
    lối `payroll_entries` của bảng lương.
    ==================================================================== */
 import { get, all, run, getSettings } from './db.js';
+import { solarToLunar, lunarYearRange } from '../client/src/lib/lunar.js';
 
 const badRequest = (message, code) => Object.assign(new Error(message), { status: 400, code });
 const vnd = (v) => Math.round(Number(v) || 0).toLocaleString('vi-VN');
@@ -32,14 +33,51 @@ export function loyaltyConfig() {
     min_redeem: Math.max(0, Math.round(num(p.points_min_redeem, 10))),
     /* Điểm trừ tối đa bao nhiêu phần trăm tiền hoá đơn */
     max_percent: Math.min(100, Math.max(0, num(p.points_max_percent, 50))),
+    /* Hạn dùng điểm (chủ tiệm chốt 30/09):
+         none  — điểm tồn mãi (mặc định)
+         year  — hết năm dương lịch là bỏ, sang 01/01 tính lại từ đầu
+         lunar — hết năm Âm là bỏ, sang mùng 1 Tết tính lại từ đầu */
+    expiry: ['year', 'lunar'].includes(p.points_expiry) ? p.points_expiry : 'none',
   };
 }
 
-/** Số điểm khách đang có. Khách lẻ (không có hồ sơ) thì không có điểm. */
-export function pointsBalance(customerId) {
+const todayIso = () => new Date().toLocaleDateString('sv-SE');
+
+/**
+ * Khoảng thời gian điểm còn dùng được, hay null nếu điểm không hết hạn.
+ *
+ * KHÔNG xoá dòng nào trong sổ khi hết năm: chỉ ngừng tính điểm ngoài kỳ vào
+ * số dư. Khách hỏi "điểm của tôi đâu" thì mở sổ ra vẫn thấy đủ.
+ */
+export function pointsPeriod(cfg = loyaltyConfig()) {
+  if (cfg.expiry === 'year') {
+    const y = todayIso().slice(0, 4);
+    return { kind: 'year', from: `${y}-01-01`, to: `${y}-12-31`, label: `hết ngày 31/12/${y}` };
+  }
+  if (cfg.expiry === 'lunar') {
+    const r = lunarYearRange(solarToLunar(todayIso()).year);
+    const vn = (iso) => String(iso).split('-').reverse().join('/');
+    return { kind: 'lunar', from: r.from, to: r.to, label: `hết ngày ${vn(r.to)} (trước Tết)` };
+  }
+  return null;
+}
+
+/**
+ * Số điểm khách đang dùng được. Khách lẻ (không có hồ sơ) thì không có điểm.
+ *
+ * Bật hạn dùng điểm thì chỉ cộng những dòng NẰM TRONG kỳ hiện tại. Chặn dưới
+ * ở 0 vì một trường hợp có thật: đơn bán năm ngoái, sang năm mới khách trả
+ * hàng — dòng thu hồi rơi vào kỳ này trong khi dòng cộng của nó đã hết hạn.
+ */
+export function pointsBalance(customerId, cfg = loyaltyConfig()) {
   const id = Number(customerId) || 0;
   if (!id) return 0;
-  return get('SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries WHERE customer_id = ?', [id]).n;
+  const p = pointsPeriod(cfg);
+  const n = p
+    ? get(`SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries
+           WHERE customer_id = ? AND date(ts) BETWEEN date(?) AND date(?)`, [id, p.from, p.to]).n
+    : get('SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries WHERE customer_id = ?', [id]).n;
+  return Math.max(0, n);
 }
 
 function addEntry({
@@ -172,14 +210,22 @@ export function adjustPoints({ customerId, points, userId = null, note }) {
   return pointsBalance(id);
 }
 
-/** Sổ điểm của một khách, mới nhất trên cùng. */
+/** Sổ điểm của một khách, mới nhất trên cùng. Dòng ngoài kỳ đánh dấu hết hạn. */
 export function pointsLedger(customerId, { limit = 20, offset = 0 } = {}) {
   const id = Number(customerId) || 0;
+  const cfg = loyaltyConfig();
+  const p = pointsPeriod(cfg);
   const total = get('SELECT COUNT(*) AS n FROM loyalty_entries WHERE customer_id = ?', [id]).n;
   const rows = all(`
     SELECT e.*, u.full_name AS user_name
     FROM loyalty_entries e LEFT JOIN users u ON u.id = e.user_id
     WHERE e.customer_id = ?
     ORDER BY e.id DESC LIMIT ? OFFSET ?`, [id, limit, offset]);
-  return { balance: pointsBalance(id), rows, total };
+  for (const r of rows) r.expired = !!p && (r.ts.slice(0, 10) < p.from || r.ts.slice(0, 10) > p.to);
+  /* Số điểm đã hết hạn — để quầy trả lời được câu "điểm cũ của tôi đâu rồi" */
+  const expired = p
+    ? Math.max(0, get(`SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries
+                       WHERE customer_id = ? AND date(ts) < date(?)`, [id, p.from]).n)
+    : 0;
+  return { balance: pointsBalance(id, cfg), rows, total, period: p, expired };
 }

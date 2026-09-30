@@ -184,6 +184,53 @@ export default async function run() {
     await setCfg();
   }
 
+  section('ĐỢT 4 — hạn dùng điểm: hết năm dương lịch là bỏ');
+  {
+    const nam = new Date().getFullYear();
+    const kh2 = await post('/customers', { name: `Khách hết hạn ${stamp}`, phone: `08${stamp}66` });
+
+    /* Một đơn của NĂM NGOÁI và một đơn của năm nay, cùng 500.000 đ = 50 điểm */
+    await sell({ customer_id: kh2.id, paid: 500000, received: 500000, ts: `${nam - 1}-06-15 09:00:00` });
+    await sell({ customer_id: kh2.id, paid: 500000, received: 500000 });
+    ok('chưa bật hạn thì điểm hai năm cộng chung', (await balance(kh2.id)) === 100,
+      `${await balance(kh2.id)} điểm`);
+
+    await setCfg({ points_expiry: 'year' });
+    ok('bật hạn theo năm dương lịch: chỉ còn điểm của năm nay', (await balance(kh2.id)) === 50,
+      `${await balance(kh2.id)} điểm`);
+
+    const so = await get(`/customers/${kh2.id}/points?page_size=50`);
+    ok('sổ vẫn giữ đủ dòng, dòng năm ngoái đánh dấu hết hạn',
+      so.rows.length === 2 && so.rows.filter((r) => r.expired).length === 1);
+    ok('máy nói rõ có bao nhiêu điểm đã hết hạn', so.expired === 50, `${so.expired} điểm`);
+    ok('kỳ hiện tại đúng năm nay',
+      so.period?.kind === 'year' && so.period.from === `${nam}-01-01` && so.period.to === `${nam}-12-31`);
+
+    ok('không xài được phần điểm đã hết hạn',
+      (await code(() => sell({ customer_id: kh2.id, paid: 0, points_used: 60 }))) === 'POINTS_NOT_ENOUGH');
+
+    /* 50 điểm còn hạn vẫn dùng bình thường: đơn 500.000 đ, trần 50% = 250.000 đ */
+    const d = await sell({ customer_id: kh2.id, paid: 450000, received: 450000, points_used: 50 });
+    ok('điểm còn hạn vẫn trừ vào hoá đơn được', d.points_amount === 50000, money(d.points_amount));
+
+    await setCfg({ points_expiry: 'none' });
+    ok('bỏ hạn thì điểm cũ dùng lại được', (await balance(kh2.id)) === 100,
+      `${await balance(kh2.id)} điểm`);
+  }
+
+  section('ĐỢT 4 — hạn dùng điểm theo năm Âm lịch');
+  {
+    await setCfg({ points_expiry: 'lunar' });
+    const cfg = await get('/loyalty/config');
+    const hom_nay = new Date().toLocaleDateString('sv-SE');
+    ok('kỳ tính theo năm Âm và bao trọn hôm nay',
+      cfg.period?.kind === 'lunar' && cfg.period.from <= hom_nay && cfg.period.to >= hom_nay,
+      `${cfg.period?.from} → ${cfg.period?.to}`);
+    ok('có câu nhắc hạn dùng cho quầy đọc', /Tết/.test(cfg.period?.label || ''), cfg.period?.label);
+    await setCfg({ points_expiry: 'none' });
+    ok('tắt hạn thì máy không trả kỳ nào nữa', (await get('/loyalty/config')).period === null);
+  }
+
   section('ĐỢT 4 — sổ điểm và số dư luôn khớp nhau');
   {
     const so = await get(`/customers/${kh.id}/points?page_size=200`);

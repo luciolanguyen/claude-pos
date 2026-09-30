@@ -6,12 +6,15 @@
    ==================================================================== */
 import { Router } from 'express';
 import { get, pageParams } from '../db.js';
-import { loyaltyConfig, pointsLedger, adjustPoints } from '../loyalty.js';
+import { loyaltyConfig, pointsPeriod, pointsLedger, adjustPoints } from '../loyalty.js';
 
 const r = Router();
 
 /** Thiết lập đang áp dụng — màn hình bán hàng cần biết 1 điểm bằng bao nhiêu tiền. */
-r.get('/loyalty/config', (req, res) => res.json(loyaltyConfig()));
+r.get('/loyalty/config', (req, res) => {
+  const cfg = loyaltyConfig();
+  res.json({ ...cfg, period: pointsPeriod(cfg) });
+});
 
 /** Số dư và sổ điểm của một khách. */
 r.get('/customers/:id/points', (req, res) => {

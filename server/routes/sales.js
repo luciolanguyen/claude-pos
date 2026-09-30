@@ -14,7 +14,7 @@ import { isLoginRequired } from '../guard.js';
 import { salaryEmployee, recordSalePurchase, reverseSalePurchase } from '../payroll.js';
 import {
   loyaltyConfig, earnBase, earnPoints, redeemPlan, redeemPoints, revokePoints, refundPoints,
-  pointsBalance,
+  pointsBalance, pointsPeriod,
 } from '../loyalty.js';
 
 const r = Router();
@@ -1502,7 +1502,7 @@ r.get('/customers/:id/quick', (req, res) => {
   c.over_limit = c.debt_limit > 0 && c.debt > c.debt_limit;
   /* Điểm tích luỹ (mục IV.1): quầy chọn khách là biết ngay còn bao nhiêu điểm */
   c.points = pointsBalance(c.id);
-  c.points_config = loyaltyConfig();
+  c.points_config = { ...loyaltyConfig(), period: pointsPeriod() };
   c.recent_sales = all(`
     SELECT s.id, s.code, s.ts, s.total, s.paid, s.payment_method,
            (s.total - s.paid) AS remaining,
