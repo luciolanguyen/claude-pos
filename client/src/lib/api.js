@@ -120,7 +120,13 @@ export const api = {
   cashAccounts: () => request('GET', '/cash/accounts'),
   cashTransactions: (params) => request('GET', '/cash/transactions' + qs(params)),
   cashSummary: (params) => request('GET', '/cash/summary' + qs(params)),
-  cashCategories: () => request('GET', '/cash/categories'),
+  cashCategories: (params) => request('GET', '/cash/categories' + qs(params)),
+  /* Sổ quỹ (soát quỹ 30/09): huỵ phiếu thay cho xoá, sửa phiếu, khai loại thu chi */
+  cancelCashTx: (id, reason) => request('POST', `/cash/transactions/${id}/cancel`, { reason }),
+  updateCashTx: (id, body) => request('PUT', `/cash/transactions/${id}`, body),
+  createCashCategory: (body) => request('POST', '/cash/categories', body),
+  updateCashCategory: (id, body) => request('PUT', `/cash/categories/${id}`, body),
+  deleteCashCategory: (id) => request('DELETE', `/cash/categories/${id}`),
 
   /* --- Báo cáo --- */
   dashboard: (params) => request('GET', '/dashboard' + qs(params)),

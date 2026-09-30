@@ -541,7 +541,7 @@ r.get('/consign-statement', (req, res) => {
     WHERE partner_id = ? AND date(ts) < date(?)`, [partnerId, from]).v;
   const paidBefore = get(`
     SELECT COALESCE(SUM(ct.amount), 0) AS v
-    FROM cash_transactions ct JOIN consign_settlements st ON st.id = ct.ref_id
+    FROM cash_live ct JOIN consign_settlements st ON st.id = ct.ref_id
     WHERE ct.ref_type = 'consign_settlement' AND st.partner_id = ? AND date(ct.ts) < date(?)`, [partnerId, from]).v;
   const opening = soldBefore - discountBefore - paidBefore;
 
@@ -564,7 +564,7 @@ r.get('/consign-statement', (req, res) => {
     ORDER BY st.ts, st.id`, [partnerId, from, to]);
   const payments = all(`
     SELECT ct.id, ct.code, ct.ts, ct.amount, st.code AS settlement_code
-    FROM cash_transactions ct JOIN consign_settlements st ON st.id = ct.ref_id
+    FROM cash_live ct JOIN consign_settlements st ON st.id = ct.ref_id
     WHERE ct.ref_type = 'consign_settlement' AND st.partner_id = ?
       AND date(ct.ts) BETWEEN date(?) AND date(?)
     ORDER BY ct.ts, ct.id`, [partnerId, from, to]);

@@ -145,6 +145,8 @@ const TABLES = [
   /* Plan 30 — bộ đếm và sổ đăng ký mã vạch. Là DANH MỤC: xoá dữ liệu giao dịch
      KHÔNG được xoá hai bảng này, kẻo mã cũ bị cấp lại cho hàng mới */
   'barcode_counter', 'barcodes',
+  /* Danh mục loại thu / chi của sổ quỹ — là DANH MỤC, xoá giao dịch không được xoá */
+  'cash_categories',
   /* Plan 28 — lương nhân viên. Thứ tự: bảng cha trước bảng con, vì khôi phục
      chèn theo thứ tự này còn xoá thì đi ngược lại */
   'employees', 'payroll_settlements', 'payroll_cycles', 'payroll_entries', 'payroll_photos',
@@ -275,6 +277,7 @@ r.post('/reset-all', (req, res) => {
   const ORDER = [
     'voucher_uses', 'vouchers', 'loyalty_entries',
     'debt_allocations', 'debt_adjustments', 'debt_closings',
+    'cash_categories',
     /* Lương: thưởng năm, ảnh -> sổ lương -> kỳ -> phiếu lương -> nhân viên */
     'payroll_awards', 'payroll_photos', 'payroll_attendance', 'payroll_entries', 'payroll_cycles',
     'payroll_settlements', 'payroll_closed_days', 'employees',

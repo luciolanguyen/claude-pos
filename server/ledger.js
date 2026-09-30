@@ -50,7 +50,7 @@ function eventsSql(type, onePartner) {
         UNION ALL
         SELECT CASE WHEN t.direction = 'in' THEN 'receipt' ELSE 'refund' END, t.id, t.code, t.ts, t.partner_id,
                CASE WHEN t.direction = 'in' THEN -t.amount ELSE t.amount END, t.note
-        FROM cash_transactions t
+        FROM cash_live t
         WHERE t.partner_type = 'customer' AND ${p('t.partner_id')} AND t.category IN ('debt_in', 'debt_out')
         UNION ALL
         SELECT 'adjust', a.id, a.code, a.ts, a.partner_id, a.amount, a.reason
@@ -74,7 +74,7 @@ function eventsSql(type, onePartner) {
       UNION ALL
       SELECT CASE WHEN t.direction = 'out' THEN 'payment' ELSE 'refund_in' END, t.id, t.code, t.ts, t.partner_id,
              CASE WHEN t.direction = 'out' THEN -t.amount ELSE t.amount END, t.note
-      FROM cash_transactions t
+      FROM cash_live t
       WHERE t.partner_type = 'supplier' AND ${p('t.partner_id')} AND t.category IN ('debt_in', 'debt_out')
       UNION ALL
       SELECT 'adjust', a.id, a.code, a.ts, a.partner_id, a.amount, a.reason

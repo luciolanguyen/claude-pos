@@ -103,16 +103,20 @@ r.get('/dashboard', (req, res) => {
   for (const a of accounts) a.balance = accountBalance(a.id);
   const cashTotal = accounts.reduce((a, x) => a + x.balance, 0);
 
+  /* Chuyển quỹ KHÔNG phải thu, cũng không phải chi (soát quỹ 30/09): nộp tiền
+     mặt vào ngân hàng mà tính cả hai đầu thì thẻ "tiền hôm nay" phồng lên gấp đôi
+     trong khi tiệm không thu thêm đồng nào. */
   const cashToday = get(`
     SELECT COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0) AS tin,
            COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) AS tout
-    FROM cash_transactions WHERE date(ts) = date(?)`, [d]);
+    FROM cash_live
+    WHERE date(ts) = date(?) AND category NOT IN ('transfer_in', 'transfer_out')`, [d]);
 
   // Chi phí trong kỳ (không tính mua hàng & trả nợ)
   const expenses = all(`
-    SELECT category, SUM(amount) AS amount FROM cash_transactions
+    SELECT category, SUM(amount) AS amount FROM cash_live
     WHERE direction = 'out' AND date(ts) BETWEEN date(?) AND date(?)
-      AND category NOT IN ('purchase','debt_out','transfer_out','sale_return')
+      AND category IN (SELECT code FROM cash_categories WHERE direction = 'out' AND is_expense = 1)
     GROUP BY category ORDER BY amount DESC`, [from, to]);
 
   // Khách hàng mua nhiều nhất
@@ -277,10 +281,13 @@ r.get('/reports/pnl', (req, res) => {
     SELECT COALESCE(SUM(total), 0) AS total FROM sale_returns
     WHERE date(ts) BETWEEN date(?) AND date(?)`, [from, to]);
 
+  /* Khoản nào là chi phí vận hành thì khai ngay ở danh mục loại thu chi (cờ
+     is_expense), không liệt kê cứng ở đây nữa — trước nay khai thêm một loại chi mới
+     mà quên sửa chỗ này là báo cáo lãi lỗ sai âm thầm. */
   const expenses = all(`
-    SELECT category, SUM(amount) AS amount FROM cash_transactions
+    SELECT category, SUM(amount) AS amount FROM cash_live
     WHERE direction = 'out' AND date(ts) BETWEEN date(?) AND date(?)
-      AND category NOT IN ('purchase','debt_out','transfer_out','sale_return','capital_out')
+      AND category IN (SELECT code FROM cash_categories WHERE direction = 'out' AND is_expense = 1)
     GROUP BY category ORDER BY amount DESC`, [from, to]);
 
   const expenseTotal = expenses.reduce((a, x) => a + x.amount, 0);
