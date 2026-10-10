@@ -442,7 +442,7 @@ function returnDetail(id) {
   /* Các lần NCC hoàn tiền mặt */
   pr.refunds = all(`
     SELECT t.id, t.code, t.ts, t.amount, a.name AS account_name
-    FROM cash_transactions t LEFT JOIN cash_accounts a ON a.id = t.account_id
+    FROM cash_live t LEFT JOIN cash_accounts a ON a.id = t.account_id
     WHERE t.ref_type = 'purchase_return' AND t.ref_id = ? AND t.direction = 'in'
     ORDER BY t.ts, t.id`, [pr.id]);
   return withStatus(pr);

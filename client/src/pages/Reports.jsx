@@ -339,12 +339,19 @@ function PnlReport({ r }) {
           <Row label="Lợi nhuận gộp" value={data.gross_profit} bold tone="good"
             hint={`Tỷ suất lợi nhuận gộp ${pct(data.margin)}`} />
           <Row label="Trừ: chi phí vận hành" value={-data.expense_total} indent />
+          {data.points?.money > 0 && (
+            <Row label={`Trừ: khách trả bằng điểm tích luỹ (${data.points.used} điểm)`}
+              value={-data.points.money} indent />
+          )}
           <Row label="LỢI NHUẬN THỰC" value={data.net_profit} bold
             tone={data.net_profit >= 0 ? 'good' : 'bad'} />
 
           <p className="text-2xs text-muted-ink mt-3 leading-relaxed">
             Số liệu tính theo hoá đơn đã hoàn tất trong kỳ. Tiền chủ rút vốn và tiền
             trả nợ nhà cung cấp không tính là chi phí.
+            {data.points?.earned > 0 && (
+              <> Trong kỳ tiệm phát ra {data.points.earned} điểm cho khách.</>
+            )}
           </p>
         </div>
 

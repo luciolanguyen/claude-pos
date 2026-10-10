@@ -44,7 +44,7 @@ export function debtBreakdown(customerId) {
   const payments = get(`
     SELECT COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0)
          - COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) AS d
-    FROM cash_transactions
+    FROM cash_live
     WHERE partner_type = 'customer' AND partner_id = ? AND category IN ('debt_in', 'debt_out')`,
   [customerId]).d;
 
@@ -191,7 +191,7 @@ export function customerLedger(customerId, limit = 200) {
   const receipts = all(`
     SELECT t.id, t.code, t.ts, t.amount, t.direction, t.category, t.note,
            a.type AS account_type, a.name AS account_name, u.full_name AS user_name
-    FROM cash_transactions t
+    FROM cash_live t
     JOIN cash_accounts a ON a.id = t.account_id
     LEFT JOIN users u ON u.id = t.user_id
     WHERE t.partner_type = 'customer' AND t.partner_id = ? AND t.category IN ('debt_in', 'debt_out')

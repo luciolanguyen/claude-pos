@@ -18,7 +18,7 @@ r.get('/dashboard', (req, res) => {
            /* Lãi TRỪ luôn tiền xe trả người giao (yêu cầu 28/09, mục II.1): trước
               đây phí giao khách trả được cộng vào lãi còn tiền xe thì không trừ đâu
               cả, nên đơn giao hàng nhìn lúc nào cũng lãi hơn thật. */
-           COALESCE(SUM(total - vat_amount - cogs - shipper_fee), 0) AS profit,
+           COALESCE(SUM(total - vat_amount - cogs - shipper_fee - points_amount), 0) AS profit,
            COALESCE(SUM(cogs), 0) AS cogs,
            COUNT(*) AS orders,
            COALESCE(SUM(total - paid), 0) AS unpaid
@@ -33,7 +33,7 @@ r.get('/dashboard', (req, res) => {
   const dailyRevenue = all(`
     SELECT date(ts) AS day,
            SUM(total) AS revenue,
-           SUM(total - vat_amount - cogs - shipper_fee) AS profit,
+           SUM(total - vat_amount - cogs - shipper_fee - points_amount) AS profit,
            COUNT(*) AS orders
     FROM sales WHERE status = 'done' AND date(ts) >= date(?, '-29 days')
     GROUP BY date(ts) ORDER BY day`, [d]);
@@ -103,16 +103,20 @@ r.get('/dashboard', (req, res) => {
   for (const a of accounts) a.balance = accountBalance(a.id);
   const cashTotal = accounts.reduce((a, x) => a + x.balance, 0);
 
+  /* Chuyển quỹ KHÔNG phải thu, cũng không phải chi (soát quỹ 30/09): nộp tiền
+     mặt vào ngân hàng mà tính cả hai đầu thì thẻ "tiền hôm nay" phồng lên gấp đôi
+     trong khi tiệm không thu thêm đồng nào. */
   const cashToday = get(`
     SELECT COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0) AS tin,
            COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) AS tout
-    FROM cash_transactions WHERE date(ts) = date(?)`, [d]);
+    FROM cash_live
+    WHERE date(ts) = date(?) AND category NOT IN ('transfer_in', 'transfer_out')`, [d]);
 
   // Chi phí trong kỳ (không tính mua hàng & trả nợ)
   const expenses = all(`
-    SELECT category, SUM(amount) AS amount FROM cash_transactions
+    SELECT category, SUM(amount) AS amount FROM cash_live
     WHERE direction = 'out' AND date(ts) BETWEEN date(?) AND date(?)
-      AND category NOT IN ('purchase','debt_out','transfer_out','sale_return')
+      AND category IN (SELECT code FROM cash_categories WHERE direction = 'out' AND is_expense = 1)
     GROUP BY category ORDER BY amount DESC`, [from, to]);
 
   // Khách hàng mua nhiều nhất
@@ -178,7 +182,7 @@ r.get('/reports/sales', (req, res) => {
            COALESCE(SUM(s.vat_amount), 0) AS vat,
            COALESCE(SUM(s.total), 0) AS revenue,
            COALESCE(SUM(s.cogs), 0) AS cogs,
-           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee), 0) AS profit,
+           COALESCE(SUM(s.total - s.vat_amount - s.cogs - s.shipper_fee - s.points_amount), 0) AS profit,
            COALESCE(SUM(s.total - s.paid), 0) AS unpaid
     FROM sales s
     LEFT JOIN users u ON u.id = s.user_id
@@ -277,13 +281,23 @@ r.get('/reports/pnl', (req, res) => {
     SELECT COALESCE(SUM(total), 0) AS total FROM sale_returns
     WHERE date(ts) BETWEEN date(?) AND date(?)`, [from, to]);
 
+  /* Khoản nào là chi phí vận hành thì khai ngay ở danh mục loại thu chi (cờ
+     is_expense), không liệt kê cứng ở đây nữa — trước nay khai thêm một loại chi mới
+     mà quên sửa chỗ này là báo cáo lãi lỗ sai âm thầm. */
   const expenses = all(`
-    SELECT category, SUM(amount) AS amount FROM cash_transactions
+    SELECT category, SUM(amount) AS amount FROM cash_live
     WHERE direction = 'out' AND date(ts) BETWEEN date(?) AND date(?)
-      AND category NOT IN ('purchase','debt_out','transfer_out','sale_return','capital_out')
+      AND category IN (SELECT code FROM cash_categories WHERE direction = 'out' AND is_expense = 1)
     GROUP BY category ORDER BY amount DESC`, [from, to]);
 
   const expenseTotal = expenses.reduce((a, x) => a + x.amount, 0);
+  /* Điểm tích luỹ (mục IV.1): phát ra bao nhiêu điểm, khách đã dùng bao nhiêu,
+     quy ra bao nhiêu tiền — để chủ tiệm biết chương trình này tốn bao nhiêu. */
+  const points = get(`
+    SELECT COALESCE(SUM(CASE WHEN points > 0 THEN points END), 0) AS earned,
+           COALESCE(SUM(CASE WHEN points < 0 THEN -points END), 0) AS used,
+           COALESCE(SUM(CASE WHEN kind = 'redeem' THEN money END), 0) AS money
+    FROM loyalty_entries WHERE date(ts) BETWEEN date(?) AND date(?)`, [from, to]);
   const netRevenue = sales.total - sales.vat - returns.total;
   const grossProfit = netRevenue - sales.cogs;
 
@@ -294,7 +308,10 @@ r.get('/reports/pnl', (req, res) => {
     cogs: sales.cogs, gross_profit: grossProfit,
     margin: netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0,
     expenses, expense_total: expenseTotal,
-    net_profit: grossProfit - expenseTotal,
+    points,
+    /* Tiền khách gán bằng điểm không vào két mà cũng không nằm trong sổ chi,
+       nên phải trừ riêng ở đây (mục IV.1) */
+    net_profit: grossProfit - expenseTotal - points.money,
   });
 });
 

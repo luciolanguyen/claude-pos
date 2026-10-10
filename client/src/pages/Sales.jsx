@@ -505,6 +505,10 @@ function SaleDetail({
             </div>
           )}
           {detail.voucher_amount > 0 && <div>Trừ phiếu đổi hàng: {money(detail.voucher_amount)}</div>}
+          {detail.points_amount > 0 && (
+            <div>Trừ điểm tích luỹ: {money(detail.points_amount)} ({detail.points_used} điểm)</div>
+          )}
+          {detail.points_earned > 0 && <div>Điểm cộng cho khách: {detail.points_earned} điểm</div>}
           {detail.salary_amount > 0 && (
             <div>
               Trừ vào lương <b>{detail.salary_employee_name || 'nhân viên'}</b>: {money(detail.salary_amount)}

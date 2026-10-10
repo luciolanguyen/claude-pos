@@ -188,10 +188,11 @@ r.get('/suppliers/:id', (req, res) => {
     FROM purchase_returns pr LEFT JOIN purchases p ON p.id = pr.purchase_id
     WHERE pr.supplier_id = ? ORDER BY pr.id DESC LIMIT 200`, [s.id]);
   s.payments = all(`
-    SELECT t.*, a.name AS account_name, u.full_name AS user_name
-    FROM cash_transactions t
+    SELECT t.*, a.name AS account_name, u.full_name AS user_name, cc.label AS category_label
+    FROM cash_live t
     LEFT JOIN cash_accounts a ON a.id = t.account_id
     LEFT JOIN users u ON u.id = t.user_id
+    LEFT JOIN cash_categories cc ON cc.code = t.category
     WHERE t.partner_type = 'supplier' AND t.partner_id = ? ORDER BY t.id DESC LIMIT 200`, [s.id]);
   /* Phiếu còn nợ, cũ nhất trước — để kế toán thấy nên trả phiếu nào */
   s.unpaid = all(`
@@ -502,6 +503,8 @@ r.get('/customers', (req, res) => {
     c.total_spent = agg.total;
     c.order_count = agg.n;
     c.last_order = agg.last_ts;
+    /* Điểm tích luỹ (yêu cầu 28/09, mục IV.1) — số dư là tổng sổ điểm */
+    c.points = get('SELECT COALESCE(SUM(points), 0) AS n FROM loyalty_entries WHERE customer_id = ?', [c.id]).n;
     /* Bóc nợ theo từng hoá đơn tốn công hơn, chỉ làm khi màn hình cần */
     if (wantDetail) Object.assign(c, debtDetail(c));
   }
@@ -542,7 +545,7 @@ r.get('/customers/:id', (req, res) => {
     'SELECT id, code, ts, total, refunded, reason FROM sale_returns WHERE customer_id = ? ORDER BY id DESC LIMIT 50',
     [c.id]);
   c.payments = all(
-    `SELECT * FROM cash_transactions
+    `SELECT * FROM cash_live
      WHERE partner_type = 'customer' AND partner_id = ? ORDER BY id DESC LIMIT 100`, [c.id]);
   // Sản phẩm khách hay mua
   c.top_products = all(`

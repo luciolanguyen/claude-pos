@@ -90,6 +90,14 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat }) {
       <div style={{ textAlign: 'center', fontWeight: 700, fontSize: 14, letterSpacing: 1 }}>
         {t.title}
       </div>
+      {/* Phiếu đã huỵ vẫn in lại được để tra cứu, nhưng phải đóng dấu thật rõ — đừng
+          để ai cầm tờ cũ đi đối chiếu (soát quỹ 30/09) */}
+      {voucher.cancelled_at && (
+        <div style={{ textAlign: 'center', fontWeight: 800, color: '#B91C1C', border: '2px solid #B91C1C',
+          padding: '2px 0', margin: '3px 0', letterSpacing: 2 }}>
+          ĐÃ HUỲ
+        </div>
+      )}
       <div style={{ textAlign: 'center' }}>
         Số: {voucher.code}<br />
         {datetime(voucher.ts)}
@@ -207,6 +215,12 @@ export default function CashVoucherPrint({ voucher, onClose, defaultFormat }) {
 
       <div style={{ textAlign: 'center', margin: px('14px 0 4px', '20px 0 6px') }}>
         <div style={{ fontWeight: 800, fontSize: px(17, 20), letterSpacing: 2 }}>{t.title}</div>
+        {voucher.cancelled_at && (
+          <div style={{ fontWeight: 800, color: '#B91C1C', border: '2px solid #B91C1C',
+            display: 'inline-block', padding: '1px 10px', marginTop: 3, letterSpacing: 2 }}>
+            ĐÃ HUỲ{voucher.cancel_reason ? ` — ${voucher.cancel_reason}` : ''}
+          </div>
+        )}
         <div style={{ fontSize: px(10, 11), fontStyle: 'italic' }}>Ngày {date(voucher.ts)}</div>
       </div>
 

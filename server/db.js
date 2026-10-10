@@ -580,6 +580,34 @@ addColumns('pos_featured', { set_id: 'INTEGER' });
 /* Báo giá gõ thẳng trên phiếu báo hết hàng (tài liệu 17, mục 2.2) */
 addColumns('requisition_item_suppliers', { quote_price: 'INTEGER' });
 
+/* Huỷ phiếu quỹ thay cho xoá (soát quỹ 30/09). Phiếu ghi sai thì đóng dấu "đã huỷ",
+   vẫn nằm nguyên trong sổ để tra lại, chỉ không còn tính vào tiền nữa. Xoá hẳn như
+   trước là số phiếu đứt quãng mà không ai biết vì sao. */
+addColumns('cash_transactions', {
+  cancelled_at: 'TEXT',
+  cancelled_by: 'INTEGER',
+  cancel_reason: 'TEXT',
+});
+/* MỌI phép cộng tiền phải đọc qua khung nhìn này chứ đừng đọc thẳng bảng — quên
+   một chỗ là số dư quỹ hoặc công nợ sai âm thầm. Dựng lại mỗi lần khởi động cho
+   chắc, khung nhìn không giữ dữ liệu nên dựng lại vô hại. */
+db.exec('DROP VIEW IF EXISTS cash_live');
+db.exec('CREATE VIEW cash_live AS SELECT * FROM cash_transactions WHERE cancelled_at IS NULL');
+
+/* Điểm tích luỹ (yêu cầu 28/09, mục IV.1). Chụp lại lúc bán như voucher_amount:
+   in lại tờ hoá đơn cũ phải ra đúng số điểm của hôm đó, chứ không phải số
+   điểm tính lại theo tỷ lệ hiện hành. */
+addColumns('sales', {
+  points_earned: 'INTEGER NOT NULL DEFAULT 0',    // điểm cộng cho khách vì đơn này
+  points_used: 'INTEGER NOT NULL DEFAULT 0',      // điểm khách trừ vào đơn này
+  points_amount: 'INTEGER NOT NULL DEFAULT 0',    // số điểm đó quy ra bao nhiêu tiền
+});
+/* Trả hàng: thu hồi bao nhiêu điểm đã tích, hoàn lại bao nhiêu điểm đã dùng */
+addColumns('sale_returns', {
+  points_revoked: 'INTEGER NOT NULL DEFAULT 0',
+  points_refund: 'INTEGER NOT NULL DEFAULT 0',
+});
+
 /* Bảng hàng ghim đời đầu khoá UNIQUE(kind, ref_id): một mặt hàng chỉ nằm
    được ở đúng một chỗ. Từ đợt 16 mỗi bộ theo mùa là một danh sách riêng,
    nên cùng một món phải nằm được ở nhiều bộ — dựng lại bảng với khoá ba
@@ -1137,7 +1165,7 @@ export function accountBalance(accountId) {
     `SELECT
        COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0) AS tin,
        COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) AS tout
-     FROM cash_transactions WHERE account_id = ?`,
+     FROM cash_live WHERE account_id = ?`,
     [accountId]
   );
   return acc.opening_balance + t.tin - t.tout;
@@ -1207,7 +1235,7 @@ export function customerDebt(customerId) {
     `SELECT
        COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0) -
        COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) AS d
-     FROM cash_transactions
+     FROM cash_live
      WHERE partner_type = 'customer' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [customerId]
   ).d;
@@ -1245,7 +1273,7 @@ export function supplierDebt(supplierId) {
     `SELECT
        COALESCE(SUM(CASE WHEN direction = 'out' THEN amount END), 0) -
        COALESCE(SUM(CASE WHEN direction = 'in'  THEN amount END), 0) AS d
-     FROM cash_transactions
+     FROM cash_live
      WHERE partner_type = 'supplier' AND partner_id = ? AND category IN ('debt_in','debt_out')`,
     [supplierId]
   ).d;

@@ -138,8 +138,11 @@ line(diffs.length === 0, `${oldTables.length} bảng cũ: từng dòng, từng c
 
 const newTables = tablesOf(db).filter((t) => !oldTables.includes(t));
 const cnt = (t) => db.prepare(`SELECT COUNT(*) n FROM "${t}"`).get().n;
-/* Sổ mã vạch (plan 30) cố tình điền sẵn từ mã đã có — không phải dữ liệu lạ */
-const SEEDED = ['barcodes', 'barcode_counter'];
+/* Hai bảng này cố tình điền sẵn, không phải dữ liệu lạ:
+     - sổ mã vạch (plan 30) điền từ mã đã có;
+     - danh mục loại thu chi (soát quỹ 30/09) nạp đúng danh sách trước nay nằm
+       cứng trong mã nguồn, để chủ tiệm khai thêm được. */
+const SEEDED = ['barcodes', 'barcode_counter', 'cash_categories'];
 line(newTables.every((t) => cnt(t) === 0 || SEEDED.includes(t)),
   `${newTables.length} bảng mới đều trống (${newTables.map((t) => `${t}: ${cnt(t)}`).join(', ') || 'không có'})`);
 

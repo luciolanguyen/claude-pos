@@ -316,6 +316,21 @@ CREATE TABLE IF NOT EXISTS cash_transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_cash_ts ON cash_transactions(ts);
 
+-- Danh muc loai thu / chi. Truoc day nam cung trong ma nguon nen muon them mot
+-- khoan chi moi la phai sua phan mem. Dong builtin = 1 la loai he thong dang
+-- dung cho chung tu tu dong: doi duoc ten, khong xoa duoc.
+-- is_expense = 1 nghia la khoan chi nay tinh vao chi phi van hanh khi tinh lai lo.
+CREATE TABLE IF NOT EXISTS cash_categories (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  code       TEXT NOT NULL UNIQUE,
+  label      TEXT NOT NULL,
+  direction  TEXT NOT NULL,                     -- in | out
+  is_expense INTEGER NOT NULL DEFAULT 0,
+  builtin    INTEGER NOT NULL DEFAULT 0,
+  active     INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
 -- ---------- Kiem ke kho ----------
 CREATE TABLE IF NOT EXISTS stock_takes (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1218,3 +1233,24 @@ CREATE TABLE IF NOT EXISTS payroll_awards (
   note         TEXT,
   UNIQUE(employee_id, lunar_year)
 );
+
+-- ---------- Diem tich luy (vi thanh vien) ----------
+-- So diem: moi lan cong / tru mot dong, so du = SUM(points). Khong giu cot
+-- tong o bang khach hang de khong bao gio lech (cung loi payroll_entries).
+-- Vi thanh vien KHONG nhan tien khach nap: chu tiem da chot vi chi chua diem.
+CREATE TABLE IF NOT EXISTS loyalty_entries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  points      INTEGER NOT NULL,                  -- am = tru diem
+  kind        TEXT NOT NULL,                     -- earn | redeem | revoke | refund | adjust
+  money       INTEGER NOT NULL DEFAULT 0,        -- tien quy doi khi dung / hoan diem
+  base_amount INTEGER NOT NULL DEFAULT 0,        -- tien hang lam can cu luc tich
+  ref_type    TEXT,                              -- sale | sale_return | sale_cancel | manual
+  ref_id      INTEGER,
+  ref_code    TEXT,
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_loyalty_customer ON loyalty_entries(customer_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_ref ON loyalty_entries(ref_type, ref_id);

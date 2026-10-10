@@ -27,7 +27,9 @@ const FILTERS = [
 ];
 
 export default function Customers() {
-  const { toast } = useApp();
+  const { toast, settings } = useApp();
+  /* Tiệm có chạy chương trình điểm tích luỹ không (mục IV.1) — tắt thì giấu cột đi */
+  const pointsOn = settings?.pos?.points_enabled === true;
   const navTo = useNavigate();
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [params, setParams] = useSearchParams();
@@ -81,11 +83,13 @@ export default function Customers() {
   const exportCsv = () => {
     if (!data?.length) return;
     const head = ['Mã KH', 'Tên khách hàng', 'Loại khách', 'Điện thoại', 'Địa chỉ', 'Bảng giá', 'Số đơn', 'Tổng mua',
-      'Đang nợ', 'Hạn mức nợ', 'Số ngày nợ tối đa', ...(filter ? ['HĐ chưa trả', 'Nợ lâu nhất (ngày)', 'HĐ quá hạn'] : [])];
+      'Đang nợ', 'Hạn mức nợ', 'Số ngày nợ tối đa', ...(pointsOn ? ['Điểm tích luỹ'] : []),
+      ...(filter ? ['HĐ chưa trả', 'Nợ lâu nhất (ngày)', 'HĐ quá hạn'] : [])];
     const rows = data.map((c) => [
       c.code, c.name, CUSTOMER_TYPES.find((t) => t.key === c.customer_type)?.label || 'Thành viên',
       c.phone || '', c.address || '', c.price_list_name || 'Giá lẻ',
       c.order_count, c.total_spent, c.debt, c.debt_limit, c.max_debt_days ?? 'Theo tiệm',
+      ...(pointsOn ? [c.points ?? 0] : []),
       ...(filter ? [c.unpaid_bills ?? '', c.oldest_days ?? '', c.overdue_count ?? ''] : []),
     ]);
     const csv = '﻿' + [head, ...rows]
@@ -192,6 +196,7 @@ export default function Customers() {
                       <th className="text-right">Số đơn</th>
                       <th className="text-right">Tổng mua</th>
                       <th className="text-right">Đang nợ</th>
+                      {pointsOn && <th className="text-right">Điểm</th>}
                       {filter && <th>Nợ lâu nhất</th>}
                       <th>Mua gần nhất</th>
                       <th className="text-right">Thao tác</th>
@@ -223,6 +228,13 @@ export default function Customers() {
                                 </div>
                               : <span className="text-muted-ink">—</span>}
                           </td>
+                          {pointsOn && (
+                            <td className="num">
+                              {c.points > 0
+                                ? <span className="font-semibold text-emerald-700 tabular">{n(c.points)}</span>
+                                : <span className="text-muted-ink">—</span>}
+                            </td>
+                          )}
                           {filter && (
                             <td className="whitespace-nowrap">
                               {c.oldest_unpaid

@@ -907,7 +907,7 @@ function SupplierDebtTab({ s, onPay, onChanged }) {
                   <tr key={p.id} className="hoverable">
                     <td className="font-mono">{p.code}</td>
                     <td className="text-muted-ink whitespace-nowrap">{datetime(p.ts)}</td>
-                    <td><Badge tone={p.direction === 'out' ? 'bad' : 'ok'}>{p.direction === 'out' ? 'Chi' : 'Thu'} · {CASH_LABEL[p.category] || p.category}</Badge></td>
+                    <td><Badge tone={p.direction === 'out' ? 'bad' : 'ok'}>{p.direction === 'out' ? 'Chi' : 'Thu'} · {p.category_label || CASH_LABEL[p.category] || p.category}</Badge></td>
                     <td className={`num font-semibold ${p.direction === 'out' ? 'text-danger' : 'text-emerald-700'}`}>
                       {p.direction === 'out' ? '-' : '+'}{money(p.amount)}
                     </td>

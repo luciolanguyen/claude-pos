@@ -47,11 +47,16 @@ const FILES = walk(SRC).map((file) => ({
 
 /** Bỏ chú thích và chuỗi để khỏi soát nhầm chữ nằm trong câu tiếng Việt. */
 function stripNoise(s) {
+  /* Chuỗi KHÔNG được bắc qua dòng. Một dấu nháy lẻ nằm trong biểu thức chính quy
+     — kiểu `.replace(/"/g, '""')` ở chỗ xuất Excel — từng làm phép bỏ chuỗi nuốt
+     luôn phần còn lại của tệp: bộ soát mù từ dòng đó xuống mà vẫn báo "không thấy
+     chỗ nào" (đã để lọt một biểu tượng dùng mà chưa import). Chặn ở ranh giới
+     dòng thì hỏng một dòng cũng chỉ mất đúng dòng đó. */
   return s
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + m.slice(p1.length).replace(/./g, ' '))
-    .replace(/'(?:\\.|[^'\\])*'/g, "''")
-    .replace(/"(?:\\.|[^"\\])*"/g, '""');
+    .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
+    .replace(/"(?:\\.|[^"\\\n])*"/g, '""');
 }
 
 /** Số dòng của một vị trí ký tự. */
