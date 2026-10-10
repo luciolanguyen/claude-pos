@@ -90,6 +90,8 @@ export const ACCESS_RULES = [
   /* Sửa công nợ và chốt sổ (plan 31, 6b / 6c): đặt TRƯỚC luật /customers,
      /suppliers chung — để sau thì luật rộng nuốt mất, ai quản khách cũng sửa
      được nợ. Xem sổ và lịch sử sửa thì vẫn theo quyền khách / mua hàng. */
+  /* Nhập khách / NCC từ Excel (10/10): đặt TRƯỚC luật /customers, /suppliers — đặt sau là bị ăn mất */
+  ['POST', /^\/(customers|suppliers)\/import$/, 'data.import'],
   ['POST', /^\/(customers|suppliers)\/\d+\/debt-(adjustments|closings)$/, 'debt.adjust'],
   ['DELETE', /^\/(customers|suppliers)\/\d+\/debt-closings\/\d+$/, 'debt.adjust'],
   ['*',    /^\/debt-closings/,             'debt.adjust'],

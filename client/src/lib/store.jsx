@@ -86,6 +86,12 @@ export function AppProvider({ children }) {
   const can = useCallback((perm) => canSet.has(perm), [canSet]);
 
   const store = settings?.store || {};
+
+  /* Tiêu đề tab theo tên cửa hàng đã khai ở Thiết lập (việc 1, 10/10). Chưa khai thì giữ chữ trung tính. */
+  useEffect(() => {
+    const name = String(store.name || '').trim();
+    document.title = name ? `${name} · Bán hàng` : 'Phần mềm bán hàng';
+  }, [store.name]);
   const defaultWarehouse = meta.warehouses.find((w) => w.is_default)?.id || meta.warehouses[0]?.id;
   const defaultPriceList = meta.priceLists.find((p) => p.is_default)?.id || meta.priceLists[0]?.id;
 

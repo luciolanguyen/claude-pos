@@ -355,3 +355,39 @@ export function saveBlob(data, filename, type) {
 }
 
 export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/* ------------------------------ File mẫu đơn giản ------------------------------ */
+
+/**
+ * File mẫu một sheet cho nhập khách hàng / nhà cung cấp: hàng tiêu đề tô màu,
+ * cột bắt buộc có dấu *, cột số điện thoại / mã / số tài khoản để dạng Văn bản
+ * cho Excel khỏi làm rụng số 0 đầu.
+ * @param columns [{ header, width, required, text, note }]
+ */
+export async function buildSimpleTemplate(sheetName, columns, samples = []) {
+  const ExcelJS = await excel();
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Phần mềm bán hàng';
+  wb.created = new Date();
+  const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = columns.map((c) => ({ width: c.width || 18 }));
+  const head = ws.getRow(1);
+  head.height = 28;
+  columns.forEach((c, i) => {
+    const cell = head.getCell(i + 1);
+    cell.value = c.required ? `${c.header} *` : c.header;
+    cell.font = { bold: true, color: { argb: 'FF0F172A' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.required ? 'FFFDE68A' : 'FFE2E8F0' } };
+    cell.alignment = { vertical: 'middle', wrapText: true };
+    if (c.note) cell.note = c.note;
+  });
+  for (let r = 2; r <= 500; r += 1) {
+    const row = ws.getRow(r);
+    columns.forEach((c, i) => { if (c.text) row.getCell(i + 1).numFmt = '@'; });
+  }
+  samples.forEach((s, i) => {
+    const row = ws.getRow(i + 2);
+    s.forEach((v, j) => { row.getCell(j + 1).value = v; });
+  });
+  return wb.xlsx.writeBuffer();
+}

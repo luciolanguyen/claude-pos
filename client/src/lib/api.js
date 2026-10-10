@@ -60,6 +60,8 @@ async function request(method, path, body) {
     /* Máy chủ báo việc này cần quản lý gõ PIN duyệt — hộp thoại dựa vào cờ
        này để mở ô nhập PIN thay vì chỉ báo lỗi */
     err.needsApproval = data?.needs_approval === true;
+    /* Giữ nguyên thân lỗi: hộp nhập Excel cần bảng lỗi theo từng dòng máy chủ trả về */
+    err.body = data;
     throw err;
   }
   return data;

@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   Users, UserPlus, Pencil, Trash2, HandCoins, ArrowLeft, Download, TrendingUp, AlertTriangle, Clock, Sigma,
+  FileUp,
 } from 'lucide-react';
+import ImportPartners from '../components/ImportPartners';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
@@ -32,6 +34,7 @@ export default function Customers() {
   const pointsOn = settings?.pos?.points_enabled === true;
   const navTo = useNavigate();
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [params, setParams] = useSearchParams();
   const filter = FILTERS.some((f) => f.key === params.get('filter')) ? params.get('filter') : '';
   const type = CUSTOMER_TYPES.some((t) => t.key === params.get('type')) ? params.get('type') : '';
@@ -117,6 +120,10 @@ export default function Customers() {
           <Button icon={Sigma} onClick={() => setSummaryOpen(true)}>Tổng hợp công nợ</Button>
           <PermGate perm="data.export">
             <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          </PermGate>
+          {/* Nhập danh sách khách từ Excel (10/10) — chặn thật ở máy chủ bằng quyền data.import */}
+          <PermGate perm="data.import">
+            <Button icon={FileUp} onClick={() => setImporting(true)}>Nhập từ Excel</Button>
           </PermGate>
           <Button variant="primary" icon={UserPlus} onClick={() => setEditing('new')}>
             Thêm khách hàng
@@ -288,6 +295,8 @@ export default function Customers() {
         <DebtSummaryModal type="customer" onClose={() => setSummaryOpen(false)}
           onOpen={(r) => navTo(`/customers/${r.id}?tab=debt`)} />
       )}
+
+      <ImportPartners kind="customers" open={importing} onClose={() => setImporting(false)} onDone={reload} />
 
       <CustomerForm
         open={!!editing}

@@ -412,7 +412,7 @@ export default function WarrantyPrint({ tickets, batch = null, focusId = null, m
 
           <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[50vh]">
             {mode === 'receipt'
-              ? <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{receiptBody}</div>
+              ? <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>{receiptBody}</div>
               : tags.length
                 ? <div className="mx-auto" style={{ width: 'fit-content' }}>{tagBody(false)}</div>
                 : <p className="text-[13px] text-muted-ink text-center">Chưa chọn tem nào để in.</p>}

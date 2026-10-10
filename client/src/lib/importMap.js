@@ -37,13 +37,17 @@ const MAP_ORDER = ['barcode', 'big_price', 'big_unit', 'big_factor', 'alias', 'm
   .filter((k, i, a) => a.indexOf(k) === i)
   .map((k) => FIELDS.find((f) => f.key === k));
 
-/** Tự đoán cột nào ứng với trường nào. Khớp khít trước, rồi mới "bắt đầu bằng", "có chứa". */
-export function autoMap(header) {
+/**
+ * Tự đoán cột nào ứng với trường nào, cho một danh sách trường bất kỳ (hàng hoá,
+ * khách hàng, nhà cung cấp). Khớp khít trước, rồi mới "bắt đầu bằng", "có chứa".
+ * `order`: trường cụ thể ghép trước để từ khoá chung khỏi giành cột.
+ */
+export function autoMapFields(fields, header, order = fields) {
   const map = {};
   const used = new Set();
   const heads = header.map((h) => noAccent(String(h ?? '')).replace(/\*/g, '').trim());
   const tiers = [(h, t) => h === t, (h, t) => h.startsWith(t), (h, t) => h.includes(t)];
-  for (const f of MAP_ORDER) {
+  for (const f of order) {
     let found = -1;
     for (const test of tiers) {
       for (const hint of f.hints) {
@@ -57,17 +61,21 @@ export function autoMap(header) {
   return map;
 }
 
-/** Tiêu đề không phải lúc nào cũng ở dòng 1: dò 5 dòng đầu, chọn dòng nhận ra nhiều cột nhất. */
-export function detectHeader(table) {
+/** Dò 5 dòng đầu, chọn dòng nhận ra nhiều cột nhất làm dòng tiêu đề. */
+export function detectHeaderFields(fields, table, order = fields) {
   let best = 0;
   let bestScore = -1;
   for (let i = 0; i < Math.min(5, table.length); i += 1) {
-    const m = autoMap(table[i]);
+    const m = autoMapFields(fields, table[i], order);
     const score = Object.keys(m).length + (m.name != null ? 3 : 0);
     if (score > bestScore) { best = i; bestScore = score; }
   }
   return best;
 }
+
+/** Hàng hoá: giữ nguyên hai hàm cũ cho màn hình nhập hàng hoá. */
+export const autoMap = (header) => autoMapFields(FIELDS, header, MAP_ORDER);
+export const detectHeader = (table) => detectHeaderFields(FIELDS, table, MAP_ORDER);
 
 /** Dòng gửi lên máy chủ: chỉ mang các cột đã ghép, kèm số dòng thật trong file. */
 export function buildRows(table, headerRow, map) {
@@ -80,3 +88,46 @@ export function buildRows(table, headerRow, map) {
   });
 }
 
+
+/* ====================================================================
+   NHẬP KHÁCH HÀNG / NHÀ CUNG CẤP (10/10/2026)
+
+   Cố ý KHÔNG có cột nợ đầu kỳ: nợ là tiền, đi đường "Điều chỉnh công nợ"
+   có PIN. File có cột nợ thì màn hình báo là cột đó bị bỏ qua.
+   Thứ tự ghép: cột cụ thể ("SĐT 2", "tên công ty") trước cột chung ("SĐT", "tên").
+   ==================================================================== */
+export const CUSTOMER_FIELDS = [
+  { key: 'code', label: 'Mã khách hàng', hints: ['ma khach hang', 'ma kh', 'ma'] },
+  { key: 'company_name', label: 'Tên công ty', hints: ['ten cong ty', 'cong ty', 'don vi'] },
+  { key: 'name', label: 'Tên khách hàng', hints: ['ten khach hang', 'ten khach', 'ho ten', 'ho va ten', 'khach hang', 'ten'], required: true },
+  { key: 'phone2', label: 'SĐT 2', hints: ['sdt 2', 'so dien thoai 2', 'dien thoai 2', 'sdt phu'] },
+  { key: 'phone3', label: 'SĐT 3', hints: ['sdt 3', 'so dien thoai 3', 'dien thoai 3'] },
+  { key: 'phone', label: 'SĐT 1', hints: ['sdt 1', 'so dien thoai', 'dien thoai', 'sdt', 'dt', 'phone'] },
+  { key: 'email', label: 'Email', hints: ['email', 'thu dien tu'] },
+  { key: 'address', label: 'Địa chỉ', hints: ['dia chi', 'address'] },
+  { key: 'tax_code', label: 'Mã số thuế', hints: ['ma so thue', 'mst'] },
+  { key: 'birthday', label: 'Ngày sinh', hints: ['ngay sinh', 'sinh nhat'] },
+  { key: 'customer_type', label: 'Loại khách', hints: ['loai khach', 'nhom khach', 'loai'] },
+  { key: 'debt_limit', label: 'Hạn mức nợ', hints: ['han muc no', 'han muc'] },
+  { key: 'max_debt_days', label: 'Số ngày nợ tối đa', hints: ['so ngay no', 'ngay no toi da'] },
+  { key: 'note', label: 'Ghi chú', hints: ['ghi chu', 'note'] },
+];
+
+export const SUPPLIER_FIELDS = [
+  { key: 'code', label: 'Mã NCC', hints: ['ma nha cung cap', 'ma ncc', 'ma'] },
+  { key: 'contact_name', label: 'Người liên hệ', hints: ['nguoi lien he', 'lien he'] },
+  { key: 'name', label: 'Tên nhà cung cấp', hints: ['ten nha cung cap', 'ten ncc', 'nha cung cap', 'ten'], required: true },
+  { key: 'phone', label: 'Điện thoại', hints: ['so dien thoai', 'dien thoai', 'sdt', 'dt', 'phone'] },
+  { key: 'email', label: 'Email', hints: ['email'] },
+  { key: 'address', label: 'Địa chỉ', hints: ['dia chi'] },
+  { key: 'tax_code', label: 'Mã số thuế', hints: ['ma so thue', 'mst'] },
+  { key: 'account_no', label: 'Số tài khoản', hints: ['so tai khoan', 'so tk', 'stk', 'tai khoan'] },
+  { key: 'bank_name', label: 'Ngân hàng', hints: ['ngan hang', 'bank'] },
+  { key: 'term_days', label: 'Số ngày được nợ', hints: ['so ngay duoc no', 'ngay duoc no', 'han tra', 'so ngay no'] },
+  { key: 'note', label: 'Ghi chú', hints: ['ghi chu'] },
+];
+
+/** Cột nợ đầu kỳ có mặt trong file không — để báo là cột đó bị bỏ qua. */
+export function hasDebtColumn(header) {
+  return header.some((h) => /(^|\s)no (dau ky|cu|ton)|cong no|so no/.test(noAccent(String(h ?? ''))));
+}

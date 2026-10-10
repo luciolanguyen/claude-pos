@@ -260,7 +260,7 @@ export default function ConsignStatementPrint({ statement = null, settlement = n
         </>}
       >
         <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[60vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
+          <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
         </div>
       </Modal>
       <div className={`print-area size-${format}`}>{body}</div>

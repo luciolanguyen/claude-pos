@@ -250,7 +250,7 @@ export function VoucherPrint({ voucher, customerName, onClose }) {
         </>}
       >
         <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[55vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
+          <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
         </div>
       </Modal>
       <div className="print-area size-k80">{body}</div>

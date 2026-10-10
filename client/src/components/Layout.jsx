@@ -7,6 +7,7 @@ import {
   ShieldCheck, ClipboardList, PackageX, Handshake, IdCard,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
+import { ThemeQuickToggle } from './ThemeControls';
 import { ROLE_LABEL } from '../lib/format';
 
 /* Cấu trúc menu theo nghiệp vụ, không theo bảng dữ liệu.
@@ -187,6 +188,8 @@ export default function Layout({ children }) {
             <div className="text-[13px] text-white font-semibold truncate">{user?.full_name || 'Khách'}</div>
             <div className="text-2xs text-slate-400 truncate">{ROLE_LABEL[user?.role] || 'Chưa đăng nhập'}</div>
           </div>
+          {/* Sáng / tối của máy này — ai đăng nhập cũng đổi được */}
+          <ThemeQuickToggle className="text-slate-400 hover:text-white hover:bg-white/10" />
           <button
             onClick={logout}
             aria-label="Đăng xuất"

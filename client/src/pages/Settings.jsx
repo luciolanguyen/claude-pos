@@ -17,6 +17,7 @@ import {
   Badge, Confirm, Tabs, MoneyInput,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
+import { ThemePicker } from '../components/ThemeControls';
 import { CategorySelect } from '../components/CategoryTree';
 import CartPickerModal from '../components/CartPickerModal';
 import { ErrorBox } from '../components/ui';
@@ -53,6 +54,8 @@ function BlindKeyField({ label, hint, value, onChange }) {
 
 const TABS = [
   { key: 'store', label: 'Thông tin cửa hàng' },
+  /* Theo từng máy, không lưu vào thiết lập chung (10/10) */
+  { key: 'theme', label: 'Giao diện' },
   { key: 'invoice', label: 'Hoá đơn & in ấn' },
   { key: 'pos', label: 'Màn hình bán hàng' },
   { key: 'featured', label: 'Hàng ưu tiên đầu lưới' },
@@ -79,6 +82,7 @@ export default function Settings() {
       </div>
       <Page>
         {tab === 'store' && <StoreSettings />}
+        {tab === 'theme' && <ThemePicker />}
         {tab === 'invoice' && <InvoiceSettings />}
         {tab === 'pos' && <PosSettings />}
       {tab === 'featured' && <FeaturedSettings />}
@@ -1311,7 +1315,7 @@ function BarcodeSettings() {
           </div>
         )}
         <div className="flex flex-wrap items-center gap-4">
-          <div className="bg-white border border-line rounded p-2" dangerouslySetInnerHTML={{ __html: svg || '' }} />
+          <div className="paper border border-line rounded p-2" dangerouslySetInnerHTML={{ __html: svg || '' }} />
           <div className="text-[13px] space-y-0.5">
             <div>Mã kế tiếp: <b className="font-mono">{preview}</b></div>
             <div className="text-muted-ink">Còn {n(Math.max(0, 10 ** (Number(width) || 7) - (st.next_value || 1)))} mã trong dải</div>

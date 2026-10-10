@@ -167,7 +167,7 @@ export default function InvoicePrint({ sale, store, invoice = {}, onClose, defau
           <div>
             <span className="label">Xem trước</span>
             <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[45vh]">
-              <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>
+              <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>
                 <InvoiceBody sale={sale} store={store} format={format} showCost={showCost} qrUrl={qrUrl}
                   k80Width={k80Width} debt={debt} points={points} barcode={invoice.show_barcode === true} />
               </div>
