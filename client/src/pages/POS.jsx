@@ -49,6 +49,7 @@ import {
 import { tabTitle, tabNoOf, smallestFree, normalizeTabs } from '../lib/posTabs';
 import PosCameraScan from '../components/PosCameraScan';
 import PosDayInvoices from '../components/PosDayInvoices';
+import BlindCost from '../components/BlindCost';
 import { isTouchDevice, primeAudio } from '../lib/cameraScan';
 
 import { findByCode, barcodeEquals, barcodeIncludes } from '../lib/codeMatch';
@@ -1994,6 +1995,7 @@ export default function POS() {
                     lineRef={hoverPid === l.product_id ? hoverLineRef : null}
                     hist={priceHist[l.product_id]}
                     showCost={maySeeCost && showCost}
+                    blindKeys={blindOn ? blindKeys : null}
                     onQty={(q) => setQty(l, q)}
                     tier={tierOn ? tierOf(l) : null}
                     alias={notesOn ? (noteByProduct.get(l.product_id) || null) : null}
@@ -2122,9 +2124,12 @@ export default function POS() {
 
               {maySeeCost && showCost && totals.count > 0 && (
                 <div className="flex items-center justify-between text-2xs pt-1 border-t border-line">
-                  <span className="text-muted-ink">Giá vốn {n(totals.cogs)}</span>
+                  <span className="text-muted-ink">
+                    Giá vốn <BlindCost value={totals.cogs} keyStr={blindOn ? blindKeys.cost : null} />
+                  </span>
                   <span className={`font-bold tabular ${totals.subtotal - totals.discount - totals.cogs < 0 ? 'text-danger' : 'text-emerald-700'}`}>
-                    Lãi {n(totals.subtotal - totals.discount - totals.cogs)}
+                    Lãi <BlindCost value={totals.subtotal - totals.discount - totals.cogs}
+                      keyStr={blindOn ? blindKeys.cost : null} />
                   </span>
                 </div>
               )}

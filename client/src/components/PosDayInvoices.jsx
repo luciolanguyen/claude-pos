@@ -27,6 +27,7 @@ import { useApp, useFetch, useDebounced } from '../lib/store';
 import { money, n, qty as fq, date, datetime, time, isoDate, PAYMENT_LABEL } from '../lib/format';
 import { Modal, Button, Badge, Empty, Spinner, SearchInput, ErrorBox } from './ui';
 import InvoicePrint from './InvoicePrint';
+import BlindCost, { blindKeysOf } from './BlindCost';
 import { StepBadge } from './PosDelivery';
 
 const PAGE = 50;
@@ -51,6 +52,8 @@ const dayLabel = (iso) => {
 export default function PosDayInvoices({ open, onClose, onExchange, onQuickExchange, onQuickReturn }) {
   const { can, store, settings } = useApp();
   const seeCost = can('cost.view');
+  /* Hộp này mở ngay tại quầy — tiệm bật mã hoá giá vốn thì vốn và lãi cũng mã hoá */
+  const blindKeys = blindKeysOf(settings);
   const mayReturn = can('sale.return');
 
   const [day, setDay] = useState(isoDate());
@@ -172,7 +175,9 @@ export default function PosDayInvoices({ open, onClose, onExchange, onQuickExcha
               <span>Doanh thu <b className="text-ink tabular">{money(totals.revenue || 0)}</b></span>
               {totals.unpaid > 0 && <span className="text-danger">Còn nợ <b className="tabular">{money(totals.unpaid)}</b></span>}
               {seeCost && totals.profit !== undefined && (
-                <span className="text-emerald-700">Lãi <b className="tabular">{money(totals.profit)}</b></span>
+                <span className="text-emerald-700">Lãi <b className="tabular">
+                  <BlindCost value={totals.profit} keyStr={blindKeys?.cost} format={money} />
+                </b></span>
               )}
             </div>
 
@@ -217,6 +222,7 @@ export default function PosDayInvoices({ open, onClose, onExchange, onQuickExcha
                     <InvoiceDetail
                       s={detail}
                       seeCost={seeCost}
+                      blindKeys={blindKeys}
                       mayReturn={mayReturn}
                       dim={loadingDetail}
                       onPrint={() => setPrinting(detail)}
@@ -302,7 +308,7 @@ function InvoiceRow({ s, active, onPick }) {
   );
 }
 
-function InvoiceDetail({ s, seeCost, mayReturn, dim, onPrint, onExchange }) {
+function InvoiceDetail({ s, seeCost, blindKeys = null, mayReturn, dim, onPrint, onExchange }) {
   const cancelled = s.status === 'cancelled';
   const returnable = (s.items || []).some((it) => (it.returnable_qty ?? it.qty) > 0);
   const consign = s.consign_items || [];
@@ -470,7 +476,7 @@ function InvoiceDetail({ s, seeCost, mayReturn, dim, onPrint, onExchange }) {
                   <div className="text-2xs text-muted-ink">
                     {fq(c.qty)} {c.unit_name} × {money(c.price)}
                     {c.partner_name && <> · của {c.partner_name}</>}
-                    {seeCost && c.commission > 0 && <> · hoa hồng {money(c.commission)}</>}
+                    {seeCost && c.commission > 0 && <> · hoa hồng <BlindCost value={c.commission} keyStr={blindKeys?.cost} format={money} /></>}
                   </div>
                 </div>
                 <span className="font-mono tabular font-semibold">{money(c.amount)}</span>
@@ -503,11 +509,14 @@ function InvoiceDetail({ s, seeCost, mayReturn, dim, onPrint, onExchange }) {
           {costKnown && (
             <>
               <div className="flex justify-between pt-1.5 border-t border-line text-muted-ink">
-                <span>Giá vốn</span><span className="tabular font-mono">{money(s.cogs)}</span>
+                <span>Giá vốn</span>
+                <span className="tabular font-mono"><BlindCost value={s.cogs} keyStr={blindKeys?.cost} format={money} /></span>
               </div>
               <div className="flex justify-between font-semibold text-emerald-700">
                 <span>Lợi nhuận</span>
-                <span className="tabular font-mono">{money(s.total - s.vat_amount - s.cogs)}</span>
+                <span className="tabular font-mono">
+                  <BlindCost value={s.total - s.vat_amount - s.cogs} keyStr={blindKeys?.cost} format={money} />
+                </span>
               </div>
             </>
           )}
