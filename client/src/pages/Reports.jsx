@@ -300,15 +300,14 @@ function PnlReport({ r }) {
   const { data, busy, error, reload } = useFetch(
     () => api.reportPnl({ from: r.from, to: r.to }), [r.from, r.to]
   );
+  const { data: cats } = useFetch(() => api.cashCategories(), []);
 
   if (busy && !data) return <Spinner />;
   if (error) return <ErrorBox error={error} onRetry={reload} />;
   if (!data) return null;
 
-  const EXP_LABEL = {
-    salary: 'Lương nhân viên', rent: 'Thuê mặt bằng', utility: 'Điện nước internet',
-    transport: 'Vận chuyển, xăng xe', tax: 'Thuế, lệ phí', other_out: 'Chi khác',
-  };
+  /* Tên khoản chi lấy theo danh mục loại thu chi (chủ tiệm tự khai được) */
+  const expLabel = (code) => [...(cats?.out || []), ...(cats?.in || [])].find((c) => c.code === code)?.label || code;
 
 
   return (
@@ -366,7 +365,7 @@ function PnlReport({ r }) {
             <>
               {data.expenses.map((e) => (
                 <div key={e.category} className="flex items-center gap-2 py-1.5">
-                  <span className="text-[13px] flex-1">{EXP_LABEL[e.category] || e.category}</span>
+                  <span className="text-[13px] flex-1">{expLabel(e.category)}</span>
                   <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden" aria-hidden="true">
                     <div className="h-full bg-warn rounded-full"
                       style={{ width: `${data.expense_total > 0 ? (e.amount / data.expense_total * 100) : 0}%` }} />
@@ -399,7 +398,7 @@ function PnlReport({ r }) {
               ['Doanh thu thuần', data.net_revenue],
               ['Giá vốn hàng bán', -data.cogs],
               ['Lợi nhuận gộp', data.gross_profit],
-              ...data.expenses.map((e) => [EXP_LABEL[e.category] || e.category, -e.amount]),
+              ...data.expenses.map((e) => [expLabel(e.category), -e.amount]),
               ['Tổng chi phí vận hành', -data.expense_total],
               ['LỢI NHUẬN THỰC', data.net_profit],
             ]

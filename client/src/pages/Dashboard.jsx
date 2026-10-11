@@ -29,7 +29,9 @@ import PeriodPicker, { usePeriod } from '../components/PeriodPicker';
 
 function Card({ title, subtitle, action, children, className = '' }) {
   return (
-    <div className={`card flex flex-col ${className}`}>
+    /* min-w-0: ô lưới mặc định không co nhỏ hơn nội dung — thiếu cái này là trên
+       điện thoại cả trang cuộn ngang vì một dòng chữ dài */
+    <div className={`card flex flex-col min-w-0 ${className}`}>
       <div className="flex items-start justify-between gap-2 px-3 py-2.5 border-b border-line">
         <div className="min-w-0">
           <h2 className="text-[13px] font-bold">{title}</h2>
