@@ -112,6 +112,8 @@ app.use('/api', (req, res, next) => {
 /* Giá nhập gần nhất cũng là giá vốn — lộ ra thì thu ngân biết tiệm lời bao nhiêu */
 const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
   'last_purchase_price',
+  /* Giá trị tồn kho tính theo giá vốn (Tổng quan) — cộng ngược ra tổng giá vốn */
+  'stock_value', 'sales_cogs', 'returns_cogs',
   /* Cột tên trơn "cost": giá tiệm bốc hàng mua hộ vãng lai (tài liệu 24),
      chi phí lắp ráp, tiền linh kiện thay khi sửa bảo hành. Ba chỗ đó đều
      là giá vốn thật, trước đây lọt ra ngoài vì tên cột không có hậu tố. */
