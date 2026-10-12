@@ -87,9 +87,10 @@ export default function Orders() {
 function OrderList() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
-  const [late, setLate] = useState(false);
+  /* Mở từ khối "Cần xử lý" của Tổng quan với ?late=1 hoặc ?supply=need */
+  const [late, setLate] = useState(() => new URLSearchParams(window.location.search).get('late') === '1');
   /* Lọc theo nguồn hàng: need = còn thiếu, chưa đặt đủ của mối (BRD mục 2) */
-  const [supply, setSupply] = useState('');
+  const [supply, setSupply] = useState(() => new URLSearchParams(window.location.search).get('supply') || '');
   const [openId, setOpenId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [printJob, setPrintJob] = useState(null);   // phiếu đặt hàng vừa lập, tự in

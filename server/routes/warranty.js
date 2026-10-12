@@ -290,6 +290,10 @@ r.get('/warranty', (req, res) => {
   if (to) { where.push('date(t.ts) <= date(?)'); params.push(to); }
   // Đang còn ở tiệm hoặc đang ở hãng — cái cần theo dõi hằng ngày
   if (open_only === '1') where.push("t.status NOT IN ('delivered','cancelled')");
+  /* Quá ngày hẹn trả khách mà máy chưa trả (mở từ khối "Cần xử lý" của Tổng quan) */
+  if (req.query.late === '1') {
+    where.push("t.status NOT IN ('delivered','cancelled') AND t.promised_at IS NOT NULL AND date(t.promised_at) < date('now','localtime')");
+  }
 
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);

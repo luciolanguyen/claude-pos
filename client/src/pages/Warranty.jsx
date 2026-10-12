@@ -130,14 +130,16 @@ function Tickets() {
   const [status, setStatus] = useState('');
   const [type, setType] = useState('');
   const [openOnly, setOpenOnly] = useState(true);
+  /* Mở từ khối "Cần xử lý" của Tổng quan với ?late=1: chỉ phiếu quá hẹn trả */
+  const [late, setLate] = useState(() => new URLSearchParams(window.location.search).get('late') === '1');
   const [mode, setMode] = useSearchMode();
 
   const {
     rows: data, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
   } = usePaged(
-    (pg) => api.warranty({ q: dq, match: mode, status, type, open_only: openOnly ? 1 : '', ...pg }),
-    [dq, mode, status, type, openOnly],
+    (pg) => api.warranty({ q: dq, match: mode, status, type, open_only: openOnly ? 1 : '', late: late ? 1 : '', ...pg }),
+    [dq, mode, status, type, openOnly, late],
     { key: 'warranty' }
   );
   const { data: summary, reload: reloadSummary } = useFetch(() => api.warrantySummary(), []);
@@ -251,6 +253,10 @@ function Tickets() {
         <button onClick={() => setOpenOnly((v) => !v)}
           className={`btn btn-sm ${openOnly ? 'btn-secondary' : 'btn-outline'}`}>
           Chỉ phiếu chưa trả khách
+        </button>
+        <button onClick={() => setLate((v) => !v)} aria-pressed={late}
+          className={`btn btn-sm ${late ? 'btn-secondary' : 'btn-outline'}`}>
+          Quá hẹn trả khách
         </button>
         <div className="flex-1" />
         <OpenDraftsButton kind="warranty" onOpen={(d) => setCreating(d)} />

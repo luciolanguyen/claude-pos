@@ -132,6 +132,8 @@ export const api = {
 
   /* --- Báo cáo --- */
   dashboard: (params) => request('GET', '/dashboard' + qs(params)),
+  /* Khối "Cần xử lý" — API riêng, lỗi thì chỉ khối đó báo lỗi */
+  dashboardActions: () => request('GET', '/dashboard/actions'),
   reportSales: (params) => request('GET', '/reports/sales' + qs(params)),
   reportProducts: (params) => request('GET', '/reports/products' + qs(params)),
   reportPurchases: (params) => request('GET', '/reports/purchases' + qs(params)),

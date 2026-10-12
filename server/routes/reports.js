@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { all, get, accountBalance, customerDebt, supplierDebt } from '../db.js';
 import { periodOf, salesSummary, salesSeries, operatingExpenses } from '../metrics.js';
+import { overdueInvoices } from '../debt.js';
+import { maxDebtDaysFor } from '../policy.js';
+import { attendanceOfDay } from '../payroll.js';
+import { supplyMap } from './orders.js';
 
 const r = Router();
 
@@ -135,6 +139,146 @@ r.get('/dashboard', (req, res) => {
     top_customers: topCustomers,
     recent_sales: recentSales,
   });
+});
+
+/* ==================================================================== *
+ * KHỐI "CẦN XỬ LÝ" CỦA TỔNG QUAN (đợt B, plan pos-dashboard-plan.md)
+ *
+ * Những việc đang tồn đọng, mỗi việc kèm đường dẫn mở đúng danh sách đã
+ * lọc. Tách API riêng: khối này lỗi thì chỉ khối này báo lỗi, phần còn lại
+ * của Tổng quan vẫn dùng được.
+ *
+ * Không có nút làm thay việc ở đây (không thu tiền, không đặt hàng bằng một
+ * cú bấm) — chỉ dẫn tới đúng chỗ để người làm tự xử lý.
+ * Việc nào đang không có gì thì không trả về.
+ * ==================================================================== */
+r.get('/dashboard/actions', (req, res) => {
+  const today = new Date().toLocaleDateString('sv-SE');
+  const items = [];
+  const push = (x) => { if (x.count > 0) items.push(x); };
+
+  /* 1. Khách nợ quá số ngày cho phép (theo từng khách, hoặc chính sách chung) */
+  let custN = 0;
+  let custAmt = 0;
+  for (const c of all('SELECT id FROM customers WHERE active = 1')) {
+    if (customerDebt(c.id) <= 0) continue;
+    const late = overdueInvoices(c.id, maxDebtDaysFor(c.id));
+    if (late.length) { custN += 1; custAmt += late.reduce((a, i) => a + i.remaining, 0); }
+  }
+  push({
+    key: 'customer_overdue', level: 'high', count: custN, amount: custAmt,
+    label: `${custN} khách nợ quá hạn`, detail: `cần thu ${custAmt.toLocaleString('vi-VN')} đ`,
+    action: 'Xem nợ quá hạn', to: '/customers?filter=overdue',
+  });
+
+  /* 2. Nợ nhà cung cấp quá hạn trả, và sắp đến hạn trong 3 ngày */
+  const sup = get(`
+    SELECT COUNT(DISTINCT supplier_id) AS n, COALESCE(SUM(total - paid), 0) AS amount
+    FROM purchases WHERE status = 'done' AND total > paid
+      AND due_date IS NOT NULL AND date(due_date) < date(?)`, [today]);
+  const soon = get(`
+    SELECT COUNT(DISTINCT supplier_id) AS n, COALESCE(SUM(total - paid), 0) AS amount
+    FROM purchases WHERE status = 'done' AND total > paid
+      AND due_date IS NOT NULL AND date(due_date) BETWEEN date(?) AND date(?, '+3 days')`, [today, today]);
+  push({
+    key: 'supplier_overdue', level: 'high', count: sup.n, amount: sup.amount,
+    label: `${sup.n} nhà cung cấp quá hạn trả`, detail: `${sup.amount.toLocaleString('vi-VN')} đ`,
+    action: 'Xem nợ NCC', to: '/suppliers?filter=overdue',
+  });
+  push({
+    key: 'supplier_due_soon', level: 'medium', count: soon.n, amount: soon.amount,
+    label: `${soon.n} nhà cung cấp đến hạn trả trong 3 ngày`, detail: `${soon.amount.toLocaleString('vi-VN')} đ`,
+    action: 'Xem nợ NCC', to: '/suppliers?filter=debt',
+  });
+
+  /* 3. Hàng dưới định mức mà CHƯA nằm trong phiếu báo hết hàng nào đang mở —
+        món đã báo rồi thì đừng nhắc nữa, kẻo đặt trùng */
+  const low = get(`
+    SELECT COUNT(*) AS n,
+           COALESCE(SUM(CASE WHEN EXISTS (
+             SELECT 1 FROM requisition_items ri JOIN requisitions rq ON rq.id = ri.requisition_id
+             WHERE ri.product_id = t.id AND rq.status = 'open') THEN 1 ELSE 0 END), 0) AS reported
+    FROM (
+      SELECT p.id, p.min_stock,
+             COALESCE((SELECT SUM(qty) FROM stock s WHERE s.product_id = p.id), 0) AS qty
+      FROM products p WHERE p.active = 1 AND p.track_stock = 1 AND p.min_stock > 0
+    ) t WHERE t.qty <= t.min_stock`);
+  const lowNew = low.n - low.reported;
+  push({
+    key: 'low_stock', level: 'medium', count: lowNew,
+    label: `${lowNew} mặt hàng dưới định mức chưa báo nhập`,
+    detail: low.reported ? `${low.reported} món khác đã có trong phiếu báo hết hàng` : 'tồn hiện có ≤ tồn tối thiểu',
+    action: 'Xem hàng cần nhập', to: '/products?filter=low',
+  });
+
+  /* 4. Đơn khách đặt: quá ngày hẹn giao, và còn thiếu hàng chưa đặt NCC */
+  const late = get(`
+    SELECT COUNT(*) AS n FROM sale_orders
+    WHERE status IN ('open','partial') AND promised_at IS NOT NULL AND date(promised_at) < date(?)`, [today]).n;
+  push({
+    key: 'order_late', level: 'high', count: late,
+    label: `${late} đơn đặt quá ngày hẹn giao`, detail: 'khách đang chờ',
+    action: 'Xem đơn trễ', to: '/orders?late=1',
+  });
+  /* Cùng cách xét nguồn hàng với trang Đặt hàng (bộ lọc "Còn thiếu hàng"), để bấm
+     sang đó thấy đúng chừng ấy đơn */
+  const openIds = all("SELECT id FROM sale_orders WHERE status IN ('open','partial')").map((o) => o.id);
+  const short = [...supplyMap(openIds).values()].filter((st) => ['short', 'partial'].includes(st?.state ?? st)).length;
+  push({
+    key: 'order_short', level: 'medium', count: short,
+    label: `${short} đơn đặt còn thiếu hàng`, detail: 'kho chưa đủ giao — cần đặt thêm nhà cung cấp',
+    action: 'Xem đơn thiếu hàng', to: '/orders?supply=need',
+  });
+
+  /* 5. Tiền thu hộ COD còn nằm ở người giao */
+  const cod = get(`
+    SELECT COUNT(*) AS n, COALESCE(SUM(cod_amount - cod_collected), 0) AS amount
+    FROM sales WHERE status = 'done' AND cod_status = 'pending'`);
+  push({
+    key: 'cod_pending', level: 'medium', count: cod.n, amount: cod.amount,
+    label: `${cod.n} đơn giao chưa đối soát tiền thu hộ`, detail: `${cod.amount.toLocaleString('vi-VN')} đ còn ở người giao`,
+    action: 'Xem đơn thu hộ', to: '/sales?cod=pending',
+  });
+
+  /* 6. Phiếu bảo hành / sửa chữa quá ngày hẹn trả khách */
+  const war = get(`
+    SELECT COUNT(*) AS n FROM warranty_tickets
+    WHERE status NOT IN ('delivered','cancelled') AND promised_at IS NOT NULL AND date(promised_at) < date(?)`, [today]).n;
+  push({
+    key: 'warranty_late', level: 'high', count: war,
+    label: `${war} phiếu bảo hành quá hẹn trả khách`, detail: 'máy vẫn còn ở tiệm hoặc ở hãng',
+    action: 'Xem phiếu trễ', to: '/warranty?late=1',
+  });
+
+  /* 7. Hàng mua hộ thu ngân đã bán, quản lý chưa khai hoa hồng / giá bốc */
+  const rev = get(`
+    SELECT COUNT(*) AS n, COUNT(DISTINCT ci.sale_id) AS bills
+    FROM sale_consign_items ci JOIN sales s ON s.id = ci.sale_id
+    WHERE ci.needs_review = 1 AND s.status = 'done'`);
+  push({
+    key: 'consign_review', level: 'medium', count: rev.n,
+    label: `${rev.n} món mua hộ chờ khai hoa hồng`, detail: `trong ${rev.bills} hoá đơn — lãi của các đơn này đang tạm tính`,
+    action: 'Xem hoá đơn', to: '/sales?review=1',
+  });
+
+  /* 8. Hôm nay còn người chưa chấm công (chỉ nhắc khi tiệm đã tới giờ làm) */
+  try {
+    const day = attendanceOfDay(today);
+    const nowHm = new Date().toTimeString().slice(0, 5);
+    const pending = (day.staff || []).filter((x) => !x.done && x.work_from && x.work_from <= nowHm);
+    if (!day.shop_closed) {
+      push({
+        key: 'attendance', level: 'low', count: pending.length,
+        label: `${pending.length} người chưa chấm công hôm nay`,
+        detail: pending.slice(0, 3).map((x) => x.full_name).join(', ') + (pending.length > 3 ? '…' : ''),
+        action: 'Mở bảng chấm công', to: '/pos',
+      });
+    }
+  } catch { /* chưa dùng bảng lương: bỏ qua */ }
+
+  const order = { high: 0, medium: 1, low: 2 };
+  items.sort((a, b) => order[a.level] - order[b.level]);
+  res.json({ as_of: new Date().toLocaleString('sv-SE'), items });
 });
 
 /* ============================ BÁO CÁO ============================== */

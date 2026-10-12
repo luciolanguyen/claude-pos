@@ -125,5 +125,35 @@ export default async function run() {
   ok('thêm món chưa nhập, chưa bán không làm tăng số hết hàng',
     (await get('/dashboard')).out_of_stock === truoc, String(truoc));
 
+  section('ĐỢT 7B — khối "Cần xử lý"');
+  {
+    const truoc = await get('/dashboard/actions');
+    const dem = (k) => truoc.items.find((x) => x.key === k)?.count || 0;
+
+    /* Phiếu bảo hành hẹn trả hôm qua mà chưa trả máy */
+    const kh = await post('/customers', { name: `Khách cần xử lý ${Date.now()}` });
+    const homQua2 = new Date(Date.now() - 86400000).toLocaleDateString('sv-SE');
+    await post('/warranty', {
+      customer_id: kh.id, customer_name: kh.name, ticket_type: 'repair', promised_at: homQua2,
+      items: [{ product_name: 'Máy khoan thử', issue: 'Không chạy', promised_at: homQua2 }],
+      product_name: 'Máy khoan thử', issue: 'Không chạy',
+    }).catch(() => null);
+    const sau = await get('/dashboard/actions');
+    const w = sau.items.find((x) => x.key === 'warranty_late');
+    ok('phiếu bảo hành quá hẹn hiện trong "Cần xử lý"', (w?.count || 0) >= dem('warranty_late') + 1, w?.label);
+    ok('mỗi việc có đường dẫn mở đúng danh sách', sau.items.every((x) => x.to && x.action && x.label));
+    ok('việc gấp xếp trước', sau.items.findIndex((x) => x.level !== 'high') === -1
+      || sau.items.slice(sau.items.findIndex((x) => x.level !== 'high')).every((x) => x.level !== 'high'));
+    ok('việc không có gì thì không hiện', sau.items.every((x) => x.count > 0));
+
+    /* Trang đích lọc ra đúng chừng ấy */
+    const ds = await get('/warranty?late=1&page_size=200');
+    ok('trang Bảo hành ?late=1 ra đúng số phiếu quá hẹn', (ds.rows || ds).length === w?.count,
+      `${(ds.rows || ds).length} / ${w?.count}`);
+    const o = sau.items.find((x) => x.key === 'order_late');
+    const dsO = await get('/orders?late=1&page_size=200');
+    ok('trang Đặt hàng ?late=1 khớp số đơn quá hẹn', (dsO.rows || dsO).length === (o?.count || 0));
+  }
+
   await put('/settings', { pos: st.pos });
 }

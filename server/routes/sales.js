@@ -44,6 +44,13 @@ r.get('/sales', (req, res) => {
   if (status) { where.push('s.status = ?'); params.push(status); }
   if (payment_method) { where.push('s.payment_method = ?'); params.push(payment_method); }
   if (user_id) { where.push('s.user_id = ?'); params.push(user_id); }
+  /* Hoá đơn có món mua hộ chờ quản lý khai hoa hồng / giá bốc (mở từ Tổng quan) */
+  /* Tiền thu hộ còn nằm ở người giao — lọc theo TRẠNG THÁI thu hộ, không theo
+     hình thức thanh toán (đơn khách trả trước một phần vẫn có COD treo) */
+  if (req.query.cod === 'pending') where.push("s.cod_status = 'pending'");
+  if (req.query.review === '1') {
+    where.push('EXISTS (SELECT 1 FROM sale_consign_items ci WHERE ci.sale_id = s.id AND ci.needs_review = 1)');
+  }
   if (unpaid === '1') where.push("s.total > s.paid AND s.status = 'done'");
 
   /* Lọc riêng hoá đơn có hàng mua hộ (plan 31, hạng mục 4d) */

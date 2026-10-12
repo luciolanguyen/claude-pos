@@ -17,13 +17,13 @@ import {
 } from 'recharts';
 import {
   Wallet, Package, AlertTriangle, ShoppingCart, Receipt, HandCoins, Truck, Clock, Boxes, Info,
-  ArrowRight, PackageX,
+  ArrowRight, PackageX, CircleCheck, RefreshCw,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useFetch, useApp } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
 import { money, n, short, qty as fq, smartTime, date, pct, PAYMENT_LABEL, CASH_LABEL } from '../lib/format';
-import { Stat, Spinner, ErrorBox, Empty, Badge } from '../components/ui';
+import { Stat, ErrorBox, Empty, Badge } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import PeriodPicker, { usePeriod } from '../components/PeriodPicker';
 
@@ -64,6 +64,84 @@ function TipBox({ active, payload, label }) {
         </>
       )}
     </div>
+  );
+}
+
+/* ==================================================================== *
+ * CẦN XỬ LÝ (đợt B) — việc tồn đọng, mỗi việc dẫn tới đúng danh sách đã lọc.
+ * Lấy dữ liệu riêng: khối này lỗi thì chỉ khối này báo lỗi.
+ * ==================================================================== */
+const LEVEL = {
+  high: { text: 'Gấp', dot: 'bg-danger', chip: 'text-danger' },
+  medium: { text: 'Nên làm', dot: 'bg-warn', chip: 'text-warn' },
+  low: { text: 'Nhắc', dot: 'bg-info', chip: 'text-info' },
+};
+
+function ActionsBlock() {
+  const { data, busy, error, reload } = useFetch(() => api.dashboardActions(), []);
+  useLiveReload(reload, { interval: 60000 });
+  const items = data?.items || [];
+
+  return (
+    <section aria-label="Việc cần xử lý" className="card min-w-0">
+      <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-line">
+        <h2 className="text-[13px] font-bold flex items-center gap-1.5">
+          <AlertTriangle size={14} className="text-warn" aria-hidden="true" />
+          Cần xử lý{items.length > 0 && <span className="text-muted-ink font-normal">({items.length} việc)</span>}
+        </h2>
+        <button type="button" onClick={reload} className="btn btn-sm btn-ghost !px-1.5" aria-label="Tải lại việc cần xử lý"
+          title="Tải lại">
+          <RefreshCw size={13} className={busy ? 'animate-spin' : ''} aria-hidden="true" />
+        </button>
+      </div>
+      {error && !data ? (
+        <div className="p-3 text-[13px] flex items-center gap-2">
+          <span className="text-danger flex-1">Chưa tải được danh sách việc: {error.message}</span>
+          <button type="button" className="btn btn-sm btn-outline" onClick={reload}>Thử lại</button>
+        </div>
+      ) : !data ? (
+        /* Khung chờ giữ chỗ — trang không nhảy khi danh sách tải xong */
+        <div className="p-3 space-y-2" aria-busy="true">
+          {[0, 1].map((i) => <div key={i} className="h-9 rounded bg-muted animate-pulse" />)}
+        </div>
+      ) : items.length === 0 ? (
+        <p className="p-3 text-[13px] text-muted-ink flex items-center gap-2">
+          <CircleCheck size={16} className="text-accent" aria-hidden="true" />
+          Không có việc tồn đọng — nợ, đơn đặt, bảo hành, hàng cần nhập đều ổn.
+        </p>
+      ) : (
+        <ul className="divide-y divide-line">
+          {items.map((it) => {
+            const lv = LEVEL[it.level] || LEVEL.medium;
+            return (
+              <li key={it.key} className="px-3 py-2 flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${lv.dot}`} aria-hidden="true" />
+                <span className={`text-2xs font-bold uppercase w-14 shrink-0 ${lv.chip}`}>{lv.text}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold">{it.label}</div>
+                  {it.detail && <div className="text-2xs text-muted-ink truncate">{it.detail}</div>}
+                </div>
+                <Link to={it.to} className="btn btn-sm btn-outline shrink-0">
+                  {it.action} <ArrowRight size={13} aria-hidden="true" />
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Khung chờ lần tải đầu: đúng bố cục trang để không nhảy khi số liệu về. */
+function Skeleton() {
+  const box = (h) => <div className="card animate-pulse bg-muted/60" style={{ height: h }} />;
+  return (
+    <Page className="space-y-3" aria-busy="true">
+      <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i}>{box(92)}</div>)}</div>
+      {box(120)}
+      <div className="grid gap-3 lg:grid-cols-3"><div className="lg:col-span-2">{box(300)}</div>{box(300)}</div>
+    </Page>
   );
 }
 
@@ -123,7 +201,7 @@ export default function Dashboard() {
     </PageHeader>
   );
 
-  if (busy && !data) return <>{header}<Spinner /></>;
+  if (busy && !data) return <>{header}<Skeleton /></>;
   if (error && !data) return <>{header}<Page><ErrorBox error={error} onRetry={reload} /></Page></>;
   if (!data) return null;
 
@@ -151,7 +229,15 @@ export default function Dashboard() {
   return (
     <>
       {header}
-      <Page className="space-y-3">
+      {/* Đang tải kỳ mới: làm mờ số cũ và nói rõ, không để số của kỳ cũ mang nhãn kỳ mới */}
+      {(data.period.from !== period.from || data.period.to !== period.to) && (
+        <p className="mx-4 mt-3 text-[13px] text-muted-ink flex items-center gap-2" role="status">
+          <RefreshCw size={14} className="animate-spin" aria-hidden="true" />
+          Đang tải số liệu {period.label.toLowerCase()}… số bên dưới vẫn là của kỳ trước.
+        </p>
+      )}
+      <Page className={`space-y-3 transition-opacity duration-150 ${
+        data.period.from !== period.from || data.period.to !== period.to ? 'opacity-50' : ''}`}>
         {/* ------------------------- 4 số chính của kỳ ------------------------- */}
         <section aria-label="Số liệu chính của kỳ" className="grid gap-2 grid-cols-2 lg:grid-cols-4">
           <Stat onClick={() => navigate(reportLink('pnl'))} label="Doanh thu thuần" value={short(s.revenue)} tone="good" icon={Receipt}
@@ -166,6 +252,8 @@ export default function Dashboard() {
               sub={[ord.note, s.returns_count > 0 && `${n(s.returns_count)} phiếu trả hàng`].filter(Boolean).join(' · ')} />
           <Stat label="Trung bình mỗi hoá đơn" value={short(s.avg_order)} trend={avg.trend} sub={avg.note} />
         </section>
+
+        <ActionsBlock />
 
         {/* Lãi tạm tính: không để con số trông như chắc chắn */}
         {seeCost && s.missing_cost > 0 && (
