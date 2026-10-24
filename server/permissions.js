@@ -6,10 +6,9 @@
              bảo hành, và xem tồn kho để biết còn hàng hay không.
    Kho: chỉ lo hàng hoá và kho, không đụng tới tiền và giá vốn bán.
 
-   Đây là hàng rào chống thao tác nhầm giữa người trong tiệm, KHÔNG phải
-   lớp bảo mật chống kẻ xấu: phần mềm chạy trong mạng LAN của tiệm, mật
-   khẩu lưu dạng chữ thường, ai vào được mạng cũng có thể giả danh. Đừng
-   mở cổng 5175 ra Internet.
+   Máy chủ nhận ra người gọi bằng mã đăng nhập có chữ ký (auth-token.js),
+   nhưng mật khẩu vẫn lưu dạng chữ thường trong file dữ liệu. Đừng mở cổng
+   5175 ra Internet.
    ==================================================================== */
 
 /** Tất cả quyền đang có. Mô tả để hiện ở màn hình Thiết lập → Người dùng. */
@@ -25,6 +24,10 @@ export const PERMISSIONS = {
   'product.manage':  'Thêm sửa hàng hoá, đổi giá bán',
   'stock.manage':    'Kiểm kê, chuyển kho, sản xuất',
   'purchase.manage': 'Nhập hàng, nhà cung cấp, công nợ NCC',
+  /* Thủ kho nhận hàng "mù giá" (24/10/2026): đếm hàng cộng kho, chọn mối
+     theo tên — không thấy giá nhập, tổng tiền, hồ sơ hay công nợ NCC.
+     Chủ / quản lý chốt giá sau theo hoá đơn của mối. */
+  'purchase.receive': 'Nhận hàng về kho (không thấy giá nhập)',
   'cash.manage':     'Quỹ tiền, thu chi',
   'cash.voucher':    'In lại phiếu thu, phiếu chi đã lập',
   'cost.view':       'Xem giá vốn và lãi lỗ',
@@ -66,7 +69,9 @@ export const ROLE_PERMISSIONS = {
     'data.export',
   ],
   stock: [
-    'product.view', 'product.manage', 'stock.manage', 'purchase.manage',
+    /* Không có purchase.manage: người nhận hàng không đồng thời quyết giá và
+       trả tiền mối (24/10/2026) — xem routes/purchases.js, /purchases/receive */
+    'product.view', 'product.manage', 'stock.manage', 'purchase.receive',
     /* Người dựng danh mục hàng hoá chính là người cần nhập file Excel */
     'data.import', 'data.export',
   ],

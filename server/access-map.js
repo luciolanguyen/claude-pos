@@ -120,6 +120,11 @@ export const ACCESS_RULES = [
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
      khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */
   ['GET',  /^\/products\/\d+\/purchase-history$/, 'cost.view'],
+  /* Ma trận giá nhập của mọi mối cho một mặt hàng: là giá vốn, nhưng người
+     lập phiếu nhập bắt buộc phải thấy để ép giá — khoá theo quyền mua hàng.
+     Phải đứng TRƯỚC luật GET /products rộng bên dưới: trước 24/10/2026 nó nằm
+     ở mục mua hàng, bị luật rộng che mất nên thu ngân cũng đọc được. */
+  ['GET',  /^\/products\/\d+\/supplier-prices$/, 'purchase.manage'],
   ['GET',  /^\/products/,                 'product.view'],
   ['PUT',  /^\/products\/\d+\/cost$/,     'cost.view'],
   ['*',    /^\/products/,                 'product.manage'],
@@ -134,12 +139,15 @@ export const ACCESS_RULES = [
   ['*',    /^\/productions/,              'stock.manage'],
 
   /* --- Mua hàng --- */
+  /* Nhận hàng mù giá (24/10/2026): thủ kho lập phiếu nhận, xem phiếu nhập ở dạng
+     rút gọn không tiền (routes/purchases.js lọc theo danh sách trường được phép),
+     chọn mối chỉ theo tên. Mọi đường khác của mua hàng vẫn purchase.manage. */
+  ['POST', /^\/purchases\/receive$/,       'purchase.receive'],
+  ['GET',  /^\/purchases(\/\d+)?$/,        'purchase.receive'],
+  ['GET',  /^\/supplier-names$/,           'purchase.receive'],
   ['*',    /^\/purchases/,                'purchase.manage'],
   ['*',    /^\/purchase-returns/,         'purchase.manage'],
   ['*',    /^\/suppliers/,                'purchase.manage'],
-  /* Ma trận giá nhập của mọi mối cho một mặt hàng: là giá vốn, nhưng người
-     lập phiếu nhập bắt buộc phải thấy để ép giá — khoá theo quyền mua hàng. */
-  ['GET',  /^\/products\/\d+\/supplier-prices$/, 'purchase.manage'],
   ['GET',  /^\/suppliers\/\d+\/bought-products$/, 'purchase.manage'],
 
   /* --- Hàng mua hộ của chủ vãng lai (tài liệu 24, phần 5) --- */

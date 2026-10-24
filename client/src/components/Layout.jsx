@@ -31,6 +31,8 @@ export const NAV = [
     label: 'Mua hàng', icon: Truck, key: 'buy',
     children: [
       { to: '/purchases', icon: FileText, label: 'Phiếu nhập hàng', perm: 'purchase.manage' },
+      /* Thủ kho: cùng trang, nhưng chỉ nhận hàng không thấy giá (24/10/2026) */
+      { to: '/purchases', icon: FileText, label: 'Nhận hàng', perm: 'purchase.receive', unless: 'purchase.manage' },
       { to: '/purchase-returns', icon: Undo2, label: 'Trả hàng NCC', perm: 'purchase.manage' },
       /* Công nợ NCC nằm luôn trong hồ sơ nhà cung cấp (tài liệu 10) */
       { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp & công nợ', perm: 'purchase.manage' },
@@ -62,7 +64,7 @@ export function visibleNav(can, loginRequired = true) {
   for (const item of NAV) {
     if (item.needsLogin && !loginRequired) continue;
     if (item.children) {
-      const kids = item.children.filter((c) => !c.perm || can(c.perm));
+      const kids = item.children.filter((c) => (!c.perm || can(c.perm)) && !(c.unless && can(c.unless)));
       if (kids.length) out.push({ ...item, children: kids });
     } else if (!item.perm || can(item.perm)) {
       out.push(item);

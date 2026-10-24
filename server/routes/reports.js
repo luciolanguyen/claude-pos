@@ -191,6 +191,17 @@ r.get('/dashboard/actions', (req, res) => {
     action: 'Xem nợ NCC', to: '/suppliers?filter=debt',
   });
 
+  /* 2b. Phiếu thủ kho đã nhận hàng, chờ chủ / quản lý chốt giá theo hoá đơn mối.
+         Hàng đã vào kho với giá vốn tạm, chưa ghi nợ NCC — chốt càng sớm càng ít lệch */
+  const pend = get(`
+    SELECT COUNT(*) AS n, MIN(date(ts)) AS oldest FROM purchases WHERE status = 'pending_price'`);
+  push({
+    key: 'purchase_pending_price', level: 'medium', count: pend.n,
+    label: `${pend.n} phiếu nhận hàng chờ chốt giá`,
+    detail: pend.oldest ? `cũ nhất nhận ngày ${pend.oldest.split('-').reverse().join('/')} — chưa ghi nợ NCC` : 'chưa ghi nợ NCC',
+    action: 'Chốt giá', to: '/purchases?status=pending_price',
+  });
+
   /* 3. Hàng dưới định mức mà CHƯA nằm trong phiếu báo hết hàng nào đang mở —
         món đã báo rồi thì đừng nhắc nữa, kẻo đặt trùng */
   const low = get(`

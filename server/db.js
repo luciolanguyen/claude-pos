@@ -359,6 +359,14 @@ addColumns('purchases', {
   discount_mode: "TEXT NOT NULL DEFAULT 'after_vat'",   // after_vat | before_vat
 });
 addColumns('purchase_items', { line_vat: 'INTEGER', discount_share: 'INTEGER', cost_unit: 'INTEGER' });
+/* Nhận hàng mù giá (24/10/2026): thủ kho nhận → phiếu 'pending_price', tồn cộng
+   ngay theo giá vốn TẠM; chủ / quản lý chốt giá sau → phiếu 'done', mới ghi nợ NCC */
+addColumns('purchases', { received_by: 'INTEGER', priced_by: 'INTEGER', priced_at: 'TEXT' });
+addColumns('purchase_items', {
+  temp_cost: 'INTEGER',        // giá vốn tạm / đơn vị cơ bản lúc thủ kho nhận
+  received_qty: 'REAL',        // số thủ kho đếm (theo đơn vị dòng) — giữ để đối chiếu khi chủ sửa
+  recv_note: 'TEXT',           // ghi chú thiếu / hỏng của thủ kho
+});
 addColumns('suppliers', { vat_in_cost: 'INTEGER NOT NULL DEFAULT 0', vat_discount_mode: 'TEXT' });
 
 /* Mua hàng trừ vào lương nhân viên (plan 28, §6). Là TIỀN TRẢ BẰNG CÁCH KHÁC,
@@ -1131,6 +1139,22 @@ export function reverseAvgCost(productId, outQtyBase, returnUnitCost) {
 }
 
 /** Giá vốn hiện tại theo đơn vị cơ bản. */
+/**
+ * Chốt giá phiếu nhận hàng: lô đã vào kho theo giá vốn tạm, giờ biết giá thật.
+ * Cộng phần chênh (valueDelta, đồng) vào giá trị tồn của món rồi chia lại cho
+ * số đang tồn. Hàng đã bán trong lúc chờ giữ giá vốn tạm — không sửa hoá đơn cũ.
+ */
+export function revalueCost(productId, valueDelta) {
+  if (!valueDelta) return null;
+  const p = get('SELECT cost_price, cost_method, cost_fixed FROM products WHERE id = ?', [productId]);
+  if (!p || costMethodOf(p) === 'fixed') return null;
+  const totalQty = get('SELECT COALESCE(SUM(qty), 0) AS q FROM stock WHERE product_id = ?', [productId]).q;
+  if (totalQty <= 0) return null;
+  const v = Math.max(0, Math.round((totalQty * p.cost_price + valueDelta) / totalQty));
+  run('UPDATE products SET cost_price = ? WHERE id = ?', [v, productId]);
+  return v;
+}
+
 export function costOf(productId) {
   const p = get('SELECT cost_price FROM products WHERE id = ?', [productId]);
   return p ? p.cost_price : 0;

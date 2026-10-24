@@ -3,13 +3,235 @@ import { purchaseMath } from '../../client/src/lib/purchaseMath.js';
 import {
   all, get, run, tx, nextCode, moveStock, updateAvgCost, reverseAvgCost, overwriteCost,
   addCashTx, defaultCashAccount, supplierDebt, costOf, pageParams, resolveUnitId,
-  searchWhere } from '../db.js';
+  searchWhere, revalueCost } from '../db.js';
+import { can } from '../guard.js';
 
 const r = Router();
 
 const badRequest = (message, code) => Object.assign(new Error(message), { status: 400, code });
 
 /* =========================== PHIẾU NHẬP HÀNG ======================== */
+
+/* ------------------------------------------------------------------ *
+ * NHẬN HÀNG MÙ GIÁ (24/10/2026)
+ *
+ * Thủ kho (quyền purchase.receive, không có purchase.manage) chỉ thấy
+ * phiếu nhập ở dạng rút gọn: ai, ngày nào, mối nào, món gì, bao nhiêu.
+ * Lọc theo DANH SÁCH TRƯỜNG ĐƯỢC PHÉP chứ không phải danh sách cấm — sau
+ * này thêm cột tiền nào vào phiếu nhập cũng không tự lọt ra cho thủ kho.
+ * ------------------------------------------------------------------ */
+const SLIM_HEAD = ['id', 'code', 'ts', 'status', 'supplier_id', 'supplier_name', 'supplier_code',
+  'warehouse_id', 'warehouse_name', 'user_id', 'user_name', 'note', 'item_count', 'custom_count',
+  'received_by', 'priced_at'];
+const SLIM_ITEM = ['id', 'product_id', 'product_name', 'sku', 'base_unit', 'barcode', 'track_stock',
+  'unit_id', 'unit_name', 'factor', 'qty', 'received_qty', 'recv_note'];
+const SLIM_CUSTOM = ['id', 'name', 'unit_name', 'qty', 'note'];
+const pick = (o, keys) => Object.fromEntries(keys.filter((k) => k in o).map((k) => [k, o[k]]));
+const seesPrices = (req) => can(req, 'purchase.manage');
+
+/** Giá vốn tạm / đơn vị cơ bản: giá nhập lần gần nhất đã chốt, chưa nhập bao giờ thì giá vốn hiện tại */
+function tempCostOf(productId) {
+  const last = get(`
+    SELECT pi.cost_unit FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id
+    WHERE pi.product_id = ? AND pu.status = 'done' AND pi.cost_unit IS NOT NULL
+    ORDER BY pu.ts DESC, pi.id DESC LIMIT 1`, [productId]);
+  return Math.max(0, Math.round(last?.cost_unit ?? costOf(productId) ?? 0));
+}
+
+/** Ô chọn mối của thủ kho: chỉ mã và tên — không SĐT, tài khoản, công nợ */
+r.get('/supplier-names', (req, res) => {
+  res.json(all('SELECT id, code, name FROM suppliers WHERE active = 1 ORDER BY name COLLATE NOCASE'));
+});
+
+/**
+ * Thủ kho nhận hàng: đếm được bao nhiêu ghi bấy nhiêu, tồn cộng ngay với giá
+ * vốn tạm. Phiếu nằm ở 'pending_price' — chưa ghi nợ NCC, chưa trả tiền được,
+ * mọi giá gửi lên đều bị bỏ qua.
+ * items: [{ product_id, unit_id, unit_name, factor, qty, note }]
+ */
+r.post('/purchases/receive', (req, res) => {
+  const b = req.body || {};
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .filter((i) => Number(i.qty) > 0 && Number(i.product_id));
+  if (!items.length) return res.status(400).json({ error: 'Phiếu nhận hàng phải có ít nhất 1 mặt hàng' });
+  const supplierId = Number(b.supplier_id) || null;
+  if (supplierId && !get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) {
+    return res.status(400).json({ error: 'Không tìm thấy nhà cung cấp' });
+  }
+  const warehouseId = Number(b.warehouse_id) || get('SELECT id FROM warehouses WHERE is_default = 1')?.id;
+  if (!warehouseId) return res.status(400).json({ error: 'Chưa thiết lập kho' });
+  const userId = req.user?.id || Number(b.user_id) || null;
+
+  const result = tx(() => {
+    const code = nextCode('purchases', 'PN');
+    const lines = items.map((it) => {
+      const qty = Number(it.qty);
+      const factor = Number(it.factor) || 1;
+      const temp = tempCostOf(it.product_id);
+      return { ...it, qty, factor, temp, price: Math.round(temp * factor), amount: Math.round(temp * factor * qty) };
+    });
+    const subtotal = lines.reduce((a, l) => a + l.amount, 0);
+    /* Tiền trên phiếu lúc này chỉ là tạm tính để chủ có số đối chiếu — phiếu chưa
+       'done' nên không vào công nợ NCC, không vào báo cáo mua hàng */
+    const info = run(`
+      INSERT INTO purchases(code, ts, supplier_id, warehouse_id, user_id, subtotal, total, paid,
+                            status, note, received_by)
+      VALUES(?, datetime('now','localtime'), ?, ?, ?, ?, ?, 0, 'pending_price', ?, ?)`,
+    [code, supplierId, warehouseId, userId, subtotal, subtotal, String(b.note || '').trim() || null, userId]);
+    const purchaseId = Number(info.lastInsertRowid);
+    for (const l of lines) {
+      run(`INSERT INTO purchase_items(purchase_id, product_id, unit_id, unit_name, factor, qty, price,
+                                      amount, list_price, cost_unit, temp_cost, received_qty, recv_note)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [purchaseId, l.product_id, resolveUnitId(l.product_id, l.unit_id, l.unit_name), l.unit_name,
+        l.factor, l.qty, l.price, l.amount, l.price, l.temp, l.temp, l.qty,
+        String(l.note || '').trim() || null]);
+      moveStock({
+        productId: l.product_id, warehouseId, qtyChange: l.qty * l.factor, unitCost: l.temp,
+        refType: 'purchase', refId: purchaseId, refCode: code,
+        note: `Nhận ${l.qty} ${l.unit_name} (chờ chốt giá)`,
+      });
+      updateAvgCost(l.product_id, l.qty * l.factor, l.temp);
+    }
+    return { id: purchaseId, code, status: 'pending_price' };
+  });
+  res.json(result);
+});
+
+/**
+ * Chủ / quản lý chốt giá phiếu thủ kho đã nhận, theo hoá đơn của mối.
+ * Thân giống POST /purchases (giảm giá, thuế, chi phí khác, đã trả...), mỗi
+ * dòng mang id dòng phiếu (purchase_item_id). Sửa được số lượng nếu thủ kho
+ * đếm sai (về 0 là bỏ dòng); số thủ kho đếm vẫn giữ ở received_qty.
+ * Không thêm dòng hàng mới được — hàng thiếu thì lập phiếu nhận khác.
+ */
+r.post('/purchases/:id/price', (req, res) => {
+  const p = get('SELECT * FROM purchases WHERE id = ?', [req.params.id]);
+  if (!p) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+  if (p.status !== 'pending_price') {
+    return res.status(400).json({ error: `Phiếu ${p.code} không ở trạng thái chờ chốt giá.`, code: 'NOT_PENDING' });
+  }
+  const b = req.body || {};
+  const old = all('SELECT * FROM purchase_items WHERE purchase_id = ? ORDER BY id', [p.id]);
+  const ids = new Set(old.map((x) => x.id));
+  const sent = Array.isArray(b.items) ? b.items : [];
+  if (sent.some((it) => !ids.has(Number(it.purchase_item_id)))) {
+    return res.status(400).json({ error: 'Dòng hàng không thuộc phiếu này. Hàng mới thì lập phiếu nhận khác.', code: 'BAD_LINE' });
+  }
+  /* Dòng không gửi lên thì giữ số lượng thủ kho đã đếm, giá theo giá tạm */
+  const lines = old.map((o) => {
+    const s = sent.find((x) => Number(x.purchase_item_id) === o.id) || {};
+    return {
+      o,
+      product_id: o.product_id, unit_name: o.unit_name, factor: o.factor,
+      qty: s.qty === undefined ? o.qty : Math.max(0, Number(s.qty) || 0),
+      price: s.price === undefined ? o.price : s.price,
+      discount: s.discount || 0, vat_rate: s.vat_rate || 0,
+      list_price: s.list_price, discount_percent: s.discount_percent,
+      overwrite_cost: s.overwrite_cost,
+    };
+  });
+  const custom = (Array.isArray(b.custom_items) ? b.custom_items : [])
+    .map((c) => ({
+      name: String(c?.name ?? '').trim(), unit_name: String(c?.unit_name ?? '').trim() || null,
+      qty: Number(c?.qty) || 0, price: Math.max(0, Math.round(Number(c?.price) || 0)),
+      note: String(c?.note ?? '').trim() || null,
+    }))
+    .filter((c) => c.qty > 0);
+  if (custom.some((c) => !c.name)) {
+    return res.status(400).json({ error: 'Hàng giao sai phải ghi tên hàng.', code: 'CUSTOM_NAME_REQUIRED' });
+  }
+  const kept = lines.filter((l) => l.qty > 0);
+  if (!kept.length && !custom.length) return res.status(400).json({ error: 'Phiếu phải còn ít nhất 1 mặt hàng' });
+
+  const math = purchaseMath(b, kept, custom);
+  if (math.vatInCost && math.lines.some((l) => l.unitCost < 0)) {
+    return res.status(400).json({ error: 'Chiết khấu NCC lớn hơn tiền hàng — giá vốn ra số âm.', code: 'DISCOUNT_TOO_HIGH' });
+  }
+  /* Bớt số lượng mà hàng đã bán mất rồi thì không rút kho được */
+  for (const l of lines) {
+    const drop = (l.o.qty - l.qty) * l.factor;
+    if (drop <= 0) continue;
+    const pr = get('SELECT name, track_stock FROM products WHERE id = ?', [l.product_id]);
+    const st = get('SELECT qty FROM stock WHERE product_id = ? AND warehouse_id = ?', [l.product_id, p.warehouse_id]);
+    if (pr?.track_stock && (st?.qty ?? 0) < drop) {
+      return res.status(400).json({
+        error: `"${pr.name}" chỉ còn ${st?.qty ?? 0} trong kho, không bớt ${drop} được — hàng đã bán ra.`,
+        code: 'STOCK_TOO_LOW',
+      });
+    }
+  }
+  const userId = req.user?.id || Number(b.user_id) || null;
+
+  try {
+    const result = tx(() => {
+      kept.forEach((l, i) => { l.m = math.lines[i]; });
+      for (const l of lines) {
+        const o = l.o;
+        const oldBase = o.qty * o.factor;
+        const newBase = l.qty * l.factor;
+        const temp = o.temp_cost ?? o.cost_unit ?? 0;
+        const unitCost = l.m ? l.m.unitCost : temp;
+        const overwrite = b.overwrite_cost_all === true || l.overwrite_cost === true || l.overwrite_cost === 1;
+        if (newBase !== oldBase) {
+          moveStock({
+            productId: l.product_id, warehouseId: p.warehouse_id, qtyChange: newBase - oldBase,
+            unitCost: newBase > oldBase ? unitCost : temp,
+            refType: 'purchase', refId: p.id, refCode: p.code,
+            note: `Chốt giá ${p.code}: sửa số đếm ${o.qty} → ${l.qty} ${o.unit_name}`,
+          });
+          if (newBase > oldBase) updateAvgCost(l.product_id, newBase - oldBase, unitCost);
+          else reverseAvgCost(l.product_id, oldBase - newBase, temp);
+        }
+        /* Phần còn lại của lô: đổi từ giá tạm sang giá thật */
+        if (overwrite && newBase > 0) overwriteCost(l.product_id, unitCost);
+        else revalueCost(l.product_id, Math.min(oldBase, newBase) * (unitCost - temp));
+
+        if (!l.m) { run('DELETE FROM purchase_items WHERE id = ?', [o.id]); continue; }
+        run(`UPDATE purchase_items SET qty = ?, price = ?, discount = ?, vat_rate = ?, amount = ?,
+                    list_price = ?, discount_percent = ?, overwrite_cost = ?, line_vat = ?,
+                    discount_share = ?, cost_unit = ?
+             WHERE id = ?`,
+        [l.qty, Math.round(Number(l.price) || 0), Math.round(Number(l.discount) || 0),
+          Number(l.vat_rate) || 0, l.m.amount,
+          Math.round(Number(l.list_price) || Number(l.price) || 0), Number(l.discount_percent) || 0,
+          overwrite ? 1 : 0, l.m.vat, l.m.discountShare, unitCost, o.id]);
+      }
+      for (const c of custom) {
+        run(`INSERT INTO purchase_custom_items(purchase_id, name, unit_name, qty, price, amount, note)
+             VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [p.id, c.name, c.unit_name, c.qty, c.price, Math.round(c.qty * c.price), c.note]);
+      }
+      const { subtotal, discount, vatAmount, total } = math;
+      const paid = Math.min(Math.max(0, Math.round(Number(b.paid) || 0)), total);
+      const supplierId = Number(b.supplier_id) || p.supplier_id || null;
+      run(`UPDATE purchases SET status = 'done', supplier_id = ?, subtotal = ?, discount = ?, vat_amount = ?,
+                  other_cost = ?, total = ?, paid = ?, supplier_invoice = ?, due_date = ?,
+                  note = COALESCE(?, note), vat_in_cost = ?, discount_mode = ?,
+                  priced_by = ?, priced_at = datetime('now','localtime')
+           WHERE id = ?`,
+      [supplierId, subtotal, discount, vatAmount, math.otherCost, total, paid,
+        b.supplier_invoice || null, b.due_date || null, b.note ? String(b.note) : null,
+        math.vatInCost ? 1 : 0, math.discountMode, userId, p.id]);
+      if (paid > 0) {
+        const accountId = Number(b.account_id) || defaultCashAccount();
+        const sup = supplierId ? get('SELECT name FROM suppliers WHERE id = ?', [supplierId]) : null;
+        if (accountId) {
+          addCashTx({
+            accountId, direction: 'out', amount: paid, category: 'purchase',
+            partnerType: 'supplier', partnerId: supplierId, partnerName: sup?.name || 'Khách lẻ',
+            refType: 'purchase', refId: p.id, refCode: p.code,
+            userId, note: `Thanh toán phiếu nhập ${p.code}`,
+          });
+        }
+      }
+      return { id: p.id, code: p.code, total, status: 'done' };
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message, code: e.code });
+  }
+});
 
 r.get('/purchases', (req, res) => {
   const { q = '', supplier_id, from, to, status, unpaid, match = 'contains' } = req.query;
@@ -57,6 +279,9 @@ r.get('/purchases', (req, res) => {
     FROM purchases p
     LEFT JOIN suppliers s ON s.id = p.supplier_id
     ${w ? w + " AND p.status = 'done'" : "WHERE p.status = 'done'"}`, params);
+  if (!seesPrices(req)) {
+    return res.json({ rows: rows.map((x) => pick(x, SLIM_HEAD)), total, page, page_size: size, totals: { count: total } });
+  }
   res.json({ rows, total, page, page_size: size, totals: sums });
 });
 
@@ -120,6 +345,13 @@ r.get('/purchases/:id', (req, res) => {
     ci.returnable_qty = Math.max(0, ci.qty - ci.returned_qty);
   }
   p.returns = all('SELECT id, code, ts, subtotal, expense, total, refunded FROM purchase_returns WHERE purchase_id = ? ORDER BY id', [p.id]);
+  if (!seesPrices(req)) {
+    return res.json({
+      ...pick(p, SLIM_HEAD),
+      items: p.items.map((x) => pick(x, SLIM_ITEM)),
+      custom_items: p.custom_items.map((x) => pick(x, SLIM_CUSTOM)),
+    });
+  }
   res.json(p);
 });
 
@@ -252,6 +484,9 @@ r.post('/purchases', (req, res) => {
 r.post('/purchases/:id/pay', (req, res) => {
   const p = get('SELECT * FROM purchases WHERE id = ?', [req.params.id]);
   if (!p) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+  if (p.status !== 'done') {
+    return res.status(400).json({ error: `Phiếu ${p.code} chưa chốt giá hoặc đã huỷ — chưa trả tiền được.`, code: 'NOT_DONE' });
+  }
   const amount = Math.round(Number(req.body.amount) || 0);
   const remaining = p.total - p.paid;
   if (amount <= 0) return res.status(400).json({ error: 'Số tiền phải lớn hơn 0' });
@@ -474,7 +709,9 @@ r.post('/purchase-returns', (req, res) => {
     const purchase = b.purchase_id ? get('SELECT * FROM purchases WHERE id = ?', [b.purchase_id]) : null;
     if (b.purchase_id && !purchase) throw badRequest('Không tìm thấy phiếu nhập gốc', 'PURCHASE_NOT_FOUND');
     if (purchase && purchase.status !== 'done') {
-      throw badRequest(`Phiếu nhập ${purchase.code} đã huỷ, không trả hàng theo phiếu này được.`, 'PURCHASE_CANCELLED');
+      throw badRequest(purchase.status === 'pending_price'
+        ? `Phiếu nhập ${purchase.code} chưa chốt giá — chốt giá xong mới trả hàng theo phiếu được.`
+        : `Phiếu nhập ${purchase.code} đã huỷ, không trả hàng theo phiếu này được.`, 'PURCHASE_CANCELLED');
     }
 
     const items = (Array.isArray(b.items) ? b.items : []).filter((i) => Number(i.qty) > 0);

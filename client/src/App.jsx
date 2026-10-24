@@ -223,7 +223,7 @@ function Shell() {
               {/* Trang công nợ riêng đã gộp vào danh mục (tài liệu 08, 10) — link cũ tự chuyển sang bộ lọc */}
               <Route path="customer-debts" element={<Navigate to="/customers?filter=debt" replace />} />
 
-              <Route path="purchases" element={<Guard perm="purchase.manage"><Purchases /></Guard>} />
+              <Route path="purchases" element={<Guard perm="purchase.receive"><Purchases /></Guard>} />
               <Route path="purchase-returns" element={<Guard perm="purchase.manage"><PurchaseReturns /></Guard>} />
               <Route path="suppliers" element={<Guard perm="purchase.manage"><Suppliers /></Guard>} />
               <Route path="suppliers/:id" element={<Guard perm="purchase.manage"><SupplierDetail /></Guard>} />

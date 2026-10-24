@@ -504,7 +504,8 @@ export default function CartPickerModal({
                           aria-label={`Số lượng ${l.name}`} />
                         <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name}`}
                           onClick={() => onPatch(l.key, { qty: Number(l.qty) + 1 })} />
-                        {editPrice ? (
+                        {/* Nhận hàng mù giá (24/10/2026): tắt giá là không hiện đồng nào */}
+                        {!showPrice ? null : editPrice ? (
                           <MoneyInput size="sm" value={l.price} className="!w-28 ml-auto"
                             onChange={(v) => onPatch(l.key, { price: v, priceEdited: true })}
                             aria-label={`${priceLabel} ${l.name}`} />
@@ -512,9 +513,11 @@ export default function CartPickerModal({
                           <span className="ml-auto tabular text-[13px]">{money(l.price)}</span>
                         )}
                       </div>
-                      <div className="text-right text-[13px] font-semibold tabular mt-0.5">
-                        {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
-                      </div>
+                      {showPrice && (
+                        <div className="text-right text-[13px] font-semibold tabular mt-0.5">
+                          {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
+                        </div>
+                      )}
                     </>
                   )}
                   {rightCol?.(l)}
