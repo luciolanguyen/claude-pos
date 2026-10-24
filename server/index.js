@@ -29,7 +29,7 @@ import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
 import { permFor } from './access-map.js';
-import { whoami, isLoginRequired } from './guard.js';
+import { whoami, isLoginRequired, issueToken } from './guard.js';
 import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,7 +51,7 @@ app.use(express.json({ limit: '80mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-payroll-token');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-payroll-token');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -71,6 +71,8 @@ app.get('/api/me', (req, res) => {
   res.json({
     login_required: true,
     user: u ? { id: u.id, username: u.username, full_name: u.full_name, role: u.role } : null,
+    /* Mã mới 30 ngày: máy mở phần mềm mỗi ngày thì không bao giờ phải đăng nhập lại */
+    token: u && u.active ? issueToken(u) : undefined,
     can: u && u.active ? permsOf(u.role) : [],
     permissions: PERMISSIONS,
     role_labels: ROLE_LABEL,

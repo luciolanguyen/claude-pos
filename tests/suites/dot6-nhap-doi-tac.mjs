@@ -5,7 +5,7 @@
  * không ghi dòng nào, cập nhật theo mã không xoá ô để trống, không nhận nợ
  * đầu kỳ, và số điện thoại rụng số 0 từ Excel được dọn lại cho đúng.
  */
-import { section, ok, get, post, raw, code } from '../lib.mjs';
+import { section, ok, get, post, raw, code, authAs } from '../lib.mjs';
 
 const stamp = String(Date.now()).slice(-5);
 const ph = (n) => `09${stamp}${String(n).padStart(3, '0')}`;
@@ -76,7 +76,7 @@ export default async function run() {
     const thuNgan = users.find((u) => u.role === 'cashier');
     if (thuNgan) {
       const r = await raw('POST', '/customers/import',
-        { rows: rows([{ name: 'thử' }]), dry_run: true }, { 'x-user-id': String(thuNgan.id) });
+        { rows: rows([{ name: 'thử' }]), dry_run: true }, await authAs(thuNgan.username));
       ok('thu ngân bị chặn 403', r.status === 403, String(r.status));
     } else {
       ok('(không có tài khoản thu ngân mẫu — bỏ qua)', true);

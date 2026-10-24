@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { issueToken } from '../guard.js';
 import { all, get, run, tx, getSettings, setSetting, DB_FILE, db, WARRANTY_DIR, PRODUCT_DIR, PAYROLL_DIR, ensureBarcodeRegistry } from '../db.js';
 
 const r = Router();
@@ -69,6 +70,13 @@ r.post('/users', (req, res) => {
 
 r.put('/users/:id', (req, res) => {
   const b = req.body;
+  /* Đổi mật khẩu, đổi vai trò hay khoá tài khoản: mã đăng nhập cũ của người
+     đó trên mọi máy hết hiệu lực ngay — thu ngân bị cho nghỉ không thể giữ
+     máy đã đăng nhập sẵn mà làm tiếp. */
+  const cur = get('SELECT role, active FROM users WHERE id = ?', [req.params.id]);
+  if (cur && (b.password || (b.role && b.role !== cur.role) || (b.active === 0 && cur.active))) {
+    run('UPDATE users SET token_ver = token_ver + 1 WHERE id = ?', [req.params.id]);
+  }
   let pin;
   try { pin = normPin(b.pin, req.params.id); } catch (e) { return res.status(400).json({ error: e.message }); }
   if (pin !== undefined) run('UPDATE users SET pin = ? WHERE id = ?', [pin, req.params.id]);
@@ -90,18 +98,42 @@ r.delete('/users/:id', (req, res) => {
   if (u?.role === 'owner' && owners <= 1) {
     return res.status(400).json({ error: 'Phải còn ít nhất một tài khoản Chủ cửa hàng.' });
   }
-  run('UPDATE users SET active = 0 WHERE id = ?', [req.params.id]);
+  run('UPDATE users SET active = 0, token_ver = token_ver + 1 WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
-/** Đăng nhập đơn giản cho mạng LAN nội bộ trong tiệm. */
+/* Gõ mò mật khẩu: một máy sai 8 lần trong 5 phút với cùng một tài khoản thì
+   khoá tài khoản đó trên máy đó 5 phút. Mật khẩu tiệm hay ngắn (1234...),
+   không chặn thì một vòng lặp vài giây là dò ra. Khoá theo cả máy lẫn tên để
+   một người gõ sai không làm cả quầy (chung một máy) không vào được. */
+const loginFails = new Map();          // "ip|tên" -> { n, until, first }
+const FAIL_MAX = 8;
+const FAIL_WINDOW = 5 * 60 * 1000;
+
+/** Đăng nhập: đúng mật khẩu thì cấp mã có chữ ký (server/auth-token.js). */
 r.post('/login', (req, res) => {
-  const { username, password } = req.body;
-  const u = get('SELECT * FROM users WHERE username = ? AND active = 1', [username]);
+  const { username, password } = req.body || {};
+  const key = `${req.ip || req.socket?.remoteAddress || '?'}|${String(username || '').trim().toLowerCase()}`;
+  const now = Date.now();
+  const f = loginFails.get(key);
+  if (f && f.until > now) {
+    const min = Math.ceil((f.until - now) / 60000);
+    return res.status(429).json({
+      error: `Sai mật khẩu nhiều lần. Đợi ${min} phút rồi thử lại.`, code: 'LOGIN_LOCKED',
+    });
+  }
+  const u = get('SELECT * FROM users WHERE username = ? AND active = 1', [String(username || '')]);
   if (!u || u.password !== password) {
+    const cur = f && now - f.first < FAIL_WINDOW ? f : { n: 0, first: now, until: 0 };
+    cur.n += 1;
+    if (cur.n >= FAIL_MAX) { cur.until = now + FAIL_WINDOW; cur.n = 0; cur.first = now; }
+    loginFails.set(key, cur);
     return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
   }
-  res.json({ id: u.id, username: u.username, full_name: u.full_name, role: u.role });
+  loginFails.delete(key);
+  res.json({
+    id: u.id, username: u.username, full_name: u.full_name, role: u.role, token: issueToken(u),
+  });
 });
 
 /* ======================= NHẬT KÝ HOẠT ĐỘNG ========================= */

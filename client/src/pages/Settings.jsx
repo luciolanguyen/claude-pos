@@ -6,7 +6,7 @@ import {
   Smartphone, ExternalLink, ScanBarcode,
 } from 'lucide-react';
 import { barcodeSvg } from '../lib/barcode';
-import { api } from '../lib/api';
+import { api, authToken } from '../lib/api';
 import { useApp, useFetch } from '../lib/store';
 import {
   money, n, date, datetime, ROLE_LABEL, COST_METHOD_LABEL, COST_METHOD_HINT,
@@ -1941,7 +1941,7 @@ function UserForm({ open, user, onClose, onSaved }) {
 /* ==================================================================== */
 
 function DataTab() {
-  const { toast, user } = useApp();
+  const { toast } = useApp();
   const { data: info, reload } = useFetch(() => api.systemInfo(), []);
   const [restoring, setRestoring] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -1950,13 +1950,13 @@ function DataTab() {
 
   /**
    * Tải file sao lưu.
-   * Chuyển trang bằng window.location KHÔNG gửi được header x-user-id, nên
-   * máy chủ chặn 401 và file tải về chỉ là một dòng báo lỗi. Gắn id người
-   * dùng vào đường dẫn để máy chủ nhận ra.
+   * Chuyển trang bằng window.location KHÔNG gửi được header đăng nhập, nên
+   * máy chủ chặn 401 và file tải về chỉ là một dòng báo lỗi. Gắn mã đăng
+   * nhập vào đường dẫn để máy chủ nhận ra.
    */
   const backup = () => {
-    const uid = user?.id;
-    window.location.href = '/api/backup' + (uid ? `?uid=${uid}` : '');
+    const t = authToken();
+    window.location.href = '/api/backup' + (t ? `?t=${encodeURIComponent(t)}` : '');
     toast('Đang tải file sao lưu...', 'ok');
   };
 

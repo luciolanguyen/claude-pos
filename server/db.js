@@ -145,6 +145,9 @@ addColumns('sales', {
    được: giảm giá quá hạn mức, bán nợ vượt hạn mức. Không bao giờ trả ra
    ngoài qua API. */
 addColumns('users', { pin: 'TEXT' });
+/* Số đời mã đăng nhập (server/auth-token.js): tăng lên là mọi mã đã cấp cho
+   người đó hết hiệu lực — đổi mật khẩu, đổi vai trò, khoá tài khoản */
+addColumns('users', { token_ver: 'INTEGER NOT NULL DEFAULT 0' });
 
 /* Kho hàng lỗi: hàng khách trả mà hỏng thì vào đây, không bán được. */
 addColumns('warehouses', { is_defect: 'INTEGER NOT NULL DEFAULT 0' });

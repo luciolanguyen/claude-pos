@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { keyFileOf, loadKey, signToken } from '../server/auth-token.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OLD_COMMIT = process.argv[2] || '7011dc6';
@@ -32,7 +33,14 @@ const OLDDIR = path.join(ROOT, '.dryrun-old');
 const SNAP = path.join(WORK, 'snap.db');
 const A = path.join(WORK, 'cu.db');
 const B = path.join(WORK, 'moi.db');
-const H = { headers: { 'x-user-id': '1' } };
+/* Mã cũ nhận ra người gọi bằng x-user-id; mã mới chỉ nhận mã đăng nhập có chữ ký
+   (server/auth-token.js). Ký mã cho người số 1 bằng chính khoá máy mới sinh ra
+   cạnh bản sao B — không cần biết mật khẩu thật của tiệm. */
+const headersFor = (db) => {
+  const h = { 'x-user-id': '1' };
+  if (fs.existsSync(keyFileOf(db))) h.Authorization = `Bearer ${signToken(loadKey(keyFileOf(db)), { id: 1, token_ver: 0 })}`;
+  return { headers: h };
+};
 
 const clean = () => {
   fs.rmSync(OLDDIR, { recursive: true, force: true });
@@ -82,7 +90,8 @@ const start = (cwd, db, port) => {
   p.stderr.on('data', (c) => { p.log += c; });
   return p;
 };
-const read = async (base) => {
+const read = async (base, db) => {
+  const H = headersFor(db);
   const g = (p) => fetch(base + p, H).then((r) => r.json());
   const rows = (x) => (Array.isArray(x) ? x : x.rows);
   return {
@@ -99,8 +108,8 @@ await new Promise((r) => setTimeout(r, 4500));
 
 let cu; let moi;
 try {
-  cu = await read('http://localhost:5180/api');
-  moi = await read('http://localhost:5179/api');
+  cu = await read('http://localhost:5180/api', A);
+  moi = await read('http://localhost:5179/api', B);
 } catch (e) {
   oldSrv.kill(); newSrv.kill();
   console.log('Không đọc được số liệu:', e.message);

@@ -104,28 +104,15 @@ export function roleCan(role, perm) {
  * ------------------------------------------------------------------ */
 
 /**
- * Ai đang gọi. Máy khách gửi kèm id người dùng ở header x-user-id.
- *
- * Riêng ảnh thì nhận thêm ở dạng ?uid= trên đường dẫn: thẻ <img src="..."/>
- * của trình duyệt KHÔNG gửi được header tự đặt, nên ảnh bảo hành sẽ bị chặn
- * 401 và hiện ra ô trống — trông y như phần mềm quên lưu ảnh.
- */
-export function currentUser(req, getUserById) {
-  const id = Number(req.get('x-user-id')) || Number(req.query?.uid);
-  if (!id) return null;
-  return getUserById(id) || null;
-}
-
-/**
  * Sinh middleware đòi một quyền cụ thể.
  * Chưa đăng nhập thì cho qua — tiệm có thể bật "bỏ qua đăng nhập" ở
  * Thiết lập, lúc đó cả nhà dùng chung một máy và không có ai để phân quyền.
  */
-export function makeRequire(getUserById, isLoginRequired) {
+export function makeRequire(currentUser, isLoginRequired) {
   return function require(perm) {
     return (req, res, next) => {
       if (!isLoginRequired()) return next();
-      const u = currentUser(req, getUserById);
+      const u = currentUser(req);
       if (!u) {
         return res.status(401).json({
           error: 'Chưa đăng nhập. Hãy đăng nhập lại.', code: 'NO_AUTH',
