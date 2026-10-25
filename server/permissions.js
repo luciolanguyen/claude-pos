@@ -81,14 +81,13 @@ export const ROLE_PERMISSIONS = {
     /* Người dựng danh mục hàng hoá chính là người cần nhập file Excel */
     'data.import', 'data.export',
   ],
-  /* Thợ (25/10/2026, thay vai "Nhân viên bảo hành"): nhận máy, báo bệnh, báo
-     vật tư thay, báo sửa xong. KHÔNG thấy giá vật tư, tiền công, báo giá —
-     máy chủ cắt hết tiền khỏi phiếu (routes/warranty.js, shapeTicket). Không
-     có sale.view: tra hạn bảo hành đi qua /warranty-lookup, không lộ tiền hoá
-     đơn. Vẫn mở hồ sơ khách để gọi điện báo máy đã sửa xong. */
-  technician: [
-    'warranty.receive', 'warranty.work', 'product.view', 'customer.manage',
-  ],
+  /* Thợ (25/10/2026, thay vai "Nhân viên bảo hành"): CHỈ nghiệp vụ bảo hành và
+     sửa chữa — nhận máy, báo bệnh, báo vật tư thay, báo sửa xong. Không vào
+     khách hàng & công nợ, không vào kho: chọn khách và chọn linh kiện đi qua
+     /warranty/customer-options và /warranty/part-options (chỉ tên, SĐT, tồn;
+     không giá, không nợ). Không thấy giá vật tư, tiền công, báo giá — máy chủ
+     cắt hết tiền khỏi phiếu (routes/warranty.js, shapeTicket). */
+  technician: ['warranty.receive', 'warranty.work'],
 };
 
 export const ROLE_LABEL = {

@@ -32,6 +32,18 @@ export default async function run() {
     && !meTho.can.includes('warranty.quote') && !meTho.can.includes('warranty.deliver'));
   ok('thợ không xem hoá đơn bán, không thấy giá vốn', !meTho.can.includes('sale.view') && !meTho.can.includes('cost.view'));
   ok('/me trả bảng quyền từng vai cho màn hình Thiết lập', Array.isArray(meTho.role_permissions?.technician));
+  ok('thợ chỉ có hai quyền bảo hành', meTho.can.slice().sort().join() === 'warranty.receive,warranty.work', meTho.can.join());
+  for (const p of ['/customers?page_size=1', '/products?page_size=1', '/products/pos', '/stock', '/requisitions']) {
+    ok(`thợ không vào ${p.split('?')[0]} (403)`, (await raw('GET', p, null, tho)).status === 403);
+  }
+  {
+    const kh = await get('/warranty/customer-options', tho);
+    ok('ô chọn khách của thợ chỉ có mã, tên, SĐT, địa chỉ',
+      kh.length > 0 && kh.every((c) => Object.keys(c).sort().join() === 'address,code,id,name,phone'));
+    const hh = await get('/warranty/part-options', tho);
+    ok('ô chọn linh kiện của thợ không kèm giá nào',
+      hh.length > 0 && moneyKeys(hh).length === 0 && hh.every((p) => p.units.every((u) => !Object.keys(u.prices).length)));
+  }
 
   section('ĐỢT 10 — nhận máy: ảnh tình trạng bắt buộc');
   const kh = await post('/customers', { name: `Khách sửa máy ${Date.now()}`, phone: `09${String(Date.now()).slice(-8)}` });

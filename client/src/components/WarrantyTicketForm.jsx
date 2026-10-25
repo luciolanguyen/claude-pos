@@ -85,8 +85,10 @@ export default function WarrantyTicketForm({ open, onClose, onSaved, draft = nul
     setLookupQ(''); setFound(null); setErr('');
   }, [open, draft]);
 
-  const { data: customers } = useFetch(() => api.customers({ active: 1 }), [], { skip: !open });
-  const { data: products } = useFetch(() => api.posProducts(), [], { skip: !open });
+  /* Đường riêng của phân hệ bảo hành: thợ không có quyền khách hàng / kho
+     (25/10/2026) — chỉ lấy tên, SĐT khách và tên, tồn hàng, không giá không nợ */
+  const { data: customers } = useFetch(() => api.get('/warranty/customer-options'), [], { skip: !open });
+  const { data: products } = useFetch(() => api.get('/warranty/part-options'), [], { skip: !open });
   const { data: users } = useFetch(() => api.users(), [], { skip: !open });
   const staff = (Array.isArray(users) ? users : []).filter((u) => u.active);
 

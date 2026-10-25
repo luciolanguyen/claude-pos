@@ -31,7 +31,7 @@ import { Button, IconButton, Modal, Empty, Spinner, ErrorBox, Confirm, SearchInp
 export default function SaveDraftButton({
   build, onSaved, disabled, className = '', label = 'Lưu tạm', size = 'md',
 }) {
-  const { user, toast } = useApp();
+  const { user, toast, can } = useApp();
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
@@ -45,6 +45,10 @@ export default function SaveDraftButton({
       toast(e.message, 'bad', 6000);
     } finally { setBusy(false); }
   };
+
+  /* Phiếu tạm khoá theo quyền xem hàng hoá (access-map) — thợ không có quyền
+     đó (25/10/2026) thì ẩn nút, đừng để bấm vào là báo lỗi */
+  if (!can('product.view')) return null;
 
   return (
     <Button
@@ -66,11 +70,13 @@ export default function SaveDraftButton({
  * Không có phiếu tạm nào thì ẩn hẳn cho đỡ chật thanh công cụ.
  */
 export function OpenDraftsButton({ kind, onOpen, label = 'Phiếu tạm', size = 'md' }) {
+  const { can } = useApp();
+  const allowed = can('product.view');
   const [open, setOpen] = useState(false);
-  const { data, reload } = useFetch(() => api.get('/doc-drafts-count'), []);
+  const { data, reload } = useFetch(() => api.get('/doc-drafts-count'), [], { skip: !allowed });
   const count = data?.counts?.[kind] || 0;
 
-  if (!count && !open) return null;
+  if (!allowed || (!count && !open)) return null;
 
   return (
     <>

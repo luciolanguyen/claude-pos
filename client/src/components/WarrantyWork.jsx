@@ -148,7 +148,9 @@ export function ProposalModal({ t, onClose, onDone }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const { data: products } = useFetch(() => api.posProducts({ warehouse_id: defaultWarehouse }), [defaultWarehouse]);
+  /* Thợ không có quyền kho: danh sách linh kiện đi qua đường riêng, không kèm giá */
+  const { data: products } = useFetch(
+    () => api.get('/warranty/part-options', { warehouse_id: defaultWarehouse }), [defaultWarehouse]);
   const trackable = useMemo(() => (products || []).filter((p) => p.track_stock), [products]);
 
   useEffect(() => {

@@ -379,6 +379,38 @@ r.get('/warranty', (req, res) => {
   res.json({ rows: rows.map((x) => shapeTicket(req, x)), total, page, page_size: size });
 });
 
+/* ------------------------------------------------------------------ *
+ * Ô chọn khách và chọn hàng cho người nhận máy / báo vật tư. Thợ không có
+ * quyền khách hàng hay kho (25/10/2026) nên không gọi /customers, /products
+ * được — hai đường này chỉ trả đúng thứ cần để chọn: khách thì tên, SĐT,
+ * địa chỉ (không nợ, không hạn mức); hàng thì tên, mã, đơn vị, tồn kho
+ * (không giá bán, không giá vốn). Đặt trước /warranty/:id.
+ * ------------------------------------------------------------------ */
+r.get('/warranty/customer-options', (req, res) => {
+  res.json(all(`SELECT id, code, name, phone, address FROM customers
+                WHERE active = 1 ORDER BY name COLLATE NOCASE`));
+});
+
+r.get('/warranty/part-options', (req, res) => {
+  const warehouseId = Number(req.query.warehouse_id)
+    || get('SELECT id FROM warehouses WHERE is_default = 1')?.id || 1;
+  const rows = all(`
+    SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.track_stock, p.category_id,
+           p.brand, p.warranty_months, c.name AS category_name,
+           COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0) AS stock
+    FROM products p LEFT JOIN categories c ON c.id = p.category_id
+    WHERE p.active = 1 ORDER BY p.name`, [warehouseId]);
+  const units = new Map();
+  for (const u of all('SELECT id, product_id, unit_name, factor, is_base FROM product_units WHERE active = 1 ORDER BY factor')) {
+    if (!units.has(u.product_id)) units.set(u.product_id, []);
+    units.get(u.product_id).push({ id: u.id, unit_name: u.unit_name, factor: u.factor, is_base: u.is_base, prices: {} });
+  }
+  for (const p of rows) {
+    p.units = units.get(p.id) || [{ id: 0, unit_name: p.base_unit, factor: 1, is_base: 1, prices: {} }];
+  }
+  res.json(rows);
+});
+
 /* Đặt trước /warranty/:id, nếu không Express hiểu "photo-usage" là mã phiếu. */
 r.get('/warranty/photo-usage', (req, res) => {
   const days = keepPhotoDays();
