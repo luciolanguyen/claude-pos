@@ -30,7 +30,7 @@ import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
 import { permFor } from './access-map.js';
 import { whoami, isLoginRequired, issueToken } from './guard.js';
-import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
+import { permsOf, PERMISSIONS, ROLE_LABEL, ROLE_PERMISSIONS } from './permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -66,6 +66,7 @@ app.get('/api/me', (req, res) => {
     return res.json({
       login_required: false, user: null,
       can: Object.keys(PERMISSIONS), permissions: PERMISSIONS, role_labels: ROLE_LABEL,
+      role_permissions: ROLE_PERMISSIONS,
     });
   }
   res.json({
@@ -76,6 +77,9 @@ app.get('/api/me', (req, res) => {
     can: u && u.active ? permsOf(u.role) : [],
     permissions: PERMISSIONS,
     role_labels: ROLE_LABEL,
+    /* Bảng "Ai làm được gì" ở Thiết lập đọc từ đây — trước đây máy khách chép
+       một bản riêng, lệch với máy chủ mỗi lần đổi quyền */
+    role_permissions: ROLE_PERMISSIONS,
   });
 });
 

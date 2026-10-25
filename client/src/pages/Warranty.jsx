@@ -32,6 +32,7 @@ import { WarrantyPartsList } from '../components/WarrantyParts';
 import { CategorySelect } from '../components/CategoryTree';
 import { PinApprovalModal } from '../components/PosApproval';
 import { WarrantyFlag, WarrantyHistoryModal } from '../components/WarrantyHistory';
+import { QuoteBar, QuoteBadge, PartsPlain, ProposalModal, DoneModal } from '../components/WarrantyWork';
 
 import { findByCode, barcodeEquals } from '../lib/codeMatch';
 /* Trạng thái theo đúng thứ tự việc thật, kèm màu để liếc là biết. */
@@ -124,7 +125,7 @@ export default function Warranty() {
 /* ==================================================================== */
 
 function Tickets() {
-  const { toast, store } = useApp();
+  const { toast, store, can } = useApp();
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
   const [status, setStatus] = useState('');
@@ -132,14 +133,19 @@ function Tickets() {
   const [openOnly, setOpenOnly] = useState(true);
   /* Mở từ khối "Cần xử lý" của Tổng quan với ?late=1: chỉ phiếu quá hẹn trả */
   const [late, setLate] = useState(() => new URLSearchParams(window.location.search).get('late') === '1');
+  /* ?quote=waiting_quote — khối "Cần xử lý" dẫn tới phiếu chờ báo giá (vai trò Thợ) */
+  const [waitQuote, setWaitQuote] = useState(() => new URLSearchParams(window.location.search).get('quote') === 'waiting_quote');
   const [mode, setMode] = useSearchMode();
 
   const {
     rows: data, total: rowCount, busy, error, reload,
     page, setPage, pageSize, setPageSize,
   } = usePaged(
-    (pg) => api.warranty({ q: dq, match: mode, status, type, open_only: openOnly ? 1 : '', late: late ? 1 : '', ...pg }),
-    [dq, mode, status, type, openOnly, late],
+    (pg) => api.warranty({
+      q: dq, match: mode, status, type, open_only: openOnly ? 1 : '', late: late ? 1 : '',
+      quote: waitQuote ? 'waiting_quote' : '', ...pg,
+    }),
+    [dq, mode, status, type, openOnly, late, waitQuote],
     { key: 'warranty' }
   );
   const { data: summary, reload: reloadSummary } = useFetch(() => api.warrantySummary(), []);
@@ -180,8 +186,13 @@ function Tickets() {
           <Stat label="Quá hẹn trả khách" value={n(summary.overdue.length)}
             tone={summary.overdue.length > 0 ? 'bad' : 'default'} icon={AlertTriangle} />
           <Stat label="Đang ở hãng" value={n(summary.at_supplier.length)} icon={Truck} />
-          <Stat label="Thu tiền sửa 30 ngày" value={short(summary.last30.paid)}
-            sub={`${summary.last30.n} phiếu · vốn linh kiện ${short(summary.last30.parts)}`} />
+          {/* Tiền thu và vốn linh kiện: máy chủ chỉ gửi cho người báo giá */}
+          {summary.last30 ? (
+            <Stat label="Thu tiền sửa 30 ngày" value={short(summary.last30.paid)}
+              sub={`${summary.last30.n} phiếu · vốn linh kiện ${short(summary.last30.parts)}`} />
+          ) : (
+            <Stat label="Xong, chờ khách lấy" value={n(summary.counts?.ready || 0)} icon={CheckCircle2} />
+          )}
         </div>
       )}
 
@@ -258,6 +269,10 @@ function Tickets() {
           className={`btn btn-sm ${late ? 'btn-secondary' : 'btn-outline'}`}>
           Quá hẹn trả khách
         </button>
+        <button onClick={() => setWaitQuote((v) => !v)} aria-pressed={waitQuote}
+          className={`btn btn-sm ${waitQuote ? 'btn-secondary' : 'btn-outline'}`}>
+          Chờ báo giá
+        </button>
         <div className="flex-1" />
         <OpenDraftsButton kind="warranty" onOpen={(d) => setCreating(d)} />
         <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
@@ -331,6 +346,9 @@ function Tickets() {
                         <td className="text-muted-ink truncate max-w-[190px]">{t.issue || '—'}</td>
                         <td>
                           <StatusBadge s={t.status} />
+                          {!['delivered', 'cancelled'].includes(t.status) && t.quote_state && t.quote_state !== 'approved' && (
+                            <div className="mt-0.5"><QuoteBadge state={t.quote_state} /></div>
+                          )}
                           {t.resolution && <div className="text-2xs text-muted-ink mt-0.5">{RESOLUTION[t.resolution]}</div>}
                         </td>
                         <td className={late ? 'text-danger font-semibold' : 'text-muted-ink'}>
@@ -387,7 +405,10 @@ function Tickets() {
         <WarrantyPrint tickets={printing.tickets} batch={printing.batch} focusId={printing.focusId}
           mode={printing.mode} onClose={() => setPrinting(null)} />
       )}
-      {returnPrint && <WarrantyReturnPrint ticket={returnPrint} store={store} onClose={() => setReturnPrint(null)} />}
+      {returnPrint && (
+        <WarrantyReturnPrint ticket={returnPrint} store={store} detailedAllowed={can('warranty.quote')}
+          onClose={() => setReturnPrint(null)} />
+      )}
     </div>
   );
 }
@@ -407,6 +428,7 @@ function toSheet(t) {
     })),
     custom: (t.custom_parts || []).map((c) => ({
       key: `c${c.id}`, name: c.name, qty: c.qty, price: c.price, note: c.note || '',
+      outlay: c.outlay || 0,
     })),
     labor: t.labor_fee || 0,
     fees: (t.fees || []).map((f) => ({ key: `f${f.id}`, name: f.name, amount: f.amount, note: f.note || '' })),
@@ -449,6 +471,12 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
   const dirtyRef = useRef({ cart: false, fees: false });
   const [saving, setSaving] = useState(false);
   const [pinFor, setPinFor] = useState(null);
+  const [proposing, setProposing] = useState(false);
+  const [doneOpen, setDoneOpen] = useState(false);
+  /* Vai trò Thợ (25/10/2026): ai báo giá, ai sửa, ai trả máy */
+  const mayQuote = can('warranty.quote');
+  const mayWork = can('warranty.work');
+  const mayDeliver = can('warranty.deliver');
 
   const markDirty = (which) => { dirtyRef.current = { ...dirtyRef.current, [which]: true }; setDirty(true); };
   const clearDirty = () => { dirtyRef.current = { cart: false, fees: false }; setDirty(false); };
@@ -561,16 +589,16 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
         subtitle={t ? `${datetime(t.ts)} · nhận bởi ${t.received_by_name || '—'}` : ''}
         size="xl"
         footer={t && <>
-          {!closed && (
+          {!closed && mayQuote && (
             <Button variant="danger" icon={XCircle} onClick={() => setCancelling(true)}>Huỷ phiếu</Button>
           )}
           <div className="flex-1" />
           <Button icon={Printer} onClick={() => { onPrint(t, 'receipt'); onClose(); }}>In biên nhận</Button>
           <Button icon={Tag} onClick={() => { onPrint(t, 'tag'); onClose(); }}>In tem</Button>
-          {t.status === 'delivered' && (
+          {t.status === 'delivered' && mayDeliver && (
             <Button icon={Printer} onClick={() => { onPrintReturn(t); onClose(); }}>In phiếu trả hàng</Button>
           )}
-          {!closed && (
+          {!closed && mayDeliver && (
             <Button variant="primary" icon={PackageCheck} onClick={openDeliver} loading={saving}>
               Hoàn thành &amp; trả khách
             </Button>
@@ -662,9 +690,9 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
                 {t.supplier_name && (
                   <div className="text-muted-ink">Gửi {t.supplier_name}{t.sent_at ? ` ngày ${date(t.sent_at)}` : ''}</div>
                 )}
-                {!closed && (
+                {!closed && mayWork && (
                   <Button size="sm" icon={RefreshCw} className="mt-2" onClick={() => setStatusOpen(true)}>
-                    Đổi trạng thái / kỹ thuật viên
+                    {mayQuote ? 'Đổi trạng thái / kỹ thuật viên' : 'Đổi trạng thái'}
                   </Button>
                 )}
               </div>
@@ -682,6 +710,14 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
               </div>
             </div>
 
+            {/* Bước báo giá: thợ báo vật tư → chủ báo giá → khách đồng ý → thợ sửa */}
+            <QuoteBar t={t} onChanged={refresh}
+              onPropose={() => setProposing(true)} onDone={() => setDoneOpen(true)}
+              beforeQuote={() => (dirty ? saveSheet() : Promise.resolve(true))} />
+            {t.old_parts_returned === 1 && (
+              <p className="text-[13px] text-muted-ink">Thợ đã nộp linh kiện hỏng (xác cũ) khi báo sửa xong.</p>
+            )}
+
             {/* Ảnh */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -690,19 +726,19 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
               </div>
               <PhotoGallery
                 photos={t.photos.filter((p) => p.kind === 'received')}
-                onDelete={removePhoto}
+                onDelete={mayQuote ? removePhoto : undefined}
                 emptyText="Không có ảnh lúc nhận — lần sau nên chụp để tránh tranh cãi."
               />
             </div>
             {t.photos.some((p) => p.kind === 'done') && (
               <div>
-                <span className="label">Ảnh lúc trả khách</span>
-                <PhotoGallery photos={t.photos.filter((p) => p.kind === 'done')} onDelete={removePhoto} />
+                <span className="label">Ảnh sau khi sửa / lúc trả khách</span>
+                <PhotoGallery photos={t.photos.filter((p) => p.kind === 'done')} onDelete={mayQuote ? removePhoto : undefined} />
               </div>
             )}
 
-            {/* Bảng chi phí */}
-            {sheet && totals ? (
+            {/* Bảng chi phí: chỉ người báo giá; thợ và thu ngân thấy danh sách vật tư không giá */}
+            {!mayQuote ? <PartsPlain t={t} /> : sheet && totals ? (
               <CostSheet
                 sheet={sheet}
                 totals={totals}
@@ -735,12 +771,12 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
                   <div className="text-2xs text-sky-900/70 mt-0.5">Đổi mới từ sản phẩm cũ có mã BH: {t.code}</div>
                 </div>
               </div>
-            ) : !closed && (
+            ) : !closed && mayQuote && (
               <Button size="sm" icon={ArrowLeftRight} onClick={() => setExchangeOpen(true)}>Đổi cái mới cho khách</Button>
             )}
 
             {/* Tiền đã chốt */}
-            {t.status === 'delivered' && (
+            {t.status === 'delivered' && t.charge != null && (
               <div className="card p-3 space-y-1 text-[13px]">
                 <div className="flex justify-between font-bold">
                   <span>Thu của khách</span><span className="tabular font-mono">{money(t.charge)}</span>
@@ -787,6 +823,14 @@ function TicketDetail({ id, onClose, onChanged, onOpen, onPrint, onPrintReturn }
         <>
           <StatusModal open={statusOpen} ticket={t} onClose={() => setStatusOpen(false)}
             onDone={() => { setStatusOpen(false); refresh(); }} />
+          {proposing && (
+            <ProposalModal t={t} onClose={() => setProposing(false)}
+              onDone={() => { setProposing(false); clearDirty(); refresh(); }} />
+          )}
+          {doneOpen && (
+            <DoneModal t={t} onClose={() => setDoneOpen(false)}
+              onDone={() => { setDoneOpen(false); refresh(); }} />
+          )}
           {partsOpen && sheet && (
             <PartsCartModal
               parts={sheet.parts}
@@ -991,6 +1035,8 @@ function CostSheet({
                           </>
                         )}
                         {closed && c.note && <div className="text-2xs text-muted-ink">{c.note}</div>}
+                        {/* Thợ tự mua ngoài: số tiền thợ bỏ ra, để chủ báo giá và hoàn tiền cho thợ */}
+                        {c.outlay > 0 && <div className="text-2xs text-warn font-semibold">Thợ bỏ ra {money(c.outlay)}</div>}
                       </td>
                       <td>{closed ? <span className="num">{fq(c.qty)}</span>
                         : <QtyInput value={c.qty} onChange={(v) => patch({ qty: v })} aria-label={`Số lượng linh kiện ngoài ${i + 1}`} />}</td>
@@ -1257,7 +1303,9 @@ function PartsCartModal({ parts, setParts, total, onClose }) {
 /* ==================================================================== */
 
 function StatusModal({ open, ticket, onClose, onDone }) {
-  const { toast, user } = useApp();
+  const { toast, user, can } = useApp();
+  /* Thợ chỉ chuyển "đang kiểm tra" / "đang sửa" — sửa xong đi qua nút "Báo sửa xong" */
+  const boss = can('warranty.quote');
   const [status, setStatus] = useState('checking');
   const [resolution, setResolution] = useState('');
   const [supplierId, setSupplierId] = useState(null);
@@ -1268,7 +1316,7 @@ function StatusModal({ open, ticket, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open });
+  const { data: suppliers } = useFetch(() => api.suppliers({ active: 1 }), [], { skip: !open || !boss });
   const { data: users } = useFetch(() => api.users(), [], { skip: !open });
   const staff = (Array.isArray(users) ? users : []).filter((u) => u.active);
 
@@ -1276,7 +1324,8 @@ function StatusModal({ open, ticket, onClose, onDone }) {
     if (!open || !ticket) return;
     const order = ['received', 'checking', 'repairing', 'ready'];
     const i = order.indexOf(ticket.status);
-    setStatus(i >= 0 && i < order.length - 1 ? order[i + 1] : 'ready');
+    const next = i >= 0 && i < order.length - 1 ? order[i + 1] : 'ready';
+    setStatus(boss || ['checking', 'repairing'].includes(next) ? next : 'repairing');
     setResolution(ticket.resolution || '');
     setSupplierId(ticket.supplier_id || null);
     setTechnicianId(ticket.technician_id || null);
@@ -1319,7 +1368,7 @@ function StatusModal({ open, ticket, onClose, onDone }) {
         <Field label="Trạng thái mới" required htmlFor="ws-status">
           <Select id="ws-status" value={status} onChange={(e) => setStatus(e.target.value)}>
             {Object.entries(STATUS)
-              .filter(([k]) => !['delivered', 'cancelled'].includes(k))
+              .filter(([k]) => (boss ? !['delivered', 'cancelled'].includes(k) : ['checking', 'repairing'].includes(k)))
               .map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
         </Field>
@@ -1331,12 +1380,14 @@ function StatusModal({ open, ticket, onClose, onDone }) {
           </Select>
         </Field>
 
-        <Field label="Cách xử lý" htmlFor="ws-res">
-          <Select id="ws-res" value={resolution} onChange={(e) => setResolution(e.target.value)}>
-            <option value="">— Chưa quyết —</option>
-            {Object.entries(RESOLUTION).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </Select>
-        </Field>
+        {boss && (
+          <Field label="Cách xử lý" htmlFor="ws-res">
+            <Select id="ws-res" value={resolution} onChange={(e) => setResolution(e.target.value)}>
+              <option value="">— Chưa quyết —</option>
+              {Object.entries(RESOLUTION).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </Select>
+          </Field>
+        )}
 
         {status === 'sent_supplier' && (
           <>
@@ -1489,12 +1540,17 @@ function ExchangeModal({ ticket, onClose, onDone }) {
 /* ==================================================================== */
 
 function DeliverModal({ ticket, onClose, onDone }) {
-  const { toast, meta, user } = useApp();
+  const { toast, meta, user, can } = useApp();
+  /* Thu ngân (không báo giá) chỉ nhận tổng phải thu từ máy chủ — không có cơ
+     cấu tiền; muốn miễn giảm thêm thì quản lý gõ PIN (vai trò Thợ, 25/10/2026) */
+  const boss = can('warranty.quote');
   const tt = ticket.totals || {};
-  const gross = tt.gross || 0;
+  const [extra, setExtra] = useState(0);
+  const [pinFor, setPinFor] = useState(null);
+  const gross = boss ? (tt.gross || 0) : (tt.total || 0);
   const [resolution, setResolution] = useState(ticket.resolution || 'repair');
   const [discount, setDiscount] = useState(tt.discount || 0);
-  const disc = Math.min(Math.max(0, num(discount)), gross);
+  const disc = boss ? Math.min(Math.max(0, num(discount)), gross) : Math.min(Math.max(0, num(extra)), gross);
   const total = gross - disc;
   const [paid, setPaid] = useState(total);
   const [paidEdited, setPaidEdited] = useState(false);
@@ -1508,19 +1564,23 @@ function DeliverModal({ ticket, onClose, onDone }) {
 
   useEffect(() => { if (!paidEdited) setPaid(total); }, [total, paidEdited]);
 
-  const submit = async () => {
+  const submit = async (token) => {
     setBusy(true);
     setErr('');
     try {
       const res = await api.post(`/warranty/${ticket.id}/deliver`, {
-        resolution, discount: disc, paid: Math.min(num(paid), total),
+        resolution, paid: Math.min(num(paid), total),
+        ...(boss ? { discount: disc } : { extra_discount: disc }),
+        ...(token ? { approval_token: token } : {}),
         refund_amount: resolution === 'refund' ? num(refund) : 0, account_id: accountId,
         user_id: user?.id, note, photos,
       });
+      setPinFor(null);
       toast(`Đã hoàn thành phiếu ${ticket.code}${res.stock_applied ? `, trừ kho ${res.stock_applied} dòng linh kiện` : ''}`, 'ok', 6000);
       onDone();
     } catch (e) {
-      setErr(e.message);
+      if (e.needsApproval && !token) setPinFor(e.message);
+      else setErr(e.message);
     } finally {
       setBusy(false);
     }
@@ -1535,7 +1595,7 @@ function DeliverModal({ ticket, onClose, onDone }) {
       size="lg"
       footer={<>
         <Button onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" icon={PackageCheck} onClick={submit} loading={busy}>Xác nhận hoàn thành</Button>
+        <Button variant="primary" icon={PackageCheck} onClick={() => submit()} loading={busy}>Xác nhận hoàn thành</Button>
       </>}
     >
       <div className="space-y-3">
@@ -1557,6 +1617,20 @@ function DeliverModal({ ticket, onClose, onDone }) {
           </Select>
         </Field>
 
+        {!boss ? (
+          <div className="grid gap-3 sm:grid-cols-[1fr_260px]">
+            <PartsPlain t={{ ...ticket, totals: undefined }} />
+            <div className="space-y-2">
+              <Field label="Miễn giảm thêm" hint="cần quản lý gõ mã PIN" htmlFor="wd-extra">
+                <MoneyInput id="wd-extra" value={extra} onChange={setExtra} />
+              </Field>
+              <div className="flex items-baseline justify-between">
+                <span className="font-bold text-[13px]">Tổng khách trả</span>
+                <span className="text-xl font-display font-bold tabular">{money(total)}</span>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="grid gap-3 sm:grid-cols-[1fr_260px]">
           <div className="card p-2.5 text-[13px] space-y-0.5">
             <div className="flex justify-between"><span className="text-muted-ink">Linh kiện trong kho</span><span className="tabular">{money(tt.parts)}</span></div>
@@ -1579,6 +1653,7 @@ function DeliverModal({ ticket, onClose, onDone }) {
             </div>
           </div>
         </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Khách trả ngay" hint={total - num(paid) > 0 ? `Còn nợ ${money(total - num(paid))}` : ''} htmlFor="wd-paid">
@@ -1607,6 +1682,13 @@ function DeliverModal({ ticket, onClose, onDone }) {
 
         {err && <ErrLine>{err}</ErrLine>}
       </div>
+      <PinApprovalModal
+        open={!!pinFor}
+        reason="Miễn giảm thêm cho khách lúc trả máy"
+        detail={pinFor}
+        onClose={() => setPinFor(null)}
+        onApproved={(res) => submit(res.token)}
+      />
     </Modal>
   );
 }

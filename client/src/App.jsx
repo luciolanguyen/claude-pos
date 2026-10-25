@@ -237,7 +237,7 @@ function Shell() {
               <Route path="stock-transfers" element={<Guard perm="stock.manage"><StockTransfers /></Guard>} />
               <Route path="production" element={<Guard perm="stock.manage"><Production /></Guard>} />
               <Route path="requisitions" element={<Guard perm="product.view"><Requisitions /></Guard>} />
-              <Route path="warranty" element={<Guard perm="warranty.manage"><Warranty /></Guard>} />
+              <Route path="warranty" element={<Guard perm="warranty.receive"><Warranty /></Guard>} />
 
               <Route path="cash" element={<Guard perm="cash.manage"><Cash /></Guard>} />
               {/* Đối soát hàng gửi bán của chủ vãng lai (tài liệu 24, mục 5.3) */}

@@ -100,8 +100,20 @@ export const ACCESS_RULES = [
   ['*',    /^\/customers/,                'customer.manage'],
   /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá
      đơn thấy dấu "đã từng bảo hành" thì phải bấm xem được (tài liệu 09) */
-  ['GET',  /^\/warranty-history$/,        'sale.view'],
-  ['*',    /^\/warranty/,                 'warranty.manage'],
+  /* Bảo hành & sửa chữa (vai trò Thợ, 25/10/2026). Đọc phiếu thì ai nhận máy
+     cũng đọc được — routes/warranty.js cắt tiền theo quyền người xem. */
+  ['PUT',  /^\/warranty\/\d+\/proposal$/,  'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/done$/,      'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/status$/,    'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/approval$/,  'warranty.deliver'],
+  ['POST', /^\/warranty\/\d+\/deliver$/,   'warranty.deliver'],
+  ['POST', /^\/warranty\/\d+\/photos$/,    'warranty.receive'],
+  ['PUT',  /^\/warranty\/\d+$/,            'warranty.receive'],
+  ['POST', /^\/warranty$/,                 'warranty.receive'],
+  ['GET',  /^\/warranty-history$/,         'warranty.receive'],
+  ['GET',  /^\/warranty/,                  'warranty.receive'],
+  /* Còn lại: giỏ linh kiện có giá, tiền công, phí, báo giá, đổi máy, huỷ, xoá ảnh */
+  ['*',    /^\/warranty/,                  'warranty.quote'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */
   /* Nhập danh mục hàng loạt từ file: đặt TRƯỚC mọi luật /products, vì

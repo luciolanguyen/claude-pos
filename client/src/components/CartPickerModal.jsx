@@ -62,6 +62,13 @@ export const DOC_THEMES = {
     icon: RefreshCcw, head: 'bg-amber-50 border-amber-200 text-amber-900',
     chip: 'bg-amber-100 text-amber-900 border-amber-300',
   },
+  /* Linh kiện thay khi sửa máy (vai trò Thợ, 25/10/2026): thợ chọn tên và số
+     lượng, không có giá — trừ kho lúc trả máy cho khách */
+  warranty_parts: {
+    label: 'Linh kiện sửa chữa', flow: 'Trừ kho lúc trả máy cho khách',
+    icon: ClipboardList, head: 'bg-amber-50 border-amber-200 text-amber-900',
+    chip: 'bg-amber-100 text-amber-900 border-amber-300',
+  },
   sale_return: {
     label: 'Khách trả hàng', flow: 'Hàng quay về kho',
     icon: Undo2, head: 'bg-rose-50 border-rose-200 text-rose-900',

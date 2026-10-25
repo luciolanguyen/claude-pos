@@ -261,6 +261,17 @@ r.get('/dashboard/actions', (req, res) => {
     action: 'Xem phiếu trễ', to: '/warranty?late=1',
   });
 
+  /* 6b. Phiếu sửa chờ chủ báo giá (vai trò Thợ, 25/10/2026) — máy nằm chờ ở tiệm,
+         thợ chưa được sửa cho tới khi khách đồng ý giá */
+  const wq = get(`
+    SELECT COUNT(*) AS n FROM warranty_tickets
+    WHERE quote_state = 'waiting_quote' AND status NOT IN ('delivered','cancelled')`).n;
+  push({
+    key: 'warranty_waiting_quote', level: 'medium', count: wq,
+    label: `${wq} phiếu sửa chờ báo giá`, detail: 'thợ chưa được sửa cho tới khi khách đồng ý giá',
+    action: 'Báo giá', to: '/warranty?quote=waiting_quote',
+  });
+
   /* 7. Hàng mua hộ thu ngân đã bán, quản lý chưa khai hoa hồng / giá bốc */
   const rev = get(`
     SELECT COUNT(*) AS n, COUNT(DISTINCT ci.sale_id) AS bills

@@ -418,7 +418,7 @@ export default function WarrantyTicketForm({ open, onClose, onSaved, draft = nul
                 </div>
 
                 <PhotoPicker photos={it.photos} onChange={(ph) => patchItem(it.key, { photos: ph })} max={8}
-                  label={`Ảnh chụp lúc nhận${items.length > 1 ? ` — món ${idx + 1}` : ''}`} />
+                  label={`Ảnh tình trạng lúc nhận (bắt buộc)${items.length > 1 ? ` — món ${idx + 1}` : ''}`} />
               </li>
             ))}
           </ol>

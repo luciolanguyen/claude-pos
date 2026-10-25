@@ -143,7 +143,10 @@ export default async function run() {
     ACCESS_RULES.forEach(([m, re, perm], i) => {
       const mau = re.source.replace(/^\^/, '').replace(/\$$/, '')
         .split('\\d+').join('1').split('\\/').join('/')
-        .replace(/\(\/1\)\?/g, '').replace(/\(([^)|]+)\|[^)]*\)/g, '$1').replace(/\?/g, '');
+        .replace(/\(\/1\)\?/g, '').replace(/\(([^)|]+)\|[^)]*\)/g, '$1').replace(/\?/g, '')
+        /* Luật tiền tố (không có $) còn ăn mọi đường con: thử bằng một đường con
+           lạ, kẻo tưởng luật rộng bị luật "đúng tên" đứng trước che mất */
+        + (re.source.endsWith('$') ? '' : '/__con');
       const pt = m === '*' ? 'POST' : m;
       const dau = ACCESS_RULES.findIndex(([m2, re2]) => (m2 === '*' || m2 === pt) && re2.test(mau));
       if (dau !== -1 && dau !== i && ACCESS_RULES[dau][2] !== perm) che.push(`${m} ${mau} (${perm})`);

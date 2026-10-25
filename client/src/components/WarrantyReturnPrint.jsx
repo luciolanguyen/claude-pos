@@ -13,6 +13,10 @@
 
    Hai khổ giấy: A5 in máy in thường cho tờ phiếu đàng hoàng, K80 in máy
    in nhiệt ở quầy cho nhanh.
+
+   Hai mức (vai trò Thợ, 25/10/2026): bản THƯỜNG chỉ tên vật tư + tổng tiền —
+   thu ngân in bản này; bản CHI TIẾT có đơn giá từng món, tiền công, phí —
+   chỉ chủ / quản lý in được, khi khách yêu cầu (detailedAllowed).
    ==================================================================== */
 import { useState, useEffect } from 'react';
 import { Printer } from 'lucide-react';
@@ -28,9 +32,12 @@ const RESOLUTION_LABEL = {
   reject: 'Từ chối bảo hành',
 };
 
-export default function WarrantyReturnPrint({ ticket, store, onClose }) {
+export default function WarrantyReturnPrint({ ticket, store, onClose, detailedAllowed = false }) {
   const { settings } = useApp();
   const [format, setFormat] = useState(settings?.invoice?.default_format === 'k80' ? 'k80' : 'a5');
+  const [detailedPick, setDetailedPick] = useState(false);
+  /* Người không báo giá thì máy chủ không gửi đơn giá — có bấm cũng không in ra được */
+  const D = detailedAllowed && detailedPick;
   const k80Width = Number(settings?.invoice?.k80_width) || 72;
 
   useEffect(() => {
@@ -99,17 +106,17 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
             <div key={`p${p.id}`} style={{ fontSize: 10, fontWeight: 400, textAlign: 'left', marginTop: 2 }}>
               <div>{p.product_name}</div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{fq(p.qty)} {p.base_unit} × {n(partUnit(p))}</span>
-                <b>{n(partLine(p))}</b>
+                <span>{fq(p.qty)} {p.base_unit}{D ? ` × ${n(partUnit(p))}` : ''}</span>
+                {D && <b>{n(partLine(p))}</b>}
               </div>
-              {support(p) > 0 && <div style={{ fontStyle: 'italic' }}>Giảm giá hỗ trợ: {n(support(p))}đ ({p.support_percent}%)</div>}
+              {D && support(p) > 0 && <div style={{ fontStyle: 'italic' }}>Giảm giá hỗ trợ: {n(support(p))}đ ({p.support_percent}%)</div>}
             </div>
           ))}
           {custom.map((c) => (
             <div key={`c${c.id}`} style={{ fontSize: 10, fontWeight: 400, textAlign: 'left', marginTop: 2 }}>
               <div>{c.name}</div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{fq(c.qty)} × {n(c.price)}</span><b>{n(c.amount)}</b>
+                <span>{fq(c.qty)}{D ? ` × ${n(c.price)}` : ''}</span>{D && <b>{n(c.amount)}</b>}
               </div>
             </div>
           ))}
@@ -117,10 +124,10 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
       )}
 
       <div style={{ borderTop: '1px dashed #000', marginTop: 5, paddingTop: 4, fontSize: 11 }}>
-        {(parts.length > 0 || custom.length > 0) && <Row label="Tiền linh kiện" value={n(partsTotal + customTotal)} />}
-        <Row label="Tiền công" value={n(labor)} />
-        {fees.map((f) => <Row key={`f${f.id}`} label={f.name} value={n(f.amount)} />)}
-        {discount > 0 && <Row label="Miễn giảm" value={`-${n(discount)}`} />}
+        {D && (parts.length > 0 || custom.length > 0) && <Row label="Tiền linh kiện" value={n(partsTotal + customTotal)} />}
+        {D && <Row label="Tiền công" value={n(labor)} />}
+        {D && fees.map((f) => <Row key={`f${f.id}`} label={f.name} value={n(f.amount)} />)}
+        {D && discount > 0 && <Row label="Miễn giảm" value={`-${n(discount)}`} />}
         <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 13, marginTop: 3 }}>
           <span>TỔNG CỘNG</span><span>{n(charge)}</span>
         </div>
@@ -201,8 +208,8 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
               <th style={th}>Tên vật tư</th>
               <th style={{ textAlign: 'right', width: 40 }}>SL</th>
               <th style={{ textAlign: 'left', width: 40 }}>ĐVT</th>
-              <th style={{ textAlign: 'right', width: 76 }}>Đơn giá</th>
-              <th style={{ textAlign: 'right', width: 84 }}>Thành tiền</th>
+              {D && <th style={{ textAlign: 'right', width: 76 }}>Đơn giá</th>}
+              {D && <th style={{ textAlign: 'right', width: 84 }}>Thành tiền</th>}
             </tr>
           </thead>
           <tbody>
@@ -211,7 +218,7 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
                 <td style={{ padding: '3px 0' }}>{i + 1}</td>
                 <td>
                   {p.product_name}
-                  {support(p) > 0 && (
+                  {D && support(p) > 0 && (
                     <div style={{ fontSize: 9.5, fontStyle: 'italic' }}>
                       Giá niêm yết {n(p.list_price)} · Giảm giá hỗ trợ: {n(support(p))}đ ({p.support_percent}%)
                     </div>
@@ -219,8 +226,8 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
                 </td>
                 <td style={{ textAlign: 'right' }}>{fq(p.qty)}</td>
                 <td>{p.base_unit}</td>
-                <td style={{ textAlign: 'right' }}>{n(partUnit(p))}</td>
-                <td style={{ textAlign: 'right' }}>{n(partLine(p))}</td>
+                {D && <td style={{ textAlign: 'right' }}>{n(partUnit(p))}</td>}
+                {D && <td style={{ textAlign: 'right' }}>{n(partLine(p))}</td>}
               </tr>
             ))}
             {custom.map((c, i) => (
@@ -229,8 +236,8 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
                 <td>{c.name}</td>
                 <td style={{ textAlign: 'right' }}>{fq(c.qty)}</td>
                 <td />
-                <td style={{ textAlign: 'right' }}>{n(c.price)}</td>
-                <td style={{ textAlign: 'right' }}>{n(c.amount)}</td>
+                {D && <td style={{ textAlign: 'right' }}>{n(c.price)}</td>}
+                {D && <td style={{ textAlign: 'right' }}>{n(c.amount)}</td>}
               </tr>
             ))}
           </tbody>
@@ -239,24 +246,26 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
 
       <table style={{ marginLeft: 'auto', fontSize: 11, minWidth: 230 }}>
         <tbody>
-          {(parts.length > 0 || custom.length > 0) && (
+          {D && (parts.length > 0 || custom.length > 0) && (
             <tr><td style={{ padding: '2px 0' }}>1. Tiền vật tư, linh kiện</td>
               <td style={{ textAlign: 'right' }}>{n(partsTotal + customTotal)}</td></tr>
           )}
-          {supportTotal > 0 && (
+          {D && supportTotal > 0 && (
             <tr style={{ fontStyle: 'italic' }}><td style={{ padding: '2px 0' }}>(đã giảm giá hỗ trợ linh kiện)</td>
               <td style={{ textAlign: 'right' }}>{n(supportTotal)}</td></tr>
           )}
-          <tr><td style={{ padding: '2px 0' }}>2. Tiền công kỹ thuật</td>
-            <td style={{ textAlign: 'right' }}>{n(labor)}</td></tr>
-          {fees.map((f, i) => (
+          {D && (
+            <tr><td style={{ padding: '2px 0' }}>2. Tiền công kỹ thuật</td>
+              <td style={{ textAlign: 'right' }}>{n(labor)}</td></tr>
+          )}
+          {D && fees.map((f, i) => (
             <tr key={`f${f.id}`}><td style={{ padding: '2px 0' }}>{i === 0 ? '3. ' : ''}{f.name}{f.note ? ` (${f.note})` : ''}</td>
               <td style={{ textAlign: 'right' }}>{n(f.amount)}</td></tr>
           ))}
-          {fees.length > 1 && (
+          {D && fees.length > 1 && (
             <tr><td style={{ padding: '2px 0' }}>Cộng phí phát sinh</td><td style={{ textAlign: 'right' }}>{n(feesTotal)}</td></tr>
           )}
-          {discount > 0 && (
+          {D && discount > 0 && (
             <tr><td style={{ padding: '2px 0' }}>Miễn giảm</td><td style={{ textAlign: 'right' }}>-{n(discount)}</td></tr>
           )}
           <tr style={{ borderTop: '1px solid #000', fontWeight: 800, fontSize: 12 }}>
@@ -311,6 +320,17 @@ export default function WarrantyReturnPrint({ ticket, store, onClose }) {
         size="lg"
         footer={
           <>
+            {detailedAllowed && (
+              <div className="flex gap-1" role="radiogroup" aria-label="Mức chi tiết">
+                {[[false, 'Bản thường'], [true, 'Bản chi tiết']].map(([k, label]) => (
+                  <button key={label} type="button" role="radio" aria-checked={detailedPick === k}
+                    onClick={() => setDetailedPick(k)}
+                    className={`btn btn-sm ${detailedPick === k ? 'btn-secondary' : 'btn-outline'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-1 mr-auto">
               {[['a5', 'Khổ A5'], ['k80', 'Máy in nhiệt K80']].map(([k, label]) => (
                 <button

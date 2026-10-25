@@ -24,7 +24,7 @@ export const NAV = [
       { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng', perm: 'sale.return' },
       /* Công nợ khách nằm luôn trong hồ sơ khách hàng (tài liệu 08) */
       { to: '/customers', icon: Users, label: 'Khách hàng & công nợ', perm: 'customer.manage' },
-      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành & sửa chữa', perm: 'warranty.manage' },
+      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành & sửa chữa', perm: 'warranty.receive' },
     ],
   },
   {

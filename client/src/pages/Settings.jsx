@@ -1736,6 +1736,7 @@ function UsersTab() {
         open={showPerms}
         onClose={() => setShowPerms(false)}
         permissions={access?.permissions || {}}
+        rolePerms={access?.role_permissions || {}}
       />
 
       <UserForm
@@ -1767,18 +1768,10 @@ function UsersTab() {
 /* bằng lời, cho nhìn thẳng vào bảng.                                    */
 /* ==================================================================== */
 
-const ROLE_PERMS = {
-  owner: 'all',
-  manager: 'all',
-  cashier: [
-    'sale.pos', 'sale.view', 'sale.return',
-    'order.manage', 'customer.manage', 'warranty.manage', 'product.view',
-  ],
-  stock: ['product.view', 'product.manage', 'stock.manage', 'purchase.manage'],
-};
-
-function PermissionMatrix({ open, onClose, permissions }) {
-  const roles = ['owner', 'manager', 'cashier', 'stock'];
+/* Bảng quyền từng vai đọc thẳng từ máy chủ (/api/me → role_permissions) —
+   trước đây chép một bản ở đây, đổi quyền bên máy chủ là bảng này nói sai */
+function PermissionMatrix({ open, onClose, permissions, rolePerms = {} }) {
+  const roles = Object.keys(rolePerms).filter((r2) => ROLE_LABEL[r2]);
   const keys = Object.keys(permissions);
 
   return (
@@ -1809,8 +1802,7 @@ function PermissionMatrix({ open, onClose, permissions }) {
                   <tr key={k}>
                     <td>{permissions[k]}</td>
                     {roles.map((r2) => {
-                      const list = ROLE_PERMS[r2];
-                      const yes = list === 'all' || list.includes(k);
+                      const yes = (rolePerms[r2] || []).includes(k);
                       return (
                         <td key={r2} className="text-center">
                           {yes

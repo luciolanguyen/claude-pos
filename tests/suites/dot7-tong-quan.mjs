@@ -135,7 +135,9 @@ export default async function run() {
     const homQua2 = new Date(Date.now() - 86400000).toLocaleDateString('sv-SE');
     await post('/warranty', {
       customer_id: kh.id, customer_name: kh.name, ticket_type: 'repair', promised_at: homQua2,
-      items: [{ product_name: 'Máy khoan thử', issue: 'Không chạy', promised_at: homQua2 }],
+      items: [{ product_name: 'Máy khoan thử', issue: 'Không chạy', promised_at: homQua2,
+        /* Ảnh lúc nhận bắt buộc từ 25/10/2026 — ảnh 1×1 điểm cho bài thử */
+        photos: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='] }],
       product_name: 'Máy khoan thử', issue: 'Không chạy',
     }).catch(() => null);
     const sau = await get('/dashboard/actions');

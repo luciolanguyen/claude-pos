@@ -19,7 +19,13 @@ export const PERMISSIONS = {
   'sale.return':     'Nhận khách trả hàng',
   'order.manage':    'Đơn đặt hàng của khách',
   'customer.manage': 'Khách hàng, công nợ khách',
-  'warranty.manage': 'Nhận và trả hàng bảo hành',
+  /* Bảo hành & sửa chữa tách bốn quyền (vai trò Thợ, 25/10/2026): thợ nhận
+     máy và sửa nhưng không thấy giá; báo giá là việc của chủ / quản lý; thu
+     ngân trả máy, thu tiền, chỉ thấy tổng tiền chứ không thấy đơn giá */
+  'warranty.receive': 'Nhận máy bảo hành / sửa chữa, tra hạn bảo hành',
+  'warranty.work':    'Báo bệnh, vật tư thay, báo sửa xong',
+  'warranty.quote':   'Báo giá sửa chữa, giá vật tư, in hoá đơn chi tiết',
+  'warranty.deliver': 'Trả máy cho khách, thu tiền sửa chữa',
   'product.view':    'Xem hàng hoá, giá bán, tồn kho',
   'product.manage':  'Thêm sửa hàng hoá, đổi giá bán',
   'stock.manage':    'Kiểm kê, chuyển kho, sản xuất',
@@ -59,7 +65,7 @@ export const ROLE_PERMISSIONS = {
   manager: ALL,
   cashier: [
     'sale.pos', 'sale.view', 'sale.return',
-    'order.manage', 'customer.manage', 'warranty.manage',
+    'order.manage', 'customer.manage', 'warranty.receive', 'warranty.deliver',
     'product.view',
     /* Thu nợ tại quầy xong thì in tờ phiếu thu đưa khách. Chỉ xem lại
        được đúng phiếu theo số, không mở được cả sổ quỹ. */
@@ -75,11 +81,13 @@ export const ROLE_PERMISSIONS = {
     /* Người dựng danh mục hàng hoá chính là người cần nhập file Excel */
     'data.import', 'data.export',
   ],
-  /* Người chỉ lo nhận và trả hàng bảo hành, không đụng quầy thu tiền.
-     Vẫn cần tra hoá đơn cũ (máy này bán hồi nào, còn hạn không), tra
-     hàng hoá, và mở hồ sơ khách để gọi điện báo máy đã sửa xong. */
-  warranty: [
-    'warranty.manage', 'sale.view', 'product.view', 'customer.manage',
+  /* Thợ (25/10/2026, thay vai "Nhân viên bảo hành"): nhận máy, báo bệnh, báo
+     vật tư thay, báo sửa xong. KHÔNG thấy giá vật tư, tiền công, báo giá —
+     máy chủ cắt hết tiền khỏi phiếu (routes/warranty.js, shapeTicket). Không
+     có sale.view: tra hạn bảo hành đi qua /warranty-lookup, không lộ tiền hoá
+     đơn. Vẫn mở hồ sơ khách để gọi điện báo máy đã sửa xong. */
+  technician: [
+    'warranty.receive', 'warranty.work', 'product.view', 'customer.manage',
   ],
 };
 
@@ -88,7 +96,7 @@ export const ROLE_LABEL = {
   manager: 'Quản lý',
   cashier: 'Thu ngân',
   stock: 'Nhân viên kho',
-  warranty: 'Nhân viên bảo hành',
+  technician: 'Thợ',
 };
 
 /** Danh sách quyền của một vai trò. Vai trò lạ thì không có quyền nào. */
