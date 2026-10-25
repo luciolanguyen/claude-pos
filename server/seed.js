@@ -98,6 +98,7 @@ tx(() => {
     ['hoa', '1234', 'Trần Thị Hoà', 'manager', '0918456780'],
     ['thungan', '1234', 'Lê Thị Mai', 'cashier', '0912345678'],
     ['kho', '1234', 'Phạm Văn Tùng', 'stock', '0987654321'],
+    ['tho', '1234', 'Võ Văn Sang', 'technician', '0907111222'],
   ];
   for (const u of users) {
     run('INSERT INTO users(username, password, full_name, role, phone) VALUES(?,?,?,?,?)', u);

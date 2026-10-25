@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { Camera, X, Upload, ImageOff } from 'lucide-react';
 import { IconButton, Button } from './ui';
+import { authToken } from '../lib/api';
 
 /**
  * Chọn và xem trước ảnh chụp hàng bảo hành.
@@ -151,16 +152,15 @@ export default function PhotoPicker({
 
 /** Xem ảnh đã lưu trên máy chủ, bấm vào để phóng to. */
 /**
- * Đường dẫn ảnh bảo hành, kèm id người dùng ở dạng ?uid=.
+ * Đường dẫn ảnh bảo hành, kèm mã đăng nhập ở dạng ?t=.
  *
  * Thẻ <img> của trình duyệt không gửi được header tự đặt, nên nếu chỉ dựa
- * vào x-user-id thì máy chủ chặn 401 và ảnh hiện ra ô trống — trông hệt
+ * vào header thì máy chủ chặn 401 và ảnh hiện ra ô trống — trông hệt
  * như phần mềm quên lưu ảnh, dù ảnh vẫn nằm nguyên trong ổ cứng.
  */
 export function photoUrl(file) {
-  let uid = null;
-  try { uid = JSON.parse(localStorage.getItem('thpos.user') || 'null')?.id || null; } catch { /* chưa đăng nhập */ }
-  return `/api/warranty/photo/${file}` + (uid ? `?uid=${uid}` : '');
+  const t = authToken();
+  return `/api/warranty/photo/${file}` + (t ? `?t=${encodeURIComponent(t)}` : '');
 }
 
 export function PhotoGallery({ photos, onDelete, emptyText = 'Chưa có ảnh' }) {

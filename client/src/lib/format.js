@@ -104,6 +104,8 @@ export function range(key) {
       const s = new Date(now.getFullYear(), 0, 1);
       return { from: isoDate(s), to: isoDate(now), label: 'Năm nay' };
     }
+    /* Toàn bộ thời gian — dùng khi mở từ khối "Cần xử lý": việc tồn đọng có khi đã cũ */
+    case 'all': return { from: '2000-01-01', to: isoDate(now), label: 'Toàn bộ thời gian' };
     default: return { from: isoDate(d(-29)), to: isoDate(now), label: '30 ngày qua' };
   }
 }
@@ -140,7 +142,7 @@ export const COST_METHOD_HINT = {
 export const ROLE_LABEL = {
   owner: 'Chủ cửa hàng', manager: 'Quản lý',
   cashier: 'Thu ngân', stock: 'Nhân viên kho',
-  warranty: 'Nhân viên bảo hành',
+  technician: 'Thợ',
 };
 
 export const MOVE_LABEL = {

@@ -90,6 +90,8 @@ export const ACCESS_RULES = [
   /* Sửa công nợ và chốt sổ (plan 31, 6b / 6c): đặt TRƯỚC luật /customers,
      /suppliers chung — để sau thì luật rộng nuốt mất, ai quản khách cũng sửa
      được nợ. Xem sổ và lịch sử sửa thì vẫn theo quyền khách / mua hàng. */
+  /* Nhập khách / NCC từ Excel (10/10): đặt TRƯỚC luật /customers, /suppliers — đặt sau là bị ăn mất */
+  ['POST', /^\/(customers|suppliers)\/import$/, 'data.import'],
   ['POST', /^\/(customers|suppliers)\/\d+\/debt-(adjustments|closings)$/, 'debt.adjust'],
   ['DELETE', /^\/(customers|suppliers)\/\d+\/debt-closings\/\d+$/, 'debt.adjust'],
   ['*',    /^\/debt-closings/,             'debt.adjust'],
@@ -98,8 +100,20 @@ export const ACCESS_RULES = [
   ['*',    /^\/customers/,                'customer.manage'],
   /* Dòng thời gian bảo hành / sửa chữa của một hoá đơn: thu ngân mở hoá
      đơn thấy dấu "đã từng bảo hành" thì phải bấm xem được (tài liệu 09) */
-  ['GET',  /^\/warranty-history$/,        'sale.view'],
-  ['*',    /^\/warranty/,                 'warranty.manage'],
+  /* Bảo hành & sửa chữa (vai trò Thợ, 25/10/2026). Đọc phiếu thì ai nhận máy
+     cũng đọc được — routes/warranty.js cắt tiền theo quyền người xem. */
+  ['PUT',  /^\/warranty\/\d+\/proposal$/,  'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/done$/,      'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/status$/,    'warranty.work'],
+  ['POST', /^\/warranty\/\d+\/approval$/,  'warranty.deliver'],
+  ['POST', /^\/warranty\/\d+\/deliver$/,   'warranty.deliver'],
+  ['POST', /^\/warranty\/\d+\/photos$/,    'warranty.receive'],
+  ['PUT',  /^\/warranty\/\d+$/,            'warranty.receive'],
+  ['POST', /^\/warranty$/,                 'warranty.receive'],
+  ['GET',  /^\/warranty-history$/,         'warranty.receive'],
+  ['GET',  /^\/warranty/,                  'warranty.receive'],
+  /* Còn lại: giỏ linh kiện có giá, tiền công, phí, báo giá, đổi máy, huỷ, xoá ảnh */
+  ['*',    /^\/warranty/,                  'warranty.quote'],
 
   /* --- Hàng hoá: xem được, sửa thì không --- */
   /* Nhập danh mục hàng loạt từ file: đặt TRƯỚC mọi luật /products, vì
@@ -118,6 +132,11 @@ export const ACCESS_RULES = [
   /* Lịch sử nhập hàng hiện giá nhập của từng mối — đó là giá vốn, phải
      khoá riêng chứ không cho lọt qua quyền xem hàng hoá thông thường. */
   ['GET',  /^\/products\/\d+\/purchase-history$/, 'cost.view'],
+  /* Ma trận giá nhập của mọi mối cho một mặt hàng: là giá vốn, nhưng người
+     lập phiếu nhập bắt buộc phải thấy để ép giá — khoá theo quyền mua hàng.
+     Phải đứng TRƯỚC luật GET /products rộng bên dưới: trước 24/10/2026 nó nằm
+     ở mục mua hàng, bị luật rộng che mất nên thu ngân cũng đọc được. */
+  ['GET',  /^\/products\/\d+\/supplier-prices$/, 'purchase.manage'],
   ['GET',  /^\/products/,                 'product.view'],
   ['PUT',  /^\/products\/\d+\/cost$/,     'cost.view'],
   ['*',    /^\/products/,                 'product.manage'],
@@ -132,12 +151,15 @@ export const ACCESS_RULES = [
   ['*',    /^\/productions/,              'stock.manage'],
 
   /* --- Mua hàng --- */
+  /* Nhận hàng mù giá (24/10/2026): thủ kho lập phiếu nhận, xem phiếu nhập ở dạng
+     rút gọn không tiền (routes/purchases.js lọc theo danh sách trường được phép),
+     chọn mối chỉ theo tên. Mọi đường khác của mua hàng vẫn purchase.manage. */
+  ['POST', /^\/purchases\/receive$/,       'purchase.receive'],
+  ['GET',  /^\/purchases(\/\d+)?$/,        'purchase.receive'],
+  ['GET',  /^\/supplier-names$/,           'purchase.receive'],
   ['*',    /^\/purchases/,                'purchase.manage'],
   ['*',    /^\/purchase-returns/,         'purchase.manage'],
   ['*',    /^\/suppliers/,                'purchase.manage'],
-  /* Ma trận giá nhập của mọi mối cho một mặt hàng: là giá vốn, nhưng người
-     lập phiếu nhập bắt buộc phải thấy để ép giá — khoá theo quyền mua hàng. */
-  ['GET',  /^\/products\/\d+\/supplier-prices$/, 'purchase.manage'],
   ['GET',  /^\/suppliers\/\d+\/bought-products$/, 'purchase.manage'],
 
   /* --- Hàng mua hộ của chủ vãng lai (tài liệu 24, phần 5) --- */

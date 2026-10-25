@@ -141,7 +141,7 @@ export function EntryModal({ entryId, onClose, onChanged }) {
           <div className="grid gap-4 md:grid-cols-[auto,1fr]">
             {printable ? (
               <div className="border border-line rounded-lg bg-slate-100 p-3 overflow-auto max-h-[55vh] justify-self-center">
-                <div className="bg-white shadow-sm" style={{ width: 'fit-content' }}><ReceiptK80 entry={entry} store={store} /></div>
+                <div className="paper shadow-sm" style={{ width: 'fit-content' }}><ReceiptK80 entry={entry} store={store} /></div>
               </div>
             ) : (
               <div className="card p-3 text-[13px] space-y-1 min-w-[240px]">
@@ -217,7 +217,7 @@ export function EntryModal({ entryId, onClose, onChanged }) {
 
 export function PayslipView({ model }) {
   return (
-    <div className="bg-white text-slate-900 rounded-lg border border-line p-4 space-y-3 text-[14px]">
+    <div className="paper rounded-lg border border-line p-4 space-y-3 text-[14px]">
       <div className="text-center">
         <div className="font-display font-bold text-lg tracking-wide">{model.heading}</div>
         <div className="text-2xs text-muted-ink">Số {model.code} · ngày {model.date}</div>

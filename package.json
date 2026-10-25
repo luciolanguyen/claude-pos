@@ -12,7 +12,7 @@
     "start": "node server/index.js",
     "seed": "node server/seed.js",
     "reset": "node server/seed.js --reset",
-    "check": "node tools/check-client.mjs",
+    "check": "node tools/check-client.mjs && node tools/gen-dark-css.mjs --check && node tools/check-contrast.mjs",
     "test": "node tests/run-all.mjs",
     "verify": "npm run build && npm run check && npm test"
   },

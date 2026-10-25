@@ -62,6 +62,13 @@ export const DOC_THEMES = {
     icon: RefreshCcw, head: 'bg-amber-50 border-amber-200 text-amber-900',
     chip: 'bg-amber-100 text-amber-900 border-amber-300',
   },
+  /* Linh kiện thay khi sửa máy (vai trò Thợ, 25/10/2026): thợ chọn tên và số
+     lượng, không có giá — trừ kho lúc trả máy cho khách */
+  warranty_parts: {
+    label: 'Linh kiện sửa chữa', flow: 'Trừ kho lúc trả máy cho khách',
+    icon: ClipboardList, head: 'bg-amber-50 border-amber-200 text-amber-900',
+    chip: 'bg-amber-100 text-amber-900 border-amber-300',
+  },
   sale_return: {
     label: 'Khách trả hàng', flow: 'Hàng quay về kho',
     icon: Undo2, head: 'bg-rose-50 border-rose-200 text-rose-900',
@@ -504,7 +511,8 @@ export default function CartPickerModal({
                           aria-label={`Số lượng ${l.name}`} />
                         <IconButton icon={Plus} size={14} variant="outline" label={`Thêm 1 ${l.name}`}
                           onClick={() => onPatch(l.key, { qty: Number(l.qty) + 1 })} />
-                        {editPrice ? (
+                        {/* Nhận hàng mù giá (24/10/2026): tắt giá là không hiện đồng nào */}
+                        {!showPrice ? null : editPrice ? (
                           <MoneyInput size="sm" value={l.price} className="!w-28 ml-auto"
                             onChange={(v) => onPatch(l.key, { price: v, priceEdited: true })}
                             aria-label={`${priceLabel} ${l.name}`} />
@@ -512,9 +520,11 @@ export default function CartPickerModal({
                           <span className="ml-auto tabular text-[13px]">{money(l.price)}</span>
                         )}
                       </div>
-                      <div className="text-right text-[13px] font-semibold tabular mt-0.5">
-                        {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
-                      </div>
+                      {showPrice && (
+                        <div className="text-right text-[13px] font-semibold tabular mt-0.5">
+                          {money(amountOf ? amountOf(l) : Math.round((l.qty || 0) * (l.price || 0)))}
+                        </div>
+                      )}
                     </>
                   )}
                   {rightCol?.(l)}

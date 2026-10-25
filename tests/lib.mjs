@@ -32,10 +32,28 @@ export const results = () => ({ pass, fail, failed });
 
 /* ----------------------------- gọi API ----------------------------- */
 
+/* Mã đăng nhập của chủ tiệm mẫu (seed: chu / 1234) — mọi lời gọi mặc định đi bằng mã này */
+let ownerToken = '';
+
+/** Đăng nhập một tài khoản, trả header mang mã của người đó — để kiểm phần chặn quyền */
+export async function authAs(username, password = '1234') {
+  const r = await fetch(BASE + '/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(`Không đăng nhập được ${username}: ${data?.error}`);
+  return { Authorization: `Bearer ${data.token}` };
+}
+
 export async function raw(method, p, body, headers) {
   const r = await fetch(BASE + p, {
     method,
-    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), 'x-user-id': '1', ...headers },
+    headers: {
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...(ownerToken ? { Authorization: `Bearer ${ownerToken}` } : {}),
+      ...headers,
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await r.text();
@@ -107,6 +125,7 @@ export async function startServer({ reset = true } = {}) {
         await stopServer();
         throw new Error(`Máy chủ thử đang mở nhầm CSDL: ${info.db_file}`);
       }
+      ownerToken = (await authAs('chu')).Authorization.slice(7);
       return info;
     } catch (e) {
       if (String(e.message).startsWith('Máy chủ thử đang mở nhầm')) throw e;

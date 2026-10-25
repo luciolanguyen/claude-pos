@@ -20,8 +20,96 @@
     --danger: 220 38 38;        /* #DC2626 — 4.8:1 với chữ trắng */
     --warn: 180 83 9;           /* #B45309 — 4.6:1 với chữ trắng */
     --info: 29 78 216;          /* #1D4ED8 */
+    /* Màu CHỮ của bốn màu trạng thái. Nền tối thì chữ phải sáng hơn nền nút
+       (xem khối chế độ tối bên dưới); nền sáng thì trùng màu gốc. */
+    --accent-ink: var(--accent);
+    --danger-ink: var(--danger);
+    --warn-ink: var(--warn);
+    --info-ink: var(--info);
     color-scheme: light;
   }
+
+  /* ---------------------------------------------------------------
+     BA BẢNG MÀU (10/10/2026) — mỗi máy tự chọn ở Thiết lập › Giao diện.
+     Chỉ đổi màu chủ đạo; nền và chữ theo chế độ sáng / tối.
+     Chữ trắng trên --accent và --primary đều đạt từ 4.5:1 trở lên
+     (soát bằng tools/check-contrast.mjs).
+     --------------------------------------------------------------- */
+  html[data-palette="xanh"] {
+    --primary: 30 58 138;       /* #1E3A8A */
+    --accent: 29 78 216;        /* #1D4ED8 — chữ trắng 6.7:1 */
+    --accent-soft: 219 234 254; /* #DBEAFE */
+  }
+  html[data-palette="nau"] {
+    --primary: 68 64 60;        /* #44403C stone-700 */
+    --accent: 146 64 14;        /* #92400E — chữ trắng 7.1:1 */
+    --accent-soft: 254 243 199; /* #FEF3C7 */
+  }
+}
+
+/* -------------------------------------------------------------------
+   CHẾ ĐỘ TỐI (10/10/2026)
+
+   Chỉ áp trên MÀN HÌNH (@media screen): bấm in thì trình duyệt in theo
+   khối :root ở trên — giấy trắng chữ đen, dù máy đang để tối.
+   Lớp màu viết thẳng (bg-red-50, text-emerald-700…) có bản tối riêng ở
+   theme-dark.css, sinh tự động bằng tools/gen-dark-css.mjs.
+   ------------------------------------------------------------------- */
+@media screen {
+  html[data-mode="dark"] {
+    --surface: 15 23 42;        /* #0F172A */
+    --card: 30 41 59;           /* #1E293B */
+    --ink: 226 232 240;         /* #E2E8F0 — 11.9:1 trên card */
+    --muted: 39 52 73;          /* #273449 */
+    --muted-ink: 148 163 184;   /* #94A3B8 — 5.7:1 trên card */
+    --line: 51 65 85;           /* #334155 */
+    --accent-soft: 6 78 59;     /* #064E3B — nền nhấn, chữ sáng đè lên */
+    --accent-ink: 52 211 153;   /* #34D399 */
+    --danger-ink: 248 113 113;  /* #F87171 */
+    --warn-ink: 251 191 36;     /* #FBBF24 */
+    --info-ink: 96 165 250;     /* #60A5FA */
+    color-scheme: dark;
+  }
+  html[data-mode="dark"][data-palette="xanh"] {
+    --accent-soft: 30 58 138;   /* #1E3A8A */
+    --accent-ink: 147 197 253;  /* #93C5FD */
+  }
+  html[data-mode="dark"][data-palette="nau"] {
+    --accent-soft: 69 26 3;     /* #451A03 */
+    --accent-ink: 252 211 77;   /* #FCD34D */
+  }
+
+  /* Biểu đồ: màu lưới và chữ trục viết thẳng trong mã — đổi theo token */
+  html[data-mode="dark"] .recharts-cartesian-grid line { stroke: rgb(var(--line)) !important; }
+  html[data-mode="dark"] .recharts-cartesian-axis-tick-value,
+  html[data-mode="dark"] .recharts-legend-item-text { fill: rgb(var(--muted-ink)) !important; color: rgb(var(--muted-ink)) !important; }
+  html[data-mode="dark"] .recharts-default-tooltip {
+    background-color: rgb(var(--card)) !important;
+    border-color: rgb(var(--line)) !important;
+    color: rgb(var(--ink));
+  }
+}
+
+/* Bản xem trước tờ in trên màn hình: LUÔN là giấy trắng chữ đen.
+   Đặt lại token ngay tại khung giấy, nên mọi thứ bên trong thừa hưởng màu sáng
+   dù cả trang đang ở chế độ tối. */
+.paper {
+  --surface: 248 250 252;
+  --card: 255 255 255;
+  --ink: 15 23 42;
+  --muted: 241 245 249;
+  --muted-ink: 71 85 105;
+  --line: 226 232 240;
+  --accent-ink: var(--accent);
+  --danger-ink: var(--danger);
+  --warn-ink: var(--warn);
+  --info-ink: var(--info);
+  background-color: #fff;
+  color: rgb(15 23 42);
+  color-scheme: light;
+}
+
+@layer base {
 
   * {
     @apply border-line;

@@ -29,8 +29,8 @@ import phone from './phone.js';
 import { ensureTls, lanChoices } from './tls.js';
 import { DB_FILE } from './db.js';
 import { permFor } from './access-map.js';
-import { whoami, isLoginRequired } from './guard.js';
-import { permsOf, PERMISSIONS, ROLE_LABEL } from './permissions.js';
+import { whoami, isLoginRequired, issueToken } from './guard.js';
+import { permsOf, PERMISSIONS, ROLE_LABEL, ROLE_PERMISSIONS } from './permissions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -51,7 +51,7 @@ app.use(express.json({ limit: '80mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-payroll-token');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-payroll-token');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -66,14 +66,20 @@ app.get('/api/me', (req, res) => {
     return res.json({
       login_required: false, user: null,
       can: Object.keys(PERMISSIONS), permissions: PERMISSIONS, role_labels: ROLE_LABEL,
+      role_permissions: ROLE_PERMISSIONS,
     });
   }
   res.json({
     login_required: true,
     user: u ? { id: u.id, username: u.username, full_name: u.full_name, role: u.role } : null,
+    /* Mã mới 30 ngày: máy mở phần mềm mỗi ngày thì không bao giờ phải đăng nhập lại */
+    token: u && u.active ? issueToken(u) : undefined,
     can: u && u.active ? permsOf(u.role) : [],
     permissions: PERMISSIONS,
     role_labels: ROLE_LABEL,
+    /* Bảng "Ai làm được gì" ở Thiết lập đọc từ đây — trước đây máy khách chép
+       một bản riêng, lệch với máy chủ mỗi lần đổi quyền */
+    role_permissions: ROLE_PERMISSIONS,
   });
 });
 
@@ -112,6 +118,8 @@ app.use('/api', (req, res, next) => {
 /* Giá nhập gần nhất cũng là giá vốn — lộ ra thì thu ngân biết tiệm lời bao nhiêu */
 const COST_FIELDS = ['cost_price', 'unit_cost', 'cogs', 'avg_cost', 'profit', 'margin',
   'last_purchase_price',
+  /* Giá trị tồn kho tính theo giá vốn (Tổng quan) — cộng ngược ra tổng giá vốn */
+  'stock_value', 'sales_cogs', 'returns_cogs',
   /* Cột tên trơn "cost": giá tiệm bốc hàng mua hộ vãng lai (tài liệu 24),
      chi phí lắp ráp, tiền linh kiện thay khi sửa bảo hành. Ba chỗ đó đều
      là giá vốn thật, trước đây lọt ra ngoài vì tên cột không có hậu tố. */

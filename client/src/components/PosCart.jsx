@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Minus, Trash2, History, StickyNote, Tag, X, ShieldCheck, ShieldPlus } from 'lucide-react';
 import { n, qty as fq } from '../lib/format';
 import { IconButton, Badge } from './ui';
+import BlindCost from './BlindCost';
 
 /** Tiền một dòng: giảm theo % tiền hàng dòng, hoặc số tiền cố định; không giảm quá tiền hàng. */
 export const lineAmount = (l) => {
@@ -118,7 +119,7 @@ export function PercentCell({ value, onCommit, label, className = '' }) {
  * sách giỏ hàng: danh sách có thanh cuộn riêng, đặt bên trong thì dòng cuối
  * giỏ bấm ra bảng bị cắt mất nửa dưới.
  */
-function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
+function DiscountPopover({ anchor, l, gross, showCost, blindKeys = null, onApply, onClose }) {
   const [type, setType] = useState(l.discountType === 'percent' ? 'percent' : 'amount');
   const [val, setVal] = useState(String(Number(l.discountValue) || 0));
   const [pos, setPos] = useState(null);
@@ -250,14 +251,18 @@ function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
         {/* Thấy luôn biên lãi ngay lúc quyết mức giảm — tránh giảm quá tay thành bán lỗ */}
         {showCost && (
           <div className="border-t border-line pt-0.5 text-2xs text-muted-ink space-y-0.5">
-            <div className="flex justify-between"><span>Giá vốn</span><span className="tabular">{n(cost)}</span></div>
+            <div className="flex justify-between">
+              <span>Giá vốn</span><span className="tabular"><BlindCost value={cost} keyStr={blindKeys?.cost} /></span>
+            </div>
             {lastIn !== null && (
               <div className="flex justify-between">
-                <span>Theo giá nhập gần nhất</span><span className="tabular">{n(lastIn)}</span>
+                <span>Theo giá nhập gần nhất</span>
+                <span className="tabular"><BlindCost value={lastIn} keyStr={blindKeys?.purchase} /></span>
               </div>
             )}
             <div className={`flex justify-between font-semibold ${after - cost < 0 ? 'text-danger' : 'text-emerald-700'}`}>
-              <span>Lãi sau giảm</span><span className="tabular">{n(after - cost)}</span>
+              <span>Lãi sau giảm</span>
+              <span className="tabular"><BlindCost value={after - cost} keyStr={blindKeys?.cost} /></span>
             </div>
           </div>
         )}
@@ -285,7 +290,7 @@ function DiscountPopover({ anchor, l, gross, showCost, onApply, onClose }) {
 
 export function CartLine({
   l, hist, showCost, onQty, onUnit, onPrice, onAmount, onDiscount, onRemove, onHistory, onNote,
-  onWarranty, highlight = false, lineRef = null, tier = null, alias = null,
+  onWarranty, highlight = false, lineRef = null, tier = null, alias = null, blindKeys = null,
 }) {
   const { gross, disc, amount } = lineAmount(l);
   const [tagAnchor, setTagAnchor] = useState(null);
@@ -505,9 +510,13 @@ export function CartLine({
         {showCost && (
           <span className={`text-2xs tabular shrink-0 text-right leading-tight
                             ${profit < 0 ? 'text-danger font-bold' : 'text-muted-ink'}`}>
-            Vốn {n(l.cost_price)}
-            {l.last_purchase_price > 0 && <> · nhập gần nhất {n(l.last_purchase_price)}</>}
-            <span className="block">lãi {n(profit)}</span>
+            {/* Bật mã hoá thì cả TIỀN LÃI cũng phải mã hoá: giá bán nằm ngay bên
+                cạnh, lấy giá bán trừ lãi là ra đúng giá vốn (tài liệu 24, phần 4) */}
+            Vốn <BlindCost value={l.cost_price} keyStr={blindKeys?.cost} />
+            {l.last_purchase_price > 0 && (
+              <> · nhập gần nhất <BlindCost value={l.last_purchase_price} keyStr={blindKeys?.purchase} /></>
+            )}
+            <span className="block">lãi <BlindCost value={profit} keyStr={blindKeys?.cost} /></span>
           </span>
         )}
       </div>
@@ -518,6 +527,7 @@ export function CartLine({
           l={l}
           gross={gross}
           showCost={showCost}
+          blindKeys={blindKeys}
           onClose={() => setTagAnchor(null)}
           onApply={(type, value) => { setTagAnchor(null); onDiscount(type, value); }}
         />

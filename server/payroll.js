@@ -68,9 +68,9 @@ export function payrollSettings() {
 /* ------------------------------------------------------------------ */
 /* Phiên mở bảng lương bằng mã PIN (§2.4 lớp 3)                         */
 /*                                                                     */
-/* Danh tính trong phần mềm chỉ là dòng x-user-id tự khai — ai nối wifi */
-/* tiệm cũng giả danh chủ được. PIN là lớp duy nhất không dựa vào dòng  */
-/* đó: đặt x-user-id: 1 mà không biết PIN thì vẫn không mở được.        */
+/* Mã đăng nhập (server/auth-token.js) nằm sẵn trên máy đã đăng nhập: */
+/* ai đứng trước máy chủ tiệm cũng dùng được. PIN là lớp thứ hai — máy  */
+/* đang mở bằng tài khoản chủ mà không biết PIN thì vẫn không xem lương. */
 /* ------------------------------------------------------------------ */
 
 const sessions = new Map();          // token -> { userId, approver, expires }

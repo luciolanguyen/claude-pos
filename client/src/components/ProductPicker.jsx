@@ -33,7 +33,9 @@ export function ProductPicker({
   const [cat, setCat] = useState('');
   /* Số lượng đang gõ cho từng dòng, theo id mặt hàng. Chưa gõ thì coi là 1. */
   const [qtys, setQtys] = useState({});
-  const { meta } = useApp();
+  const { meta, can } = useApp();
+  /* Máy chủ cắt giá vốn với người không có quyền xem — đừng vẽ cột toàn số 0 */
+  const showCost = can('cost.view');
 
   useEffect(() => { if (open) { setQ(''); setQtys({}); } }, [open]);
 
@@ -105,7 +107,7 @@ export function ProductPicker({
                 <tr>
                   <th>Mã hàng</th><th>Tên hàng</th><th>Nhóm</th>
                   <th className="text-right">Tồn kho</th>
-                  <th className="text-right">Giá vốn</th>
+                  {showCost && <th className="text-right">Giá vốn</th>}
                   {withQty && <th style={{ width: 104 }} className="text-right">Số lượng</th>}
                   <th style={{ width: 76 }} />
                 </tr>
@@ -123,7 +125,7 @@ export function ProductPicker({
                           </span>
                         : <span className="text-muted-ink">Dịch vụ</span>}
                     </td>
-                    <td className="num">{money(p.cost_price)}</td>
+                    {showCost && <td className="num">{money(p.cost_price)}</td>}
                     {withQty && (
                       /* Bấm vào ô số lượng KHÔNG được tính là bấm vào dòng,
                          nếu không thì vừa chạm vào ô đã thêm mất một dòng. */

@@ -6,10 +6,9 @@
              bảo hành, và xem tồn kho để biết còn hàng hay không.
    Kho: chỉ lo hàng hoá và kho, không đụng tới tiền và giá vốn bán.
 
-   Đây là hàng rào chống thao tác nhầm giữa người trong tiệm, KHÔNG phải
-   lớp bảo mật chống kẻ xấu: phần mềm chạy trong mạng LAN của tiệm, mật
-   khẩu lưu dạng chữ thường, ai vào được mạng cũng có thể giả danh. Đừng
-   mở cổng 5175 ra Internet.
+   Máy chủ nhận ra người gọi bằng mã đăng nhập có chữ ký (auth-token.js),
+   nhưng mật khẩu vẫn lưu dạng chữ thường trong file dữ liệu. Đừng mở cổng
+   5175 ra Internet.
    ==================================================================== */
 
 /** Tất cả quyền đang có. Mô tả để hiện ở màn hình Thiết lập → Người dùng. */
@@ -20,11 +19,21 @@ export const PERMISSIONS = {
   'sale.return':     'Nhận khách trả hàng',
   'order.manage':    'Đơn đặt hàng của khách',
   'customer.manage': 'Khách hàng, công nợ khách',
-  'warranty.manage': 'Nhận và trả hàng bảo hành',
+  /* Bảo hành & sửa chữa tách bốn quyền (vai trò Thợ, 25/10/2026): thợ nhận
+     máy và sửa nhưng không thấy giá; báo giá là việc của chủ / quản lý; thu
+     ngân trả máy, thu tiền, chỉ thấy tổng tiền chứ không thấy đơn giá */
+  'warranty.receive': 'Nhận máy bảo hành / sửa chữa, tra hạn bảo hành',
+  'warranty.work':    'Báo bệnh, vật tư thay, báo sửa xong',
+  'warranty.quote':   'Báo giá sửa chữa, giá vật tư, in hoá đơn chi tiết',
+  'warranty.deliver': 'Trả máy cho khách, thu tiền sửa chữa',
   'product.view':    'Xem hàng hoá, giá bán, tồn kho',
   'product.manage':  'Thêm sửa hàng hoá, đổi giá bán',
   'stock.manage':    'Kiểm kê, chuyển kho, sản xuất',
   'purchase.manage': 'Nhập hàng, nhà cung cấp, công nợ NCC',
+  /* Thủ kho nhận hàng "mù giá" (24/10/2026): đếm hàng cộng kho, chọn mối
+     theo tên — không thấy giá nhập, tổng tiền, hồ sơ hay công nợ NCC.
+     Chủ / quản lý chốt giá sau theo hoá đơn của mối. */
+  'purchase.receive': 'Nhận hàng về kho (không thấy giá nhập)',
   'cash.manage':     'Quỹ tiền, thu chi',
   'cash.voucher':    'In lại phiếu thu, phiếu chi đã lập',
   'cost.view':       'Xem giá vốn và lãi lỗ',
@@ -56,7 +65,7 @@ export const ROLE_PERMISSIONS = {
   manager: ALL,
   cashier: [
     'sale.pos', 'sale.view', 'sale.return',
-    'order.manage', 'customer.manage', 'warranty.manage',
+    'order.manage', 'customer.manage', 'warranty.receive', 'warranty.deliver',
     'product.view',
     /* Thu nợ tại quầy xong thì in tờ phiếu thu đưa khách. Chỉ xem lại
        được đúng phiếu theo số, không mở được cả sổ quỹ. */
@@ -66,16 +75,19 @@ export const ROLE_PERMISSIONS = {
     'data.export',
   ],
   stock: [
-    'product.view', 'product.manage', 'stock.manage', 'purchase.manage',
+    /* Không có purchase.manage: người nhận hàng không đồng thời quyết giá và
+       trả tiền mối (24/10/2026) — xem routes/purchases.js, /purchases/receive */
+    'product.view', 'product.manage', 'stock.manage', 'purchase.receive',
     /* Người dựng danh mục hàng hoá chính là người cần nhập file Excel */
     'data.import', 'data.export',
   ],
-  /* Người chỉ lo nhận và trả hàng bảo hành, không đụng quầy thu tiền.
-     Vẫn cần tra hoá đơn cũ (máy này bán hồi nào, còn hạn không), tra
-     hàng hoá, và mở hồ sơ khách để gọi điện báo máy đã sửa xong. */
-  warranty: [
-    'warranty.manage', 'sale.view', 'product.view', 'customer.manage',
-  ],
+  /* Thợ (25/10/2026, thay vai "Nhân viên bảo hành"): CHỈ nghiệp vụ bảo hành và
+     sửa chữa — nhận máy, báo bệnh, báo vật tư thay, báo sửa xong. Không vào
+     khách hàng & công nợ, không vào kho: chọn khách và chọn linh kiện đi qua
+     /warranty/customer-options và /warranty/part-options (chỉ tên, SĐT, tồn;
+     không giá, không nợ). Không thấy giá vật tư, tiền công, báo giá — máy chủ
+     cắt hết tiền khỏi phiếu (routes/warranty.js, shapeTicket). */
+  technician: ['warranty.receive', 'warranty.work'],
 };
 
 export const ROLE_LABEL = {
@@ -83,7 +95,7 @@ export const ROLE_LABEL = {
   manager: 'Quản lý',
   cashier: 'Thu ngân',
   stock: 'Nhân viên kho',
-  warranty: 'Nhân viên bảo hành',
+  technician: 'Thợ',
 };
 
 /** Danh sách quyền của một vai trò. Vai trò lạ thì không có quyền nào. */
@@ -104,28 +116,15 @@ export function roleCan(role, perm) {
  * ------------------------------------------------------------------ */
 
 /**
- * Ai đang gọi. Máy khách gửi kèm id người dùng ở header x-user-id.
- *
- * Riêng ảnh thì nhận thêm ở dạng ?uid= trên đường dẫn: thẻ <img src="..."/>
- * của trình duyệt KHÔNG gửi được header tự đặt, nên ảnh bảo hành sẽ bị chặn
- * 401 và hiện ra ô trống — trông y như phần mềm quên lưu ảnh.
- */
-export function currentUser(req, getUserById) {
-  const id = Number(req.get('x-user-id')) || Number(req.query?.uid);
-  if (!id) return null;
-  return getUserById(id) || null;
-}
-
-/**
  * Sinh middleware đòi một quyền cụ thể.
  * Chưa đăng nhập thì cho qua — tiệm có thể bật "bỏ qua đăng nhập" ở
  * Thiết lập, lúc đó cả nhà dùng chung một máy và không có ai để phân quyền.
  */
-export function makeRequire(getUserById, isLoginRequired) {
+export function makeRequire(currentUser, isLoginRequired) {
   return function require(perm) {
     return (req, res, next) => {
       if (!isLoginRequired()) return next();
-      const u = currentUser(req, getUserById);
+      const u = currentUser(req);
       if (!u) {
         return res.status(401).json({
           error: 'Chưa đăng nhập. Hãy đăng nhập lại.', code: 'NO_AUTH',

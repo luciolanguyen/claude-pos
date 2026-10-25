@@ -28,6 +28,7 @@ import {
   addCashTx, defaultCashAccount, WARRANTY_DIR, getSettings, pageParams } from '../db.js';
 import { isApproverRole, peekApproval, consumeApproval } from '../policy.js';
 import { ensureDefectWarehouse } from './sales.js';
+import { can } from '../guard.js';
 
 const r = Router();
 
@@ -255,6 +256,49 @@ function batchInfo(batchId) {
   return b;
 }
 
+
+/* ==================================================================== */
+/* Ai thấy tiền gì (vai trò Thợ, 25/10/2026)                            */
+/*                                                                      */
+/*   chủ / quản lý (warranty.quote)  thấy đủ                             */
+/*   thu ngân (warranty.deliver)     tên vật tư + TỔNG tiền, không đơn giá */
+/*   thợ (chỉ warranty.work)         không một đồng nào; linh kiện mua    */
+/*                                   ngoài thì thấy số tiền chính mình bỏ */
+/*                                                                      */
+/* Dòng vật tư lọc theo DANH SÁCH TRƯỜNG ĐƯỢC PHÉP; đầu phiếu bỏ hết cột  */
+/* tiền đang có. Nhật ký có ghi số tiền ("thu 150.000 / 150.000 đ") nên  */
+/* che luôn con số trong nhật ký.                                       */
+/* ==================================================================== */
+const HEAD_MONEY = ['parts_cost', 'parts_price', 'custom_parts_price', 'fees_total', 'labor_fee',
+  'discount', 'charge', 'paid', 'refund_amount', 'quote_total', 'support_discount_total', 'totals'];
+const PART_KEEP = ['id', 'ticket_id', 'product_id', 'product_name', 'sku', 'base_unit', 'qty', 'stock_applied'];
+const CUSTOM_KEEP = ['id', 'ticket_id', 'name', 'qty', 'note', 'added_by'];
+const pickKeys = (o, keys) => Object.fromEntries(keys.filter((k) => k in o).map((k) => [k, o[k]]));
+const maskMoney = (s) => (s ? String(s).replace(/\d[\d.,]*\s*(đ|₫)/g, '··· đ') : s);
+
+export function shapeTicket(req, t) {
+  if (!t || can(req, 'warranty.quote')) return t;
+  const deliver = can(req, 'warranty.deliver');
+  const me = req.user?.id ?? null;
+  const out = { ...t };
+  for (const k of HEAD_MONEY) delete out[k];
+  if (deliver) {
+    /* Thu ngân trả máy: cần đúng số phải thu và số đã thu, không cần cơ cấu */
+    out.totals = t.totals ? { total: t.totals.total } : undefined;
+    out.charge = t.charge; out.paid = t.paid; out.refund_amount = t.refund_amount;
+  }
+  if (Array.isArray(t.parts)) out.parts = t.parts.map((p) => pickKeys(p, PART_KEEP));
+  if (Array.isArray(t.custom_parts)) {
+    out.custom_parts = t.custom_parts.map((c) => ({
+      ...pickKeys(c, CUSTOM_KEEP), ...(me && c.added_by === me ? { outlay: c.outlay } : {}),
+    }));
+  }
+  if (Array.isArray(t.fees)) out.fees = deliver ? t.fees.map((f) => pickKeys(f, ['id', 'name'])) : [];
+  if (Array.isArray(t.logs)) out.logs = t.logs.map((l) => ({ ...l, note: maskMoney(l.note) }));
+  out.money_hidden = true;
+  return out;
+}
+
 /* ==================================================================== */
 /* Danh sách và chi tiết phiếu                                           */
 /* ==================================================================== */
@@ -283,6 +327,11 @@ r.get('/warranty', (req, res) => {
     }
   }
   if (status) { where.push('t.status = ?'); params.push(status); }
+  /* ?quote=waiting_quote — khối "Cần xử lý" dẫn tới phiếu chờ báo giá */
+  if (req.query.quote) {
+    where.push("t.quote_state = ? AND t.status NOT IN ('delivered','cancelled')");
+    params.push(String(req.query.quote));
+  }
   if (batchId) { where.push('t.batch_id = ?'); params.push(batchId); }
   if (resolution) { where.push('t.resolution = ?'); params.push(resolution); }
   if (type === 'warranty' || type === 'repair') { where.push('t.ticket_type = ?'); params.push(type); }
@@ -290,6 +339,10 @@ r.get('/warranty', (req, res) => {
   if (to) { where.push('date(t.ts) <= date(?)'); params.push(to); }
   // Đang còn ở tiệm hoặc đang ở hãng — cái cần theo dõi hằng ngày
   if (open_only === '1') where.push("t.status NOT IN ('delivered','cancelled')");
+  /* Quá ngày hẹn trả khách mà máy chưa trả (mở từ khối "Cần xử lý" của Tổng quan) */
+  if (req.query.late === '1') {
+    where.push("t.status NOT IN ('delivered','cancelled') AND t.promised_at IS NOT NULL AND date(t.promised_at) < date('now','localtime')");
+  }
 
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const { page, size, offset } = pageParams(req.query);
@@ -323,7 +376,39 @@ r.get('/warranty', (req, res) => {
     LEFT JOIN warranty_batches wb ON wb.id = t.batch_id
     ${w}
     ORDER BY t.id DESC LIMIT ${size} OFFSET ${offset}`, params);
-  res.json({ rows, total, page, page_size: size });
+  res.json({ rows: rows.map((x) => shapeTicket(req, x)), total, page, page_size: size });
+});
+
+/* ------------------------------------------------------------------ *
+ * Ô chọn khách và chọn hàng cho người nhận máy / báo vật tư. Thợ không có
+ * quyền khách hàng hay kho (25/10/2026) nên không gọi /customers, /products
+ * được — hai đường này chỉ trả đúng thứ cần để chọn: khách thì tên, SĐT,
+ * địa chỉ (không nợ, không hạn mức); hàng thì tên, mã, đơn vị, tồn kho
+ * (không giá bán, không giá vốn). Đặt trước /warranty/:id.
+ * ------------------------------------------------------------------ */
+r.get('/warranty/customer-options', (req, res) => {
+  res.json(all(`SELECT id, code, name, phone, address FROM customers
+                WHERE active = 1 ORDER BY name COLLATE NOCASE`));
+});
+
+r.get('/warranty/part-options', (req, res) => {
+  const warehouseId = Number(req.query.warehouse_id)
+    || get('SELECT id FROM warehouses WHERE is_default = 1')?.id || 1;
+  const rows = all(`
+    SELECT p.id, p.sku, p.barcode, p.name, p.alias, p.base_unit, p.track_stock, p.category_id,
+           p.brand, p.warranty_months, c.name AS category_name,
+           COALESCE((SELECT qty FROM stock s WHERE s.product_id = p.id AND s.warehouse_id = ?), 0) AS stock
+    FROM products p LEFT JOIN categories c ON c.id = p.category_id
+    WHERE p.active = 1 ORDER BY p.name`, [warehouseId]);
+  const units = new Map();
+  for (const u of all('SELECT id, product_id, unit_name, factor, is_base FROM product_units WHERE active = 1 ORDER BY factor')) {
+    if (!units.has(u.product_id)) units.set(u.product_id, []);
+    units.get(u.product_id).push({ id: u.id, unit_name: u.unit_name, factor: u.factor, is_base: u.is_base, prices: {} });
+  }
+  for (const p of rows) {
+    p.units = units.get(p.id) || [{ id: 0, unit_name: p.base_unit, factor: 1, is_base: 1, prices: {} }];
+  }
+  res.json(rows);
 });
 
 /* Đặt trước /warranty/:id, nếu không Express hiểu "photo-usage" là mã phiếu. */
@@ -340,14 +425,14 @@ r.get('/warranty/photo-usage', (req, res) => {
 r.get('/warranty/:id', (req, res) => {
   const t = ticketDetail(req.params.id);
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu bảo hành' });
-  res.json(t);
+  res.json(shapeTicket(req, t));
 });
 
 /** Phiếu tiếp nhận gom: đầu phiếu + chi tiết đủ từng món — để in chung biên nhận và tem. */
 r.get('/warranty-batches/:id', (req, res) => {
   const b = batchInfo(req.params.id);
   if (!b) return res.status(404).json({ error: 'Không tìm thấy phiếu tiếp nhận' });
-  b.tickets = b.items.map((x) => ticketDetail(x.id));
+  b.tickets = b.items.map((x) => shapeTicket(req, ticketDetail(x.id)));
   res.json(b);
 });
 
@@ -435,6 +520,8 @@ r.get('/warranty-lookup', (req, res) => {
   for (const row of sold) row.warranty_parts = partsBy.get(row.item_id) || [];
   for (const row of exchanged) row.warranty_parts = [];
 
+  /* Thợ tra hạn bảo hành không cần biết khách mua bao nhiêu tiền */
+  if (!can(req, 'sale.view')) for (const row of sold) delete row.price;
   res.json([...exchanged, ...sold]);
 });
 
@@ -476,7 +563,7 @@ r.get('/warranty-history', (req, res) => {
       FROM warranty_logs l LEFT JOIN users u ON u.id = l.user_id
       WHERE l.ticket_id = ? ORDER BY l.id`, [t.id]);
   }
-  res.json(tickets);
+  res.json(tickets.map((t) => shapeTicket(req, t)));
 });
 
 /* ==================================================================== */
@@ -496,8 +583,8 @@ function insertTicket(head, it, batchId) {
       (code, ts, customer_id, customer_name, customer_phone, sale_id, product_id,
        product_name, serial, qty, issue, condition_note, accessories,
        in_warranty, warranty_until, status, promised_at, received_by, note,
-       ticket_type, technician_id, batch_id, component_name)
-    VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, ?, ?, ?)`,
+       ticket_type, technician_id, batch_id, component_name, quote_state)
+    VALUES(?, COALESCE(?, datetime('now','localtime')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, ?, ?, ?, 'waiting_quote')`,
     [code, head.ts || null, head.customer_id || null,
       head.customer_name?.trim() || null, head.customer_phone?.trim() || null,
       it.sale_id || null, it.product_id || null, String(it.product_name).trim(),
@@ -549,6 +636,19 @@ r.post('/warranty', (req, res) => {
   if (!b.customer_id && !String(b.customer_name || '').trim() && !String(b.customer_phone || '').trim()) {
     return res.status(400).json({ error: 'Ghi ít nhất tên hoặc số điện thoại của khách để còn gọi khi xong.' });
   }
+  /* Ảnh tình trạng máy lúc nhận là bắt buộc (25/10/2026) — bằng chứng khi khách
+     nói "máy tôi đâu có trầy". Tiệm tắt được ở Thiết lập > Bảo hành. */
+  if (getSettings()?.warranty?.require_photos !== false) {
+    const noPhoto = items.findIndex((it) => !(Array.isArray(it.photos) ? it.photos : [])
+      .some((ph) => /^data:image\/(jpe?g|png|webp);base64,/i.test(String(ph?.data ?? ph))));
+    if (noPhoto >= 0) {
+      return res.status(400).json({
+        error: items.length > 1 ? `Món thứ ${noPhoto + 1} chưa chụp ảnh tình trạng lúc nhận.`
+          : 'Chụp ít nhất một ảnh tình trạng máy lúc nhận.',
+        code: 'PHOTO_REQUIRED',
+      });
+    }
+  }
 
   try {
     const result = tx(() => {
@@ -562,7 +662,9 @@ r.post('/warranty', (req, res) => {
             b.customer_phone?.trim() || null, b.received_by || null, b.batch_note?.trim() || null]);
         batch = { id: Number(info.lastInsertRowid), code };
       }
-      const tickets = items.map((it) => insertTicket(b, it, batch?.id));
+      /* Người nhận là người đang đăng nhập, không tin số trình duyệt gửi lên */
+      const head = { ...b, received_by: req.user?.id ?? b.received_by };
+      const tickets = items.map((it) => insertTicket(head, it, batch?.id));
       return {
         id: tickets[0].id, code: tickets[0].code, ticket_type: tickets[0].ticket_type,
         batch_id: batch?.id || null, batch_code: batch?.code || null, tickets,
@@ -578,6 +680,13 @@ r.put('/warranty/:id', (req, res) => {
   const b = req.body;
   const t = get('SELECT * FROM warranty_tickets WHERE id = ?', [req.params.id]);
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu bảo hành' });
+  /* Loại phiếu và hạn bảo hành quyết định khách trả tiền hay không — chỉ người
+     báo giá đổi được; thợ, thu ngân sửa thông tin khác thì giữ nguyên */
+  if (!can(req, 'warranty.quote')) {
+    b.ticket_type = t.ticket_type;
+    b.in_warranty = t.in_warranty;
+    b.warranty_until = t.warranty_until;
+  }
 
   run(`UPDATE warranty_tickets SET
          customer_id = ?, customer_name = ?, customer_phone = ?,
@@ -622,6 +731,18 @@ r.post('/warranty/:id/status', (req, res) => {
     return res.status(400).json({ error: 'Phiếu đã trả khách rồi, không đổi trạng thái được nữa.' });
   }
 
+  /* Thợ chỉ chuyển "đang kiểm tra" / "đang sửa"; sửa xong đi qua /done (bắt ảnh,
+     xác cũ), gửi hãng và cách xử lý là việc chủ quyết */
+  const boss = can(req, 'warranty.quote');
+  if (!boss) {
+    if (!['checking', 'repairing'].includes(b.status)) {
+      return res.status(403).json({ error: 'Thợ chỉ đổi được sang "Đang kiểm tra" hoặc "Đang sửa". Sửa xong thì bấm "Báo sửa xong".', code: 'NO_PERM' });
+    }
+    if (b.status === 'repairing' && BLOCKS_REPAIR[t.quote_state]) {
+      return res.status(400).json({ error: `Chưa sửa được: phiếu ${BLOCKS_REPAIR[t.quote_state]}.`, code: 'NOT_APPROVED' });
+    }
+    delete b.resolution; delete b.supplier_id; delete b.expected_at;
+  }
   if (b.status === 'sent_supplier' && !b.supplier_id && !t.supplier_id) {
     return res.status(400).json({ error: 'Chọn hãng/nhà cung cấp trước khi chuyển sang Đã gửi hãng.' });
   }
@@ -648,7 +769,7 @@ r.post('/warranty/:id/status', (req, res) => {
 
       run(`UPDATE warranty_tickets SET ${fields.join(', ')} WHERE id = ?`, [...params, req.params.id]);
       run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
-        [t.id, b.status, b.user_id || null, b.note || null]);
+        [t.id, b.status, req.user?.id ?? (b.user_id || null), b.note || null]);
     });
     res.json({ ok: true });
   } catch (e) {
@@ -742,10 +863,15 @@ r.put('/warranty/:id/cart', (req, res) => {
         run('UPDATE warranty_parts SET price = ?, amount_sale = ? WHERE id = ?',
           [l.price, Math.round(l.qty * l.price), l.id]);
       }
+      /* Giữ số tiền thợ đã bỏ ra mua linh kiện ngoài (vai trò Thợ) khi chủ sửa giá */
+      const kept = new Map(all('SELECT name, outlay, added_by FROM warranty_custom_parts WHERE ticket_id = ?', [t.id])
+        .map((c) => [c.name, c]));
       run('DELETE FROM warranty_custom_parts WHERE ticket_id = ?', [t.id]);
       for (const c of custom) {
-        run(`INSERT INTO warranty_custom_parts(ticket_id, name, qty, price, amount, note)
-             VALUES(?, ?, ?, ?, ?, ?)`, [t.id, c.name, c.qty, c.price, Math.round(c.qty * c.price), c.note]);
+        const k = kept.get(c.name);
+        run(`INSERT INTO warranty_custom_parts(ticket_id, name, qty, price, amount, note, outlay, added_by)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [t.id, c.name, c.qty, c.price, Math.round(c.qty * c.price), c.note, k?.outlay || 0, k?.added_by ?? null]);
       }
       recalcTicket(t.id);
     });
@@ -855,6 +981,163 @@ r.put('/warranty/:id/fees', (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
+
+/* ==================================================================== */
+/* Thợ báo vật tư, chủ báo giá, khách duyệt, thợ báo sửa xong            */
+/* (vai trò Thợ, 25/10/2026)                                             */
+/* ==================================================================== */
+
+/* Đang chờ báo giá / chờ khách / khách từ chối thì thợ chưa được sửa */
+const BLOCKS_REPAIR = { waiting_quote: 'đang chờ báo giá', waiting_approval: 'đang chờ khách đồng ý báo giá', declined: 'khách không đồng ý sửa' };
+const sigOf = (rows, key) => rows.map((x) => `${x[key]}×${Number(x.qty)}`).sort().join('|');
+
+/**
+ * Thợ báo vật tư cần thay / đã thay — chỉ tên và số lượng, KHÔNG có giá.
+ *   parts:  [{ product_id, qty }]          linh kiện có mã trong kho
+ *   custom: [{ name, qty, outlay, note }]  linh kiện thợ mua ngoài, outlay = tiền thợ bỏ ra
+ * Giá tính khách: món đã có trên phiếu giữ giá chủ đã báo; món mới lấy giá niêm yết.
+ * Đổi vật tư sau khi đã báo giá thì phiếu quay lại "chờ báo giá" — thợ không
+ * tự làm tăng tiền khách phải trả được.
+ */
+r.put('/warranty/:id/proposal', (req, res) => {
+  try {
+    const t = openTicket(req.params.id);
+    const b = req.body || {};
+    const me = req.user?.id ?? null;
+    const oldParts = all('SELECT * FROM warranty_parts WHERE ticket_id = ? AND stock_applied = 0', [t.id]);
+    const oldCustom = all('SELECT * FROM warranty_custom_parts WHERE ticket_id = ?', [t.id]);
+    const prevBy = new Map(oldParts.map((x) => [x.product_id, x]));
+
+    const parts = [];
+    for (const it of Array.isArray(b.parts) ? b.parts : []) {
+      if (!(Number(it.qty) > 0)) continue;
+      const prev = prevBy.get(Number(it.product_id));
+      /* Bỏ qua mọi giá gửi lên: chỉ lấy mặt hàng và số lượng */
+      parts.push(partLine({ product_id: it.product_id, qty: it.qty }, prev || null));
+    }
+    const custom = (Array.isArray(b.custom) ? b.custom : [])
+      .map((c) => ({
+        name: String(c?.name ?? '').trim(), qty: Number(c?.qty) || 0,
+        outlay: Math.max(0, money(c?.outlay)), note: String(c?.note ?? '').trim() || null,
+      }))
+      .filter((c) => c.qty > 0);
+    if (custom.some((c) => !c.name)) throw httpError('Linh kiện mua ngoài phải có tên.', 'CUSTOM_NAME_REQUIRED');
+
+    const changed = sigOf(oldParts, 'product_id') !== sigOf(parts, 'product_id')
+      || sigOf(oldCustom, 'name') !== sigOf(custom, 'name');
+    const requote = changed && ['waiting_approval', 'approved'].includes(t.quote_state);
+
+    tx(() => {
+      run('DELETE FROM warranty_parts WHERE ticket_id = ? AND stock_applied = 0', [t.id]);
+      for (const l of parts) insertPendingPart(t.id, l, prevBy.get(l.product_id)?.approved_by ?? null);
+      const oldByName = new Map(oldCustom.map((c) => [c.name, c]));
+      run('DELETE FROM warranty_custom_parts WHERE ticket_id = ?', [t.id]);
+      for (const c of custom) {
+        const prev = oldByName.get(c.name);
+        const price = prev?.price || 0;
+        run(`INSERT INTO warranty_custom_parts(ticket_id, name, qty, price, amount, note, outlay, added_by)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [t.id, c.name, c.qty, price, Math.round(c.qty * price), c.note, c.outlay, me]);
+      }
+      recalcTicket(t.id);
+      if (changed) {
+        const names = [...parts.map((p) => `${p.name} × ${p.qty}`), ...custom.map((c) => `${c.name} × ${c.qty} (mua ngoài)`)];
+        if (requote || t.quote_state === null) {
+          run("UPDATE warranty_tickets SET quote_state = 'waiting_quote' WHERE id = ?", [t.id]);
+        }
+        run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
+          [t.id, t.status, me, `Báo vật tư: ${names.join(', ') || 'không thay gì'}`
+            + (requote ? ' — đổi so với báo giá, chờ báo giá lại' : '')]);
+      }
+    });
+    res.json(shapeTicket(req, ticketDetail(t.id)));
+  } catch (e) { fail(res, e); }
+});
+
+/**
+ * Chủ / quản lý chốt báo giá (giá đã sửa ở giỏ linh kiện và tiền công trước đó).
+ *   free: true  bảo hành miễn phí — thợ sửa luôn, không chờ khách
+ */
+r.post('/warranty/:id/quote', (req, res) => {
+  try {
+    const t = openTicket(req.params.id);
+    const free = req.body?.free === true;
+    const total = totalsOf(t).total;
+    tx(() => {
+      run(`UPDATE warranty_tickets SET quote_state = ?, quote_total = ?, quoted_by = ?,
+             quoted_at = datetime('now','localtime'), approval_by = NULL, approval_at = NULL
+           WHERE id = ?`, [free ? 'free' : 'waiting_approval', free ? 0 : total, req.user?.id ?? null, t.id]);
+      run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
+        [t.id, t.status, req.user?.id ?? null,
+          free ? 'Bảo hành miễn phí — thợ sửa luôn' : `Báo giá ${fmt(total)} đ — chờ khách đồng ý`]);
+    });
+    res.json(shapeTicket(req, ticketDetail(t.id)));
+  } catch (e) { fail(res, e); }
+});
+
+/** Ghi nhận khách đồng ý / không đồng ý báo giá (chủ, quản lý hoặc thu ngân nghe máy). */
+r.post('/warranty/:id/approval', (req, res) => {
+  try {
+    const t = openTicket(req.params.id);
+    if (t.quote_state !== 'waiting_approval') {
+      throw httpError('Phiếu này không có báo giá nào đang chờ khách trả lời.', 'NOT_WAITING_APPROVAL');
+    }
+    const ok = req.body?.approved === true;
+    const note = String(req.body?.note ?? '').trim();
+    tx(() => {
+      run(`UPDATE warranty_tickets SET quote_state = ?, approval_by = ?, approval_at = datetime('now','localtime')
+           WHERE id = ?`, [ok ? 'approved' : 'declined', req.user?.id ?? null, t.id]);
+      run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
+        [t.id, t.status, req.user?.id ?? null,
+          (ok ? `Khách đồng ý báo giá ${fmt(t.quote_total)} đ — được sửa` : 'Khách không đồng ý sửa — trả máy')
+          + (note ? `. ${note}` : '')]);
+    });
+    res.json(shapeTicket(req, ticketDetail(t.id)));
+  } catch (e) { fail(res, e); }
+});
+
+/**
+ * Thợ báo sửa xong → "Xong, chờ khách lấy". Bắt buộc ảnh sau khi sửa; có thay
+ * linh kiện thì phải tích đã nộp linh kiện hỏng (xác cũ) cho chủ đối chiếu.
+ */
+r.post('/warranty/:id/done', (req, res) => {
+  try {
+    const t = openTicket(req.params.id);
+    const b = req.body || {};
+    const me = req.user?.id ?? null;
+    if (BLOCKS_REPAIR[t.quote_state]) {
+      throw httpError(`Chưa báo xong được: phiếu ${BLOCKS_REPAIR[t.quote_state]}.`, 'NOT_APPROVED');
+    }
+    const photos = (Array.isArray(b.photos) ? b.photos : []).slice(0, 12);
+    const validNew = photos.filter((ph) => /^data:image\/(jpe?g|png|webp);base64,/i.test(String(ph?.data ?? ph))).length;
+    const haveDone = get("SELECT COUNT(*) AS n FROM warranty_photos WHERE ticket_id = ? AND kind = 'done'", [t.id]).n;
+    if (!validNew && !haveDone) {
+      throw httpError('Chụp ít nhất một ảnh máy sau khi sửa.', 'PHOTO_REQUIRED');
+    }
+    const partCount = get('SELECT COUNT(*) AS n FROM warranty_parts WHERE ticket_id = ?', [t.id]).n
+      + get('SELECT COUNT(*) AS n FROM warranty_custom_parts WHERE ticket_id = ?', [t.id]).n;
+    if (partCount > 0 && b.old_parts_returned !== true) {
+      throw httpError('Có thay linh kiện: nộp linh kiện hỏng (xác cũ) cho chủ rồi tích ô "Đã nộp xác cũ".', 'OLD_PARTS_REQUIRED');
+    }
+    tx(() => {
+      for (const ph of photos) {
+        const file = savePhoto(ph.data ?? ph, t.id);
+        if (file) {
+          run('INSERT INTO warranty_photos(ticket_id, kind, file, caption) VALUES(?, ?, ?, ?)',
+            [t.id, 'done', file, ph.caption || null]);
+        }
+      }
+      run(`UPDATE warranty_tickets SET status = 'ready', old_parts_returned = ?, repaired_by = ?,
+             repaired_at = datetime('now','localtime'), technician_id = COALESCE(technician_id, ?)
+           WHERE id = ?`, [partCount > 0 ? 1 : 0, me, me, t.id]);
+      run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
+        [t.id, 'ready', me, (String(b.note ?? '').trim() || 'Sửa xong')
+          + (partCount > 0 ? ' — đã nộp linh kiện hỏng' : '')]);
+    });
+    res.json(shapeTicket(req, ticketDetail(t.id)));
+  } catch (e) { fail(res, e); }
+});
+
 /* ==================================================================== */
 /* Đổi cái mới cho khách                                                 */
 /* ==================================================================== */
@@ -948,6 +1231,30 @@ r.post('/warranty/:id/deliver', (req, res) => {
   if (!t) return res.status(404).json({ error: 'Không tìm thấy phiếu bảo hành' });
   if (t.status === 'delivered') return res.status(400).json({ error: 'Phiếu này đã trả khách rồi.' });
   if (t.status === 'cancelled') return res.status(400).json({ error: 'Phiếu đã huỷ.' });
+  const boss = can(req, 'warranty.quote');
+  if (!boss && ['waiting_quote', 'waiting_approval'].includes(t.quote_state)) {
+    return res.status(400).json({
+      error: t.quote_state === 'waiting_quote' ? 'Phiếu chưa có báo giá — nhờ chủ / quản lý báo giá trước khi trả máy.'
+        : 'Khách chưa trả lời báo giá — ghi nhận khách đồng ý hay không trước khi trả máy.',
+      code: 'NOT_QUOTED',
+    });
+  }
+  let approvalToken = null;
+  if (!boss) {
+    /* Thu ngân không sửa tiền công, phí, số thu. Miễn giảm THÊM cho khách
+       (extra_discount, cộng vào phần chủ đã giảm — thu ngân không thấy phần đó)
+       thì phải có quản lý gõ PIN */
+    delete b.labor_fee; delete b.fees; delete b.charge; delete b.discount;
+    const extra = Math.max(0, money(b.extra_discount));
+    if (extra > 0) {
+      if (!peekApproval(b.approval_token)) {
+        return fail(res, httpError(`Miễn giảm thêm ${fmt(extra)} đ cho khách cần quản lý nhập mã PIN để duyệt.`,
+          'DISCOUNT_NEEDS_APPROVAL', { needs_approval: true }));
+      }
+      approvalToken = b.approval_token;
+      b.discount = (t.discount || 0) + extra;
+    }
+  }
 
   const accountId = Number(b.account_id) || defaultCashAccount();
   const partner = t.customer_name || get('SELECT name FROM customers WHERE id = ?', [t.customer_id])?.name;
@@ -1022,7 +1329,7 @@ r.post('/warranty/:id/deliver', (req, res) => {
           Number(b.technician_id) || null, b.delivered_at || null, b.note || null, t.id]);
 
       run('INSERT INTO warranty_logs(ticket_id, status, user_id, note) VALUES(?, ?, ?, ?)',
-        [t.id, 'delivered', b.user_id || null,
+        [t.id, 'delivered', req.user?.id ?? (b.user_id || null),
           b.note || `Hoàn thành, trả khách — thu ${fmt(paid)} / ${fmt(charge)} đ`
             + (pending.length ? `; trừ kho ${pending.length} dòng linh kiện` : '')]);
 
@@ -1067,6 +1374,7 @@ r.post('/warranty/:id/deliver', (req, res) => {
       }
       return { ok: true, charge, discount, paid, stock_applied: pending.length };
     });
+    if (approvalToken) consumeApproval(approvalToken);
     res.json(out);
   } catch (e) { fail(res, e); }
 });
@@ -1175,7 +1483,9 @@ r.get('/warranty-summary', (req, res) => {
     SELECT ticket_type, COUNT(*) AS n FROM warranty_tickets
     WHERE status NOT IN ('delivered','cancelled') GROUP BY ticket_type`).map((x) => [x.ticket_type, x.n]));
 
-  res.json({ counts, open, overdue, at_supplier: atSupplier, last30: money30, open_by_type: byType });
+  /* Tiền thu sửa chữa và vốn linh kiện: chỉ người báo giá xem */
+  res.json({ counts, open, overdue, at_supplier: atSupplier, open_by_type: byType,
+    ...(can(req, 'warranty.quote') ? { last30: money30 } : {}) });
 });
 
 /* ==================================================================== */

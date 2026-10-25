@@ -150,6 +150,9 @@ export default function Products() {
   const [sort, setSort] = useState({ field: '', dir: 'asc' });
   const maySeeCost = can('cost.view');
   const mayManage = can('product.manage');
+  /* Thu ngân chỉ xem hàng và tồn (25/10/2026): nút thêm / sửa / xoá hàng, nhóm hàng
+     và kiểm kho nhanh chỉ hiện cho người có quyền — máy chủ vẫn là chỗ chặn thật */
+  const mayAdjust = can('stock.manage');
 
   /* Bộ lọc trên thanh công cụ. Đường dẫn cũ /stock?filter=low vẫn dùng được. */
   const startStatus = ['low', 'out', 'over'].includes(params.get('filter')) ? params.get('filter') : '';
@@ -259,7 +262,7 @@ export default function Products() {
           ? `${n(totals.count)} mặt hàng · giá trị tồn ${money(totals.value)}${whName ? ` · ${whName}` : ''}`
           : ''}
         actions={<>
-          <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>
+          {mayManage && <Button icon={Layers} onClick={() => setCatOpen(true)}>Nhóm hàng</Button>}
           {/* Nhập / xuất hàng loạt tách thành quyền riêng (plan 31, hạng mục
               7a): nhập sai một file là hỏng cả danh mục hàng hoá, còn xuất
               file là mang dữ liệu tiệm ra ngoài. Chặn thật ở access-map. */}
@@ -271,7 +274,7 @@ export default function Products() {
               Xuất Excel
             </Button>
           </PermGate>
-          <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>
+          {mayManage && <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>}
         </>}
       >
         {/* Toàn bộ bộ lọc nằm ở đây, không còn hàng ô lọc dưới tên cột */}
@@ -409,7 +412,7 @@ export default function Products() {
                   : activeFilters.length
                     ? 'Thử bỏ bớt bộ lọc trên thanh công cụ.'
                     : 'Thêm mặt hàng đầu tiên để bắt đầu bán.'}
-                action={<Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button>}
+                action={mayManage ? <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm hàng hoá</Button> : null}
               />
             ) : (
               <div className="card">
@@ -490,7 +493,7 @@ export default function Products() {
                           <td className="font-mono text-muted-ink">{p.sku}</td>
                           <td>
                             <button
-                              onClick={async () => setEditing(await api.product(p.id))}
+                              onClick={async () => (mayManage ? setEditing(await api.product(p.id)) : setHistoryOf(p))}
                               className="font-semibold text-accent hover:underline cursor-pointer text-left"
                             >
                               {p.name}
@@ -526,7 +529,11 @@ export default function Products() {
                               disabled={!mayManage} onSave={(v) => savePrice(p, v)} />
                           </td>
                           <td className="num">
-                            {p.track_stock
+                            {p.track_stock && !mayAdjust ? (
+                              <span className={`tabular ${out ? 'text-danger font-bold' : low ? 'text-warn font-semibold' : ''}`}>
+                                {fq(p.total_stock)}
+                              </span>
+                            ) : p.track_stock
                               ? (
                                 <button
                                   type="button"
@@ -549,16 +556,20 @@ export default function Products() {
                           <td><Badge tone={tone}>{label}</Badge></td>
                           <td>
                             <div className="flex items-center justify-end gap-0.5">
-                              {p.track_stock === 1 && (
+                              {p.track_stock === 1 && mayAdjust && (
                                 <IconButton icon={ClipboardCheck} label={`Kiểm kho nhanh ${p.name}`} size={14}
                                   onClick={() => setAdjusting({ ...p, qty: p.total_stock })} />
                               )}
                               <IconButton icon={History} label={`Thẻ kho ${p.name}`} size={14}
                                 onClick={() => setHistoryOf(p)} />
-                              <IconButton icon={Pencil} label={`Sửa ${p.name}`} size={14}
-                                onClick={async () => setEditing(await api.product(p.id))} />
-                              <IconButton icon={Trash2} label={`Xoá ${p.name}`} size={14}
-                                className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(p)} />
+                              {mayManage && (
+                                <>
+                                  <IconButton icon={Pencil} label={`Sửa ${p.name}`} size={14}
+                                    onClick={async () => setEditing(await api.product(p.id))} />
+                                  <IconButton icon={Trash2} label={`Xoá ${p.name}`} size={14}
+                                    className="!text-danger hover:!bg-red-50" onClick={() => setDeleting(p)} />
+                                </>
+                              )}
                             </div>
                           </td>
                         </tr>

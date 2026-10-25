@@ -5,12 +5,14 @@ import {
 import { BarChart3, Download, TrendingUp, Package, Truck, Receipt } from 'lucide-react';
 import { api } from '../lib/api';
 import { useFetch, useApp } from '../lib/store';
-import { money, n, short, qty as fq, pct, date, range, RANGES } from '../lib/format';
+import { money, n, short, qty as fq, pct, date } from '../lib/format';
 import {
   Button, Select, Spinner, Empty, ErrorBox, Stat, Tabs, SearchInput, PermGate,
 } from '../components/ui';
 import { PageHeader, Page } from '../components/Layout';
 import { PurchaseHistory, SaleHistory } from './ReportHistory';
+import PeriodPicker, { usePeriod } from '../components/PeriodPicker';
+import { useSearchParams } from 'react-router-dom';
 import ReportWarranty from './ReportWarranty';
 
 const TABS = [
@@ -34,21 +36,17 @@ function downloadCsv(name, head, rows) {
 }
 
 export default function Reports() {
-  const [tab, setTab] = useState('sales');
-  const [rangeKey, setRangeKey] = useState('month');
-  const r = useMemo(() => range(rangeKey), [rangeKey]);
+  /* Mở từ Tổng quan với ?tab=pnl&from=…&to=… thì vào đúng thẻ, đúng kỳ (11/10) */
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.some((t) => t.key === params.get('tab')) ? params.get('tab') : 'sales';
+  const setTab = (t) => { const next = new URLSearchParams(params); next.set('tab', t); setParams(next, { replace: true }); };
+  const period = usePeriod('reports', 'month');
+  const r = useMemo(() => ({ from: period.from, to: period.to, label: period.label }), [period.from, period.to, period.label]);
 
   return (
     <>
-      <PageHeader
-        title="Báo cáo"
-        subtitle={`${r.label} · ${date(r.from)} — ${date(r.to)}`}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
-            {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </Select>
-        </div>
+      <PageHeader title="Báo cáo">
+        <PeriodPicker period={period} />
       </PageHeader>
 
       <div className="bg-card border-b border-line px-4">
@@ -302,15 +300,14 @@ function PnlReport({ r }) {
   const { data, busy, error, reload } = useFetch(
     () => api.reportPnl({ from: r.from, to: r.to }), [r.from, r.to]
   );
+  const { data: cats } = useFetch(() => api.cashCategories(), []);
 
   if (busy && !data) return <Spinner />;
   if (error) return <ErrorBox error={error} onRetry={reload} />;
   if (!data) return null;
 
-  const EXP_LABEL = {
-    salary: 'Lương nhân viên', rent: 'Thuê mặt bằng', utility: 'Điện nước internet',
-    transport: 'Vận chuyển, xăng xe', tax: 'Thuế, lệ phí', other_out: 'Chi khác',
-  };
+  /* Tên khoản chi lấy theo danh mục loại thu chi (chủ tiệm tự khai được) */
+  const expLabel = (code) => [...(cats?.out || []), ...(cats?.in || [])].find((c) => c.code === code)?.label || code;
 
 
   return (
@@ -330,25 +327,30 @@ function PnlReport({ r }) {
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="card p-4">
           <h2 className="font-bold text-sm mb-2">Kết quả kinh doanh</h2>
-          <Row label="Tổng tiền hàng bán ra" value={data.gross_sales} />
-          <Row label="Trừ: giảm giá cho khách" value={-data.discount} indent />
-          <Row label="Trừ: thuế GTGT đầu ra" value={-data.vat} indent />
-          <Row label="Trừ: hàng khách trả lại" value={-data.returns} indent />
-          <Row label="Doanh thu thuần" value={data.net_revenue} bold />
-          <Row label="Trừ: giá vốn hàng bán" value={-data.cogs} indent />
-          <Row label="Lợi nhuận gộp" value={data.gross_profit} bold tone="good"
+          {/* Cùng một cách tính với trang Tổng quan (server/metrics.js, 11/10/2026) */}
+          <Row label="Tiền hàng bán ra" value={data.gross_sales} />
+          <Row label="Trừ: giảm giá cả đơn" value={-data.discount} indent />
+          {data.ship_charged > 0 && <Row label="Cộng: phí giao khách trả" value={data.ship_charged} indent />}
+          <Row label={`Trừ: hàng khách trả lại${data.returns_count ? ` (${data.returns_count} phiếu)` : ''}`}
+            value={-data.returns} indent />
+          <Row label="Doanh thu thuần" value={data.net_revenue} bold
+            hint={data.vat > 0 ? `Không gồm ${money(data.vat)} thuế GTGT thu hộ nhà nước` : undefined} />
+          <Row label="Trừ: giá vốn hàng bán" value={-data.sales_cogs} indent />
+          {data.returns_cogs > 0 && <Row label="Cộng: giá vốn hàng trả về kho" value={data.returns_cogs} indent />}
+          {data.shipper_fee > 0 && <Row label="Trừ: tiền xe trả tài xế" value={-data.shipper_fee} indent />}
+          {data.points_amount > 0 && (
+            <Row label={`Trừ: khách trả bằng điểm tích luỹ (${data.points.used} điểm)`} value={-data.points_amount} indent />
+          )}
+          <Row label={data.missing_cost > 0 ? 'Lợi nhuận gộp (tạm tính)' : 'Lợi nhuận gộp'} value={data.gross_profit} bold tone="good"
             hint={`Tỷ suất lợi nhuận gộp ${pct(data.margin)}`} />
           <Row label="Trừ: chi phí vận hành" value={-data.expense_total} indent />
-          {data.points?.money > 0 && (
-            <Row label={`Trừ: khách trả bằng điểm tích luỹ (${data.points.used} điểm)`}
-              value={-data.points.money} indent />
-          )}
           <Row label="LỢI NHUẬN THỰC" value={data.net_profit} bold
             tone={data.net_profit >= 0 ? 'good' : 'bad'} />
 
           <p className="text-2xs text-muted-ink mt-3 leading-relaxed">
-            Số liệu tính theo hoá đơn đã hoàn tất trong kỳ. Tiền chủ rút vốn và tiền
-            trả nợ nhà cung cấp không tính là chi phí.
+            Tính theo hoá đơn đã hoàn tất trong kỳ; hàng trả tính vào ngày khách trả. Tiền mua hàng,
+            trả nợ nhà cung cấp, chủ rút vốn không phải chi phí; tiền xe đã trừ trong lợi nhuận gộp.
+            {data.missing_cost > 0 && <> <b className="text-warn">{data.missing_cost} mặt hàng bán trong kỳ chưa có giá vốn</b> — lợi nhuận đang cao hơn thật.</>}
             {data.points?.earned > 0 && (
               <> Trong kỳ tiệm phát ra {data.points.earned} điểm cho khách.</>
             )}
@@ -363,7 +365,7 @@ function PnlReport({ r }) {
             <>
               {data.expenses.map((e) => (
                 <div key={e.category} className="flex items-center gap-2 py-1.5">
-                  <span className="text-[13px] flex-1">{EXP_LABEL[e.category] || e.category}</span>
+                  <span className="text-[13px] flex-1">{expLabel(e.category)}</span>
                   <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden" aria-hidden="true">
                     <div className="h-full bg-warn rounded-full"
                       style={{ width: `${data.expense_total > 0 ? (e.amount / data.expense_total * 100) : 0}%` }} />
@@ -396,7 +398,7 @@ function PnlReport({ r }) {
               ['Doanh thu thuần', data.net_revenue],
               ['Giá vốn hàng bán', -data.cogs],
               ['Lợi nhuận gộp', data.gross_profit],
-              ...data.expenses.map((e) => [EXP_LABEL[e.category] || e.category, -e.amount]),
+              ...data.expenses.map((e) => [expLabel(e.category), -e.amount]),
               ['Tổng chi phí vận hành', -data.expense_total],
               ['LỢI NHUẬN THỰC', data.net_profit],
             ]

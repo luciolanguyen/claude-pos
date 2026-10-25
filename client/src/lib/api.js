@@ -1,13 +1,15 @@
 /** Lớp gọi API. Khi build chạy thật, server phục vụ luôn giao diện nên dùng đường dẫn tương đối. */
 const BASE = '/api';
 
-/* Máy chủ cần biết ai đang gọi để chặn quyền. Đọc thẳng từ localStorage chứ
-   không qua React, vì lớp gọi API này dùng được cả ngoài component. */
-function currentUserId() {
+/* Máy chủ nhận ra ai đang gọi bằng mã đăng nhập có chữ ký nó cấp lúc đăng
+   nhập (server/auth-token.js) — không còn tin số id trình duyệt tự khai. Đọc
+   thẳng từ localStorage chứ không qua React, vì lớp gọi API này dùng được cả
+   ngoài component. */
+export function authToken() {
   try {
-    return JSON.parse(localStorage.getItem('thpos.user') || 'null')?.id || null;
+    return JSON.parse(localStorage.getItem('thpos.user') || 'null')?.token || '';
   } catch {
-    return null;
+    return '';
   }
 }
 
@@ -23,17 +25,17 @@ export function setPayrollToken(token) {
     else sessionStorage.removeItem(SS_PAYROLL);
   } catch { /* trình duyệt chặn bộ nhớ phiên — lần sau hỏi PIN lại */ }
 }
-/** Đường dẫn ảnh phiếu ứng: thẻ <img> không gửi được header nên kèm id và phiên trên địa chỉ */
+/** Đường dẫn ảnh phiếu ứng: thẻ <img> không gửi được header nên kèm mã đăng nhập và phiên trên địa chỉ */
 export function payrollPhotoUrl(file) {
-  const q = new URLSearchParams({ uid: String(currentUserId() || ''), pt: payrollToken() });
+  const q = new URLSearchParams({ t: authToken(), pt: payrollToken() });
   return `${BASE}/payroll/photo/${encodeURIComponent(file)}?${q}`;
 }
 
 async function request(method, path, body) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
-  const uid = currentUserId();
-  if (uid) headers['x-user-id'] = String(uid);
+  const token = authToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
   if (path.startsWith('/payroll')) {
     const pt = payrollToken();
     if (pt) headers['x-payroll-token'] = pt;
@@ -53,6 +55,12 @@ async function request(method, path, body) {
   if (res.ok && method !== 'GET' && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('thpos:changed', { detail: { path, method } }));
   }
+  /* Mã đăng nhập hết hạn hoặc bị thu hồi (đổi mật khẩu, đổi vai trò, khoá tài
+     khoản): báo cho store đưa về màn đăng nhập, khỏi để người dùng bấm mãi
+     mà nút nào cũng báo "Chưa đăng nhập". */
+  if (res.status === 401 && data?.code === 'NO_AUTH' && token && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('thpos:auth-expired'));
+  }
   if (!res.ok) {
     const err = new Error(data?.error || `Lỗi ${res.status}`);
     err.status = res.status;
@@ -60,6 +68,8 @@ async function request(method, path, body) {
     /* Máy chủ báo việc này cần quản lý gõ PIN duyệt — hộp thoại dựa vào cờ
        này để mở ô nhập PIN thay vì chỉ báo lỗi */
     err.needsApproval = data?.needs_approval === true;
+    /* Giữ nguyên thân lỗi: hộp nhập Excel cần bảng lỗi theo từng dòng máy chủ trả về */
+    err.body = data;
     throw err;
   }
   return data;
@@ -130,6 +140,8 @@ export const api = {
 
   /* --- Báo cáo --- */
   dashboard: (params) => request('GET', '/dashboard' + qs(params)),
+  /* Khối "Cần xử lý" — API riêng, lỗi thì chỉ khối đó báo lỗi */
+  dashboardActions: () => request('GET', '/dashboard/actions'),
   reportSales: (params) => request('GET', '/reports/sales' + qs(params)),
   reportProducts: (params) => request('GET', '/reports/products' + qs(params)),
   reportPurchases: (params) => request('GET', '/reports/purchases' + qs(params)),

@@ -145,6 +145,9 @@ addColumns('sales', {
    được: giảm giá quá hạn mức, bán nợ vượt hạn mức. Không bao giờ trả ra
    ngoài qua API. */
 addColumns('users', { pin: 'TEXT' });
+/* Số đời mã đăng nhập (server/auth-token.js): tăng lên là mọi mã đã cấp cho
+   người đó hết hiệu lực — đổi mật khẩu, đổi vai trò, khoá tài khoản */
+addColumns('users', { token_ver: 'INTEGER NOT NULL DEFAULT 0' });
 
 /* Kho hàng lỗi: hàng khách trả mà hỏng thì vào đây, không bán được. */
 addColumns('warehouses', { is_defect: 'INTEGER NOT NULL DEFAULT 0' });
@@ -356,6 +359,41 @@ addColumns('purchases', {
   discount_mode: "TEXT NOT NULL DEFAULT 'after_vat'",   // after_vat | before_vat
 });
 addColumns('purchase_items', { line_vat: 'INTEGER', discount_share: 'INTEGER', cost_unit: 'INTEGER' });
+/* Nhận hàng mù giá (24/10/2026): thủ kho nhận → phiếu 'pending_price', tồn cộng
+   ngay theo giá vốn TẠM; chủ / quản lý chốt giá sau → phiếu 'done', mới ghi nợ NCC */
+addColumns('purchases', { received_by: 'INTEGER', priced_by: 'INTEGER', priced_at: 'TEXT' });
+
+/* Vai trò Thợ (25/10/2026). Bước báo giá đi SONG SONG với trạng thái xử lý
+   (status giữ nguyên ý nghĩa, báo cáo cũ không phải sửa):
+     NULL              phiếu cũ — đi như trước, không chặn gì
+     waiting_quote     chờ chủ / quản lý báo giá
+     waiting_approval  đã báo giá, chờ khách đồng ý
+     approved          khách đồng ý, thợ được sửa
+     declined          khách không sửa, trả máy
+     free              bảo hành miễn phí, thợ sửa luôn */
+addColumns('warranty_tickets', {
+  quote_state: 'TEXT', quote_total: 'INTEGER', quoted_by: 'INTEGER', quoted_at: 'TEXT',
+  approval_by: 'INTEGER', approval_at: 'TEXT',
+  old_parts_returned: 'INTEGER NOT NULL DEFAULT 0',   // thợ đã nộp linh kiện hỏng (xác cũ)
+  repaired_by: 'INTEGER', repaired_at: 'TEXT',
+});
+/* Linh kiện thợ tự mua ngoài: số tiền thợ đã bỏ ra để tiệm hoàn lại — thợ
+   chỉ thấy số mình ghi; giá tính khách (price) do chủ báo giá */
+addColumns('warranty_custom_parts', { outlay: 'INTEGER NOT NULL DEFAULT 0', added_by: 'INTEGER' });
+/* "Nhân viên bảo hành" đổi thành "Thợ": chuyển vai trò, tăng đời mã đăng nhập
+   để máy đang đăng nhập nhận lại quyền mới (hẹp hơn) ngay */
+{
+  const n = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'warranty'").get().n;
+  if (n) {
+    db.exec("UPDATE users SET role = 'technician', token_ver = token_ver + 1 WHERE role = 'warranty'");
+    console.log(`  [nâng cấp] ${n} tài khoản "Nhân viên bảo hành" chuyển thành "Thợ"`);
+  }
+}
+addColumns('purchase_items', {
+  temp_cost: 'INTEGER',        // giá vốn tạm / đơn vị cơ bản lúc thủ kho nhận
+  received_qty: 'REAL',        // số thủ kho đếm (theo đơn vị dòng) — giữ để đối chiếu khi chủ sửa
+  recv_note: 'TEXT',           // ghi chú thiếu / hỏng của thủ kho
+});
 addColumns('suppliers', { vat_in_cost: 'INTEGER NOT NULL DEFAULT 0', vat_discount_mode: 'TEXT' });
 
 /* Mua hàng trừ vào lương nhân viên (plan 28, §6). Là TIỀN TRẢ BẰNG CÁCH KHÁC,
@@ -1128,6 +1166,22 @@ export function reverseAvgCost(productId, outQtyBase, returnUnitCost) {
 }
 
 /** Giá vốn hiện tại theo đơn vị cơ bản. */
+/**
+ * Chốt giá phiếu nhận hàng: lô đã vào kho theo giá vốn tạm, giờ biết giá thật.
+ * Cộng phần chênh (valueDelta, đồng) vào giá trị tồn của món rồi chia lại cho
+ * số đang tồn. Hàng đã bán trong lúc chờ giữ giá vốn tạm — không sửa hoá đơn cũ.
+ */
+export function revalueCost(productId, valueDelta) {
+  if (!valueDelta) return null;
+  const p = get('SELECT cost_price, cost_method, cost_fixed FROM products WHERE id = ?', [productId]);
+  if (!p || costMethodOf(p) === 'fixed') return null;
+  const totalQty = get('SELECT COALESCE(SUM(qty), 0) AS q FROM stock WHERE product_id = ?', [productId]).q;
+  if (totalQty <= 0) return null;
+  const v = Math.max(0, Math.round((totalQty * p.cost_price + valueDelta) / totalQty));
+  run('UPDATE products SET cost_price = ? WHERE id = ?', [v, productId]);
+  return v;
+}
+
 export function costOf(productId) {
   const p = get('SELECT cost_price FROM products WHERE id = ?', [productId]);
   return p ? p.cost_price : 0;

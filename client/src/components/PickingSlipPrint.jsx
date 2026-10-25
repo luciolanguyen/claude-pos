@@ -146,7 +146,7 @@ export default function PickingSlipPrint({ sale, store, onClose }) {
         </>}
       >
         <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[55vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{sheet}</div>
+          <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>{sheet}</div>
         </div>
       </Modal>
       <div className={`print-area size-${format}`}>{sheet}</div>

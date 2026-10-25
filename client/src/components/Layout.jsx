@@ -7,6 +7,7 @@ import {
   ShieldCheck, ClipboardList, PackageX, Handshake, IdCard,
 } from 'lucide-react';
 import { useApp } from '../lib/store';
+import { ThemeQuickToggle } from './ThemeControls';
 import { ROLE_LABEL } from '../lib/format';
 
 /* Cấu trúc menu theo nghiệp vụ, không theo bảng dữ liệu.
@@ -23,13 +24,15 @@ export const NAV = [
       { to: '/sale-returns', icon: Undo2, label: 'Khách trả hàng', perm: 'sale.return' },
       /* Công nợ khách nằm luôn trong hồ sơ khách hàng (tài liệu 08) */
       { to: '/customers', icon: Users, label: 'Khách hàng & công nợ', perm: 'customer.manage' },
-      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành & sửa chữa', perm: 'warranty.manage' },
+      { to: '/warranty', icon: ShieldCheck, label: 'Bảo hành & sửa chữa', perm: 'warranty.receive' },
     ],
   },
   {
     label: 'Mua hàng', icon: Truck, key: 'buy',
     children: [
       { to: '/purchases', icon: FileText, label: 'Phiếu nhập hàng', perm: 'purchase.manage' },
+      /* Thủ kho: cùng trang, nhưng chỉ nhận hàng không thấy giá (24/10/2026) */
+      { to: '/purchases', icon: FileText, label: 'Nhận hàng', perm: 'purchase.receive', unless: 'purchase.manage' },
       { to: '/purchase-returns', icon: Undo2, label: 'Trả hàng NCC', perm: 'purchase.manage' },
       /* Công nợ NCC nằm luôn trong hồ sơ nhà cung cấp (tài liệu 10) */
       { to: '/suppliers', icon: Truck, label: 'Nhà cung cấp & công nợ', perm: 'purchase.manage' },
@@ -61,7 +64,7 @@ export function visibleNav(can, loginRequired = true) {
   for (const item of NAV) {
     if (item.needsLogin && !loginRequired) continue;
     if (item.children) {
-      const kids = item.children.filter((c) => !c.perm || can(c.perm));
+      const kids = item.children.filter((c) => (!c.perm || can(c.perm)) && !(c.unless && can(c.unless)));
       if (kids.length) out.push({ ...item, children: kids });
     } else if (!item.perm || can(item.perm)) {
       out.push(item);
@@ -187,6 +190,8 @@ export default function Layout({ children }) {
             <div className="text-[13px] text-white font-semibold truncate">{user?.full_name || 'Khách'}</div>
             <div className="text-2xs text-slate-400 truncate">{ROLE_LABEL[user?.role] || 'Chưa đăng nhập'}</div>
           </div>
+          {/* Sáng / tối của máy này — ai đăng nhập cũng đổi được */}
+          <ThemeQuickToggle className="text-slate-400 hover:text-white hover:bg-white/10" />
           <button
             onClick={logout}
             aria-label="Đăng xuất"

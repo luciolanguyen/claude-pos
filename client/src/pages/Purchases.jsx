@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   FileText, Plus, XCircle, Download, Trash2, Undo2, Wallet, Tag, AlertTriangle, PackagePlus,
   BarChart3, ArrowLeft,
@@ -19,9 +19,26 @@ import { SupplierForm } from '../components/CustomerForm';
 import PrintLabels from '../components/PrintLabels';
 import { PurchaseReturnForm } from './Returns';
 import { purchaseMath } from '../lib/purchaseMath';
+import ReceivingPage, { PricingModal, PurchaseStatusBadge } from './Receiving';
 
+/* Thủ kho (chỉ có quyền nhận hàng) thấy trang Nhận hàng không có giá; người có
+   quyền mua hàng thấy trang phiếu nhập đầy đủ và chốt giá phiếu thủ kho nhận */
 export default function Purchases() {
+  const { can } = useApp();
+  return can('purchase.manage') ? <PurchasesManager /> : <ReceivingPage />;
+}
+
+function PurchasesManager() {
   const { toast, meta, user } = useApp();
+  /* ?status=pending_price — khối "Cần xử lý" ở Tổng quan dẫn thẳng tới đây */
+  const [params, setParams] = useSearchParams();
+  const status = params.get('status') === 'pending_price' ? 'pending_price' : '';
+  const togglePending = () => setParams((p) => {
+    const next = new URLSearchParams(p);
+    if (status) next.delete('status'); else next.set('status', 'pending_price');
+    return next;
+  }, { replace: true });
+  const [pricing, setPricing] = useState(null);
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 300);
   const [rangeKey, setRangeKey] = useState('day30');
@@ -34,9 +51,11 @@ export default function Purchases() {
     page, setPage, pageSize, setPageSize,
   } = usePaged(
     (pg) => api.purchases({
-      q: dq, match: mode, from: r.from, to: r.to, unpaid: onlyUnpaid ? 1 : '', ...pg,
+      q: dq, match: mode, unpaid: onlyUnpaid ? 1 : '', status,
+      /* Phiếu chờ chốt giá thì xem hết, không giới hạn theo khoảng ngày */
+      ...(status ? {} : { from: r.from, to: r.to }), ...pg,
     }),
-    [dq, mode, r.from, r.to, onlyUnpaid],
+    [dq, mode, r.from, r.to, onlyUnpaid, status],
     { key: 'purchases' }
   );
 
@@ -81,7 +100,7 @@ export default function Purchases() {
       line(['Số hoá đơn của NCC', p.supplier_invoice || '']),
       line(['Kho nhận', p.warehouse_name || '']),
       line(['Người lập', p.user_name || '']),
-      line(['Trạng thái', p.status === 'done' ? 'Hoàn tất' : 'Đã huỷ']),
+      line(['Trạng thái', { done: 'Hoàn tất', pending_price: 'Chờ chốt giá' }[p.status] || 'Đã huỷ']),
       '',
     ];
     const cols = ['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lượng', 'Hệ số',
@@ -150,11 +169,16 @@ export default function Purchases() {
           <button onClick={() => setOnlyUnpaid((v) => !v)} className={`btn btn-sm ${onlyUnpaid ? 'btn-secondary' : 'btn-outline'}`}>
             Chỉ phiếu còn nợ
           </button>
+          <button onClick={togglePending} aria-pressed={!!status}
+            className={`btn btn-sm ${status ? 'btn-secondary' : 'btn-outline'}`}>
+            Chờ chốt giá
+          </button>
         </div>
       </PageHeader>
 
       <Page className="space-y-3">
-        {totals && (
+        {/* Tổng chỉ cộng phiếu đã chốt — lọc phiếu chờ chốt giá thì bốn ô này toàn số 0, ẩn đi */}
+        {totals && !status && (
           <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
             <Stat label="Số phiếu nhập" value={n(totals.count)} icon={FileText} />
             <Stat label="Tổng tiền nhập" value={short(totals.total)} />
@@ -166,12 +190,18 @@ export default function Purchases() {
         {busy && !data ? <Spinner />
           : error ? <ErrorBox error={error} onRetry={reload} />
             : !data?.length ? (
-              <Empty
-                icon={FileText}
-                title="Chưa có phiếu nhập nào"
-                message="Tạo phiếu nhập mỗi khi lấy hàng về để hệ thống tự cộng tồn kho và tính giá vốn."
-                action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu nhập</Button>}
-              />
+              status ? (
+                <Empty icon={FileText} title="Không còn phiếu nào chờ chốt giá"
+                  message="Thủ kho nhận hàng xong, phiếu sẽ hiện ở đây để chốt giá theo hoá đơn của mối."
+                  action={<Button onClick={togglePending}>Xem mọi phiếu nhập</Button>} />
+              ) : (
+                <Empty
+                  icon={FileText}
+                  title="Chưa có phiếu nhập nào"
+                  message="Tạo phiếu nhập mỗi khi lấy hàng về để hệ thống tự cộng tồn kho và tính giá vốn."
+                  action={<Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Tạo phiếu nhập</Button>}
+                />
+              )
             ) : (
               /* Hai khung: danh sách bên trái, chi tiết phiếu bên phải (yêu cầu
                  28/09, mục II.2) — cùng một mẫu với màn hình Hoá đơn. Trước đây
@@ -201,7 +231,7 @@ export default function Purchases() {
                                 <div className="font-mono font-semibold text-accent whitespace-nowrap">{p.code}</div>
                                 <div className="text-2xs text-muted-ink">{datetime(p.ts)}</div>
                                 <div className="flex flex-wrap gap-1 mt-0.5">
-                                  {p.status === 'cancelled' && <Badge tone="bad">Đã huỷ</Badge>}
+                                  <PurchaseStatusBadge status={p.status} />
                                   {p.custom_count > 0 && <Badge tone="bad">Hàng giao sai</Badge>}
                                   {overdue && <Badge tone="warn">Quá hạn trả {date(p.due_date)}</Badge>}
                                 </div>
@@ -216,6 +246,9 @@ export default function Purchases() {
                               </td>
                               <td className="num font-semibold whitespace-nowrap">
                                 {money(p.total)}
+                                {p.status === 'pending_price' && (
+                                  <span className="block text-2xs font-normal text-warn">tạm tính</span>
+                                )}
                                 <span className="block text-2xs font-normal text-muted-ink">{p.item_count} mặt hàng</span>
                                 {p.remaining > 0 && (
                                   <span className="block text-2xs text-danger">Nợ {money(p.remaining)}</span>
@@ -249,13 +282,16 @@ export default function Purchases() {
                         <div className="min-w-[13rem] flex-1">
                           <div className="font-bold">
                             Phiếu nhập <span className="font-mono whitespace-nowrap">{detail.code}</span>
-                            {detail.status === 'cancelled' && <Badge tone="bad" className="ml-1">Đã huỷ</Badge>}
+                            <PurchaseStatusBadge status={detail.status} className="ml-1" />
                           </div>
                           <div className="text-2xs text-muted-ink">
                             {datetime(detail.ts)} · {detail.supplier_name || 'Không rõ NCC'}
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5">
+                          {detail.status === 'pending_price' && (
+                            <Button size="sm" variant="primary" onClick={() => setPricing(detail)}>Chốt giá</Button>
+                          )}
                           {detail.status === 'done' && detail.total - detail.paid > 0 && (
                             <Button size="sm" icon={Wallet} className="!text-warn"
                               onClick={() => setPaying(detail)}>Trả tiền NCC</Button>
@@ -267,7 +303,7 @@ export default function Purchases() {
                             <Button size="sm" icon={Download} onClick={() => exportPurchase(detail)}>Xuất Excel</Button>
                           </PermGate>
                           <Button size="sm" icon={Tag} onClick={() => setLabelsOf(detail)}>In tem</Button>
-                          {detail.status === 'done' && (
+                          {detail.status !== 'cancelled' && (
                             <Button size="sm" variant="danger" icon={XCircle}
                               onClick={() => setCancelling(detail)}>Huỷ phiếu</Button>
                           )}
@@ -314,6 +350,10 @@ export default function Purchases() {
                                 {it.returned_qty > 0 && (
                                   <div className="text-2xs text-warn font-semibold">Đã trả NCC {fq(it.returned_qty)} {it.unit_name}</div>
                                 )}
+                                {it.received_qty != null && it.received_qty !== it.qty && (
+                                  <div className="text-2xs text-warn">Thủ kho đếm {fq(it.received_qty)} {it.unit_name}</div>
+                                )}
+                                {it.recv_note && <div className="text-2xs text-warn">{it.recv_note}</div>}
                               </td>
                               <td>{it.unit_name}</td>
                               <td className="num">{fq(it.qty)}</td>
@@ -416,10 +456,16 @@ export default function Purchases() {
                         )}
                         {detail.other_cost > 0 && <div className="flex justify-between"><span className="text-muted-ink">Chi phí khác</span><span className="tabular font-mono">{money(detail.other_cost)}</span></div>}
                         <div className="flex justify-between pt-1.5 border-t border-line font-bold text-base">
-                          <span>Tổng cộng</span><span className="tabular font-mono">{money(detail.total)}</span>
+                          <span>{detail.status === 'pending_price' ? 'Tạm tính' : 'Tổng cộng'}</span>
+                          <span className="tabular font-mono">{money(detail.total)}</span>
                         </div>
-                        <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
-                        {detail.total - detail.paid > 0 && (
+                        {/* Phiếu thủ kho nhận: giá tạm theo lần nhập trước, chưa ghi nợ mối */}
+                        {detail.status === 'pending_price' ? (
+                          <div className="text-2xs text-warn">Giá tạm theo lần nhập trước — chưa ghi nợ NCC cho tới khi chốt giá.</div>
+                        ) : (
+                          <div className="flex justify-between"><span className="text-muted-ink">Đã thanh toán</span><span className="tabular font-mono">{money(detail.paid)}</span></div>
+                        )}
+                        {detail.status !== 'pending_price' && detail.total - detail.paid > 0 && (
                           <div className="flex justify-between font-semibold text-danger">
                             <span>Còn nợ NCC</span><span className="tabular font-mono">{money(detail.total - detail.paid)}</span>
                           </div>
@@ -476,6 +522,13 @@ export default function Purchases() {
         accounts={meta.accounts}
         onClose={() => setPaying(null)}
         onDone={() => { setPaying(null); reload(); toast('Đã lập phiếu chi trả NCC', 'ok'); }}
+      />
+
+      {/* Chốt giá phiếu thủ kho đã nhận (24/10/2026) */}
+      <PricingModal
+        purchase={pricing}
+        onClose={() => setPricing(null)}
+        onDone={() => { const id = pricing.id; setPricing(null); reload(); openDetail(id); }}
       />
 
       <Confirm

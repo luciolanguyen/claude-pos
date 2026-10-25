@@ -9,7 +9,13 @@ const LS_USER = 'thpos.user';
 export function AppProvider({ children }) {
   const [settings, setSettings] = useState(null);
   const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(LS_USER) || 'null'); } catch { return null; }
+    try {
+      const u = JSON.parse(localStorage.getItem(LS_USER) || 'null');
+      /* Máy đăng nhập từ bản cũ chỉ lưu số id, chưa có mã đăng nhập — máy chủ
+         không còn nhận, cho đăng nhập lại một lần */
+      if (u && !u.token) { localStorage.removeItem(LS_USER); return null; }
+      return u;
+    } catch { return null; }
   });
   const [meta, setMeta] = useState({ priceLists: [], warehouses: [], categories: [], accounts: [] });
   /* Quyền do máy chủ trả về, không tự suy ra ở máy khách — để giao diện và
@@ -42,7 +48,23 @@ export function AppProvider({ children }) {
 
   const loadAccess = useCallback(async () => {
     try {
-      setAccess(await api.me());
+      const me = await api.me();
+      /* Máy chủ cấp mã mới mỗi lần hỏi: thay vào để mã không bao giờ hết hạn
+         trên máy dùng hằng ngày */
+      if (me.token) {
+        try {
+          const u = JSON.parse(localStorage.getItem(LS_USER) || 'null');
+          if (u && u.id === me.user?.id) localStorage.setItem(LS_USER, JSON.stringify({ ...u, token: me.token }));
+        } catch { /* trình duyệt chặn bộ nhớ — lần sau đăng nhập lại */ }
+      }
+      const rest = { ...me };
+      delete rest.token;
+      setAccess(rest);
+      /* Máy còn nhớ người đăng nhập mà máy chủ không nhận mã (hết hạn, bị thu
+         hồi, sửa tay): về màn đăng nhập, đừng để trơ ra trang "không có quyền" */
+      if (me.login_required && !me.user && localStorage.getItem(LS_USER)) {
+        window.dispatchEvent(new CustomEvent('thpos:auth-expired'));
+      }
     } catch {
       setAccess({ can: [], permissions: {}, login_required: true });
     }
@@ -75,6 +97,18 @@ export function AppProvider({ children }) {
     setAccess({ can: [], permissions: {}, login_required: true });
   }, []);
 
+  /* Mã đăng nhập bị máy chủ từ chối (hết hạn, đổi mật khẩu, đổi vai trò, bị
+     khoá): về màn đăng nhập ngay */
+  useEffect(() => {
+    const onExpired = () => {
+      if (!localStorage.getItem(LS_USER)) return;
+      logout();
+      toast('Phiên đăng nhập đã hết hoặc tài khoản vừa được đổi. Hãy đăng nhập lại.', 'bad', 6000);
+    };
+    window.addEventListener('thpos:auth-expired', onExpired);
+    return () => window.removeEventListener('thpos:auth-expired', onExpired);
+  }, [logout, toast]);
+
   const saveSettings = useCallback(async (patch) => {
     const next = await api.put('/settings', patch);
     setSettings(next);
@@ -86,6 +120,12 @@ export function AppProvider({ children }) {
   const can = useCallback((perm) => canSet.has(perm), [canSet]);
 
   const store = settings?.store || {};
+
+  /* Tiêu đề tab theo tên cửa hàng đã khai ở Thiết lập (việc 1, 10/10). Chưa khai thì giữ chữ trung tính. */
+  useEffect(() => {
+    const name = String(store.name || '').trim();
+    document.title = name ? `${name} · Bán hàng` : 'Phần mềm bán hàng';
+  }, [store.name]);
   const defaultWarehouse = meta.warehouses.find((w) => w.is_default)?.id || meta.warehouses[0]?.id;
   const defaultPriceList = meta.priceLists.find((p) => p.is_default)?.id || meta.priceLists[0]?.id;
 

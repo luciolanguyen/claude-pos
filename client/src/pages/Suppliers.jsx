@@ -3,7 +3,9 @@ import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom'
 import {
   Truck, Plus, Pencil, Trash2, Wallet, FileText, ArrowLeft, Download, Landmark, Undo2, Phone,
   CreditCard, AlertTriangle, Copy, Printer, Banknote, MapPin, Mail, Info, Clock, User, PencilLine, Sigma,
+  FileUp,
 } from 'lucide-react';
+import ImportPartners from '../components/ImportPartners';
 import { api } from '../lib/api';
 import { useApp, useFetch, useDebounced, useSearchMode } from '../lib/store';
 import { useLiveReload } from '../lib/useLive';
@@ -31,6 +33,7 @@ export default function Suppliers() {
   const { toast } = useApp();
   const navTo = useNavigate();
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [params, setParams] = useSearchParams();
   const filter = FILTERS.some((f) => f.key === params.get('filter')) ? params.get('filter') : '';
   const setFilter = (v) => {
@@ -102,6 +105,10 @@ export default function Suppliers() {
           <Button icon={Sigma} onClick={() => setSummaryOpen(true)}>Tổng hợp công nợ</Button>
           <PermGate perm="data.export">
             <Button icon={Download} onClick={exportCsv} disabled={!data?.length}>Xuất Excel</Button>
+          </PermGate>
+          {/* Nhập danh sách NCC từ Excel (10/10) — chặn thật ở máy chủ bằng quyền data.import */}
+          <PermGate perm="data.import">
+            <Button icon={FileUp} onClick={() => setImporting(true)}>Nhập từ Excel</Button>
           </PermGate>
           <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>Thêm nhà cung cấp</Button>
         </>}
@@ -227,6 +234,8 @@ export default function Suppliers() {
         <DebtSummaryModal type="supplier" onClose={() => setSummaryOpen(false)}
           onOpen={(r) => navTo(`/suppliers/${r.id}?tab=debt`)} />
       )}
+
+      <ImportPartners kind="suppliers" open={importing} onClose={() => setImporting(false)} onDone={reload} />
 
       <SupplierForm
         open={!!editing}

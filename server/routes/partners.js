@@ -12,7 +12,7 @@
 import { Router } from 'express';
 import {
   all, get, run, tx, customerDebt, supplierDebt, addCashTx, defaultCashAccount,
-  searchWhere,
+  searchWhere, logActivity,
 } from '../db.js';
 import { planAllocation, writeAllocation, debtBreakdown } from '../debt.js';
 import { maxDebtDaysFor, posPolicy, isApproverRole, peekApproval, consumeApproval } from '../policy.js';
@@ -749,5 +749,316 @@ r.post('/customers/:id/pay', (req, res) => {
   });
   res.json(out);
 });
+
+/* ==================================================================== *
+ * NHẬP KHÁCH HÀNG / NHÀ CUNG CẤP TỪ EXCEL (10/10/2026)
+ *
+ * Cùng nếp với nhập hàng hoá: máy khách đọc file, ghép cột, gửi các dòng
+ * lên. `dry_run: true` chỉ KIỂM — trả từng lỗi, từng cảnh báo theo số dòng
+ * thật trong file, kèm hồ sơ nào sẽ đổi gì. Có một lỗi là KHÔNG ghi dòng nào.
+ *
+ * Hai chế độ:
+ *   create — chỉ thêm mới; mã đã có trong máy là lỗi.
+ *   update — mã đã có thì sửa hồ sơ đó (chủ tiệm chốt 10/10); ô để trống thì
+ *            GIỮ NGUYÊN số cũ, không xoá. Mã chưa có thì thêm mới.
+ *
+ * Cố ý KHÔNG nhận nợ đầu kỳ: nợ là tiền, phải đi đường "Điều chỉnh công nợ"
+ * có PIN và lý do. Hạn mức nợ / số ngày nợ tối đa thì chỉ chủ / quản lý mới
+ * đặt được qua file — người khác nhập thì hai cột đó bị bỏ qua có cảnh báo.
+ * ==================================================================== */
+
+/** Chữ thường không dấu — để nhận "Thành viên", "thanh vien", "THÀNH VIÊN" như nhau. */
+const plain = (v) => clean(v).normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase();
+
+/**
+ * Số điện thoại từ Excel: ô kiểu số làm rụng số 0 đầu (0909… thành 909…), có
+ * khi lại ghi dạng +84. Dọn về một kiểu để so trùng cho đúng.
+ */
+function importPhone(v) {
+  let s = clean(v).replace(/[\s.\-()]/g, '');
+  if (!s) return '';
+  if (/^\+?84\d{9}$/.test(s)) s = '0' + s.replace(/^\+?84/, '');
+  if (/^\d{9}$/.test(s) && !s.startsWith('0')) s = '0' + s;
+  return s;
+}
+
+/** Tiền gõ trong Excel: "5.000.000", "5,000,000 đ", 5000000 — đều ra 5000000. */
+function importMoney(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  if (typeof v === 'number') return Math.round(v);
+  const s = clean(v).replace(/[đ\s]/gi, '').replace(/[.,](?=\d{3}(\D|$))/g, '');
+  const n = Number(s.replace(',', '.'));
+  return Number.isFinite(n) ? Math.round(n) : NaN;
+}
+
+/** Ngày: 2026-10-10, 10/10/2026, hoặc số ngày kiểu Excel. Trả YYYY-MM-DD, '' nếu trống, null nếu sai. */
+function importDate(v) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (typeof v === 'number' && v > 1000 && v < 80000) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  const s = clean(v);
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  let y; let mo; let d;
+  if (m) { [, y, mo, d] = m; } else {
+    m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+    if (!m) return null;
+    [, d, mo, y] = m;
+  }
+  const iso = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const t = new Date(`${iso}T00:00:00Z`);
+  return Number.isNaN(t.getTime()) || t.toISOString().slice(0, 10) !== iso ? null : iso;
+}
+
+const TYPE_WORDS = {
+  'thanh vien': 'member', member: 'member', thuong: 'member', 'khach le': 'member',
+  vip: 'vip', 'than thiet': 'vip',
+  si: 'wholesale', 'khach si': 'wholesale', wholesale: 'wholesale', 'dai ly': 'wholesale',
+};
+
+const CUSTOMER_LABEL = {
+  code: 'Mã KH', name: 'Tên khách hàng', phone: 'SĐT 1', phone2: 'SĐT 2', phone3: 'SĐT 3',
+  email: 'Email', address: 'Địa chỉ', tax_code: 'Mã số thuế', company_name: 'Tên công ty',
+  birthday: 'Ngày sinh', customer_type: 'Loại khách', debt_limit: 'Hạn mức nợ',
+  max_debt_days: 'Số ngày nợ tối đa', note: 'Ghi chú',
+};
+const SUPPLIER_LABEL = {
+  code: 'Mã NCC', name: 'Tên nhà cung cấp', contact_name: 'Người liên hệ', phone: 'Điện thoại',
+  email: 'Email', address: 'Địa chỉ', tax_code: 'Mã số thuế', bank_name: 'Ngân hàng',
+  account_no: 'Số tài khoản', term_days: 'Số ngày được nợ', note: 'Ghi chú',
+};
+
+/** Ô có điền gì không — để biết cột nào được nhập, cột nào để trống giữ nguyên. */
+const filled = (v) => !(v === undefined || v === null || clean(v) === '');
+
+/** Khung chung: soát từng dòng bằng `checkRow`, gom lỗi / cảnh báo / kế hoạch ghi. */
+function runImport(req, res, { checkRow, write }) {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const mode = req.body?.mode === 'update' ? 'update' : 'create';
+  if (!rows.length) return res.status(400).json({ error: 'Không có dòng dữ liệu nào để nhập.' });
+  if (rows.length > 5000) return res.status(400).json({ error: 'Mỗi lần nhập tối đa 5.000 dòng.' });
+
+  const errors = [];
+  const warnings = [];
+  const plan = [];
+  const seen = { code: new Map(), phone: new Map() };
+  const canCredit = req.user === undefined || isApproverRole(req.user?.role);
+  if (rows.some((r) => filled(r.opening_debt))) {
+    warnings.push({ line: null, msg: 'Cột nợ đầu kỳ bị bỏ qua — nhập nợ cũ bằng "Điều chỉnh công nợ" trong hồ sơ (có PIN, ghi lý do).' });
+  }
+  for (const r of rows) {
+    const line = Number(r._line) || null;
+    if (!Object.entries(r).some(([k, v]) => k !== '_line' && filled(v))) continue;   // dòng trống
+    const err = (msg) => errors.push({ line, msg });
+    const warn = (msg) => warnings.push({ line, msg });
+    const item = checkRow(r, { mode, err, warn, seen, line, canCredit });
+    if (item) plan.push(item);
+  }
+
+  const summary = {
+    rows: plan.length,
+    create: plan.filter((p) => p.action === 'create').length,
+    update: plan.filter((p) => p.action === 'update').length,
+    unchanged: plan.filter((p) => p.action === 'update' && !p.changes.length).length,
+  };
+  /* Bản xem trước: hồ sơ nào sẽ đổi gì (trước → sau). Cập nhật theo mã dễ ghi đè
+     nhầm nếu file cũ, nên phải cho chủ tiệm nhìn thấy trước khi bấm nhập. */
+  const preview = plan.slice(0, 300).map((p) => ({
+    line: p.line, action: p.action, code: p.code || '(tự sinh)', name: p.values.name ?? p.cur?.name,
+    changes: p.changes,
+  }));
+  const report = { mode, summary, errors, warnings, preview };
+  if (req.body?.dry_run === true) return res.json({ ok: errors.length === 0, dry_run: true, ...report });
+  if (errors.length) {
+    return res.status(422).json({
+      error: `Có ${errors.length} lỗi nên CHƯA nhập dòng nào. Sửa hết lỗi rồi nhập lại.`,
+      code: 'IMPORT_INVALID', ...report,
+    });
+  }
+  const out = tx(() => write(plan));
+  logActivity(req.user, 'import', req.path.split('/')[1], null,
+    `Nhập từ Excel: thêm ${summary.create}, cập nhật ${summary.update - summary.unchanged} hồ sơ`);
+  res.json({ ok: true, ...report, ...out });
+}
+
+/** Danh sách cột đổi giữa hồ sơ cũ và giá trị mới. */
+function diffOf(cur, values, labels) {
+  if (!cur) return [];
+  return Object.entries(values)
+    .filter(([k, v]) => k !== 'code' && String(cur[k] ?? '') !== String(v ?? ''))
+    .map(([k, v]) => ({ field: k, label: labels[k] || k, from: cur[k] ?? '', to: v ?? '' }));
+}
+
+/* ------------------------------ Khách hàng ------------------------------ */
+
+function checkCustomer(r, { mode, err, warn, seen, line, canCredit }) {
+  const code = clean(r.code);
+  const cur = code ? get('SELECT * FROM customers WHERE code = ?', [code]) : null;
+  if (code) {
+    if (seen.code.has(code)) { err(`Mã "${code}" bị lặp, đã có ở dòng ${seen.code.get(code)}.`); return null; }
+    seen.code.set(code, line);
+  }
+  if (cur && mode === 'create') {
+    err(`Mã "${code}" đã có trong máy (${cur.name}). Muốn sửa hồ sơ cũ thì chọn chế độ "Cập nhật theo mã".`);
+    return null;
+  }
+  if (!cur && !filled(r.name)) { err('Thiếu tên khách hàng.'); return null; }
+
+  const v = {};
+  for (const f of ['name', 'email', 'address', 'tax_code', 'company_name', 'note']) {
+    if (filled(r[f])) v[f] = clean(r[f]);
+  }
+  for (const f of PHONE_FIELDS) if (filled(r[f])) v[f] = importPhone(r[f]);
+  if (filled(r.birthday)) {
+    const d = importDate(r.birthday);
+    if (d === null) err(`Ngày sinh "${clean(r.birthday)}" không đọc được — ghi kiểu 25/12/1980.`);
+    else v.birthday = d;
+  }
+  if (filled(r.customer_type)) {
+    const t = TYPE_WORDS[plain(r.customer_type)];
+    if (!t) warn(`Loại khách "${clean(r.customer_type)}" lạ — để "Thành viên". Ghi một trong: Thành viên, VIP, Khách sỉ.`);
+    v.customer_type = t || 'member';
+  }
+  /* Hạn mức nợ và số ngày nợ tối đa là chốt chặn bán nợ — chỉ chủ / quản lý đặt được */
+  for (const f of ['debt_limit', 'max_debt_days']) {
+    if (!filled(r[f])) continue;
+    if (!canCredit) { warn(`Cột "${CUSTOMER_LABEL[f]}" bị bỏ qua — chỉ chủ tiệm / quản lý mới đặt được.`); continue; }
+    const n = f === 'debt_limit' ? importMoney(r[f]) : Number(clean(r[f]));
+    if (!Number.isFinite(n) || n < 0) { err(`${CUSTOMER_LABEL[f]} "${clean(r[f])}" không phải số hợp lệ.`); continue; }
+    v[f] = f === 'debt_limit' ? n : normDays(n);
+  }
+
+  /* Ba số điện thoại: gộp với số cũ (ô trống giữ nguyên), rồi soát trùng */
+  const phones = phoneValues(v, cur);
+  const bad = phoneError(phones, cur?.id ?? null);
+  if (bad) err(bad);
+  for (const f of PHONE_FIELDS) {
+    const p = phones[f];
+    if (!p || !filled(v[f])) continue;
+    if (seen.phone.has(p)) err(`Số ${p} trùng với dòng ${seen.phone.get(p)} trong cùng file.`);
+    else seen.phone.set(p, line);
+  }
+
+  return {
+    line, code, cur, action: cur ? 'update' : 'create',
+    values: v, changes: diffOf(cur, v, CUSTOMER_LABEL),
+  };
+}
+
+function writeCustomers(plan) {
+  let created = 0;
+  let updated = 0;
+  for (const p of plan) {
+    const v = p.values;
+    if (p.action === 'create') {
+      const phones = phoneValues(v);
+      run(`INSERT INTO customers(code, name, phone, phone2, phone3, email, address, tax_code, company_name,
+                                 opening_debt, debt_limit, birthday, note, active, customer_type, max_debt_days)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1, ?, ?)`,
+      [p.code || genCode('customers', 'KH'), v.name, phones.phone, phones.phone2, phones.phone3,
+        v.email || null, v.address || null, v.tax_code || null, v.company_name || null,
+        v.debt_limit || 0, v.birthday || null, v.note || null, normType(v.customer_type), v.max_debt_days ?? null]);
+      created += 1;
+    } else if (p.changes.length) {
+      const sets = Object.keys(v).filter((k) => k !== 'code');
+      run(`UPDATE customers SET ${sets.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
+        [...sets.map((k) => v[k]), p.cur.id]);
+      updated += 1;
+    }
+  }
+  return { created, updated };
+}
+
+r.post('/customers/import', (req, res) => runImport(req, res, { checkRow: checkCustomer, write: writeCustomers }));
+
+/* ---------------------------- Nhà cung cấp ---------------------------- */
+
+function checkSupplier(r, { mode, err, warn, seen, line }) {
+  const code = clean(r.code);
+  const cur = code ? get('SELECT * FROM suppliers WHERE code = ?', [code]) : null;
+  if (code) {
+    if (seen.code.has(code)) { err(`Mã "${code}" bị lặp, đã có ở dòng ${seen.code.get(code)}.`); return null; }
+    seen.code.set(code, line);
+  }
+  if (cur && mode === 'create') {
+    err(`Mã "${code}" đã có trong máy (${cur.name}). Muốn sửa hồ sơ cũ thì chọn chế độ "Cập nhật theo mã".`);
+    return null;
+  }
+  if (!cur && !filled(r.name)) { err('Thiếu tên nhà cung cấp.'); return null; }
+
+  const v = {};
+  for (const f of ['name', 'contact_name', 'email', 'address', 'tax_code', 'note']) {
+    if (filled(r[f])) v[f] = clean(r[f]);
+  }
+  if (filled(r.phone)) v.phone = importPhone(r.phone);
+  if (filled(r.term_days)) {
+    const n = Number(clean(r.term_days));
+    if (!Number.isFinite(n) || n < 0) err(`Số ngày được nợ "${clean(r.term_days)}" không phải số hợp lệ.`);
+    else v.term_days = Math.round(n);
+  }
+  /* Tài khoản ngân hàng: phải đủ cả tên ngân hàng lẫn số tài khoản */
+  const bank = { bank_name: clean(r.bank_name), account_no: clean(r.account_no).replace(/\s/g, '') };
+  if (bank.bank_name || bank.account_no) {
+    const bad = contactError({ bank_accounts: [bank] });
+    if (bad) err('Tài khoản ngân hàng phải có đủ tên ngân hàng và số tài khoản.');
+    else { v.bank_name = bank.bank_name; v.account_no = bank.account_no; }
+  }
+  if (filled(r.phone) && !v.phone) warn('Số điện thoại trống sau khi dọn — bỏ qua.');
+
+  /* So sánh: tài khoản ngân hàng nằm ở bảng riêng, đổi nghĩa là THÊM tài khoản mới */
+  const changes = diffOf(cur, Object.fromEntries(Object.entries(v)
+    .filter(([k]) => !['bank_name', 'account_no', 'phone'].includes(k))), SUPPLIER_LABEL);
+  if (cur && v.phone && !supplierPhones(cur.id).some((p) => p.phone === v.phone)) {
+    changes.push({ field: 'phone', label: 'Điện thoại', from: cur.phone || '', to: `${v.phone} (thêm số)` });
+  }
+  if (cur && v.account_no && !supplierBanks(cur.id).some((b) => b.account_no === v.account_no)) {
+    changes.push({ field: 'bank', label: 'Tài khoản', from: '', to: `${v.account_no} - ${v.bank_name} (thêm tài khoản)` });
+  }
+  return { line, code, cur, action: cur ? 'update' : 'create', values: v, changes };
+}
+
+function writeSuppliers(plan) {
+  let created = 0;
+  let updated = 0;
+  for (const p of plan) {
+    const v = p.values;
+    if (p.action === 'create') {
+      const info = run(`
+        INSERT INTO suppliers(code, name, contact_name, phone, email, address, tax_code,
+                              bank_account, opening_debt, term_days, note, active)
+        VALUES(?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, 1)`,
+      [p.code || genCode('suppliers', 'NCC'), v.name, v.contact_name || null, v.phone || null,
+        v.email || null, v.address || null, v.tax_code || null, v.term_days || 0, v.note || null]);
+      const id = Number(info.lastInsertRowid);
+      saveContacts(id, {
+        phones: v.phone ? [{ phone: v.phone }] : [],
+        bank_accounts: v.account_no ? [{ bank_name: v.bank_name, account_no: v.account_no }] : [],
+      });
+      created += 1;
+    } else if (p.changes.length) {
+      const cur = p.cur;
+      const sets = Object.keys(v).filter((k) => !['code', 'phone', 'bank_name', 'account_no'].includes(k));
+      if (sets.length) {
+        run(`UPDATE suppliers SET ${sets.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
+          [...sets.map((k) => v[k]), cur.id]);
+      }
+      /* Số / tài khoản mới thì THÊM vào danh sách đang có, không xoá số cũ */
+      const phones = supplierPhones(cur.id);
+      if (v.phone && !phones.some((x) => x.phone === v.phone)) {
+        saveContacts(cur.id, { phones: [{ phone: v.phone }, ...phones] });
+      }
+      const banks = supplierBanks(cur.id);
+      if (v.account_no && !banks.some((x) => x.account_no === v.account_no)) {
+        saveContacts(cur.id, { bank_accounts: [...banks, { bank_name: v.bank_name, account_no: v.account_no }] });
+      }
+      updated += 1;
+    }
+  }
+  return { created, updated };
+}
+
+r.post('/suppliers/import', (req, res) => runImport(req, res, { checkRow: checkSupplier, write: writeSuppliers }));
 
 export default r;

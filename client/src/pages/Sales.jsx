@@ -25,15 +25,21 @@ export default function Sales() {
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState(params.get('q') || '');
   const dq = useDebounced(q, 300);
-  const [rangeKey, setRangeKey] = useState('day30');
-  const [method, setMethod] = useState('');
-  const [onlyUnpaid, setOnlyUnpaid] = useState(false);
+  /* Mở từ khối "Cần xử lý" của Tổng quan: đọc bộ lọc trên địa chỉ trang, và xem
+     toàn bộ thời gian — việc tồn đọng có khi nằm ở hoá đơn từ tháng trước */
+  const linked = ['method', 'unpaid', 'review', 'cod'].some((k) => params.get(k));
+  const [rangeKey, setRangeKey] = useState(linked ? 'all' : 'day30');
+  const [method, setMethod] = useState(params.get('method') || '');
+  const [onlyUnpaid, setOnlyUnpaid] = useState(params.get('unpaid') === '1');
+  const [review, setReview] = useState(params.get('review') === '1');
+  const [codPending, setCodPending] = useState(params.get('cod') === 'pending');
 
   const r = useMemo(() => range(rangeKey), [rangeKey]);
   const [mode, setMode] = useSearchMode();
   const filters = useMemo(() => ({
     q: dq, match: mode, from: r.from, to: r.to, payment_method: method, unpaid: onlyUnpaid ? 1 : '',
-  }), [dq, mode, r.from, r.to, method, onlyUnpaid]);
+    review: review ? 1 : '', cod: codPending ? 'pending' : '',
+  }), [dq, mode, r.from, r.to, method, onlyUnpaid, review, codPending]);
 
   const {
     rows: data, extra, total: rowCount, busy, error, reload,
@@ -127,6 +133,7 @@ export default function Sales() {
           />
           <Select value={rangeKey} onChange={(e) => setRangeKey(e.target.value)} size="sm" className="!w-auto">
             {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            <option value="all">Toàn bộ thời gian</option>
           </Select>
           <Select value={method} onChange={(e) => setMethod(e.target.value)} size="sm" className="!w-auto">
             <option value="">Mọi hình thức TT</option>
@@ -138,6 +145,22 @@ export default function Sales() {
           >
             <Filter size={13} aria-hidden="true" />
             Chỉ đơn còn nợ
+          </button>
+          <button
+            onClick={() => setReview((v) => !v)}
+            aria-pressed={review}
+            className={`btn btn-sm ${review ? 'btn-secondary' : 'btn-outline'}`}
+            title="Hoá đơn có món mua hộ quản lý chưa khai hoa hồng / giá bốc"
+          >
+            Chờ khai hoa hồng
+          </button>
+          <button
+            onClick={() => setCodPending((v) => !v)}
+            aria-pressed={codPending}
+            className={`btn btn-sm ${codPending ? 'btn-secondary' : 'btn-outline'}`}
+            title="Đơn giao hàng mà tiền thu hộ còn nằm ở người giao"
+          >
+            Thu hộ chưa đối soát
           </button>
         </div>
       </PageHeader>

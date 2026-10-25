@@ -342,7 +342,7 @@ export default function WarrantyCardPrint({
           {mode === 'separate' ? `In ${items.length} phiếu, mỗi món một tờ.` : 'In một tờ gộp mọi món có bảo hành.'}
         </div>
         <div className="border border-line rounded-lg bg-slate-100 p-4 overflow-auto max-h-[55vh]">
-          <div className="bg-white mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
+          <div className="paper mx-auto shadow-sm" style={{ width: 'fit-content' }}>{body}</div>
         </div>
       </Modal>
       <div className={`print-area size-${format}`}>{body}</div>
