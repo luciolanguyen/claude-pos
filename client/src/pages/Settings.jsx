@@ -268,6 +268,43 @@ function InvoiceSettings() {
         </div>
       </div>
 
+      {/* Cỡ chữ K80 (16/11/2026): áp cho mọi tờ in máy in nhiệt — hoá đơn,
+          phiếu soạn hàng, phiếu thu, phiếu bảo hành. Xem .print-k80 trong index.css. */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-1">Cỡ chữ in K80</h2>
+        <p className="text-2xs text-muted-ink mb-3">
+          Áp cho mọi tờ in trên máy in nhiệt: hoá đơn, phiếu soạn hàng, phiếu thu, phiếu bảo hành.
+          Chữ to thì dễ đọc hơn nhưng tờ giấy dài hơn.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {[
+            ['small', 'Nhỏ', 'Như hiện nay — gọn giấy nhất', 11],
+            ['medium', 'Vừa', 'To hơn khoảng 15%', 12.5],
+            ['large', 'Lớn', 'To hơn khoảng 30% — dễ đọc cho người lớn tuổi', 14.5],
+          ].map(([k, label, hint, px]) => {
+            const on = (form.k80_font || 'small') === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setForm((f2) => ({ ...f2, k80_font: k }))}
+                className={`card p-2.5 text-left transition-colors duration-150 cursor-pointer
+                            ${on ? 'border-accent bg-accent-soft/50 ring-1 ring-accent'
+                              : 'hover:border-accent hover:bg-muted/50'}`}
+              >
+                <div className="flex items-center gap-1.5">
+                  {on && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                  <span className="font-semibold text-[13px]">{label}</span>
+                </div>
+                <div className="font-mono mt-1" style={{ fontSize: px }}>Tổng cộng: 125.000</div>
+                <div className="text-2xs text-muted-ink mt-0.5">{hint}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="card p-4">
         <h2 className="font-bold text-sm mb-2">Nội dung in trên hoá đơn</h2>
         <CheckRow checked={!!form['show_qr_bank']} onChange={(v) => setForm((f) => ({ ...f, show_qr_bank: v }))} label="In mã QR chuyển khoản"

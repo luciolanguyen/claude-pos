@@ -58,8 +58,14 @@ export default function PickingSlipPrint({ sale, store, onClose }) {
         <tr>
           <th style={{ textAlign: 'left', width: 18 }}>✓</th>
           <th style={{ textAlign: 'left' }}>Tên hàng</th>
-          <th style={{ textAlign: 'left', width: isA5 ? 90 : 62 }}>Vị trí kệ</th>
-          <th style={{ textAlign: 'right', width: isA5 ? 90 : 62 }}>Số lượng</th>
+          {/* K80: hai cột này co theo chữ (không đặt bề rộng cứng), để chọn cỡ
+              chữ Vừa / Lớn ở Thiết lập thì cột tên hàng không bị ép hẹp */}
+          <th style={{ textAlign: 'left', width: isA5 ? 90 : undefined, whiteSpace: 'nowrap', paddingRight: 4 }}>
+            {isA5 ? 'Vị trí kệ' : 'Kệ'}
+          </th>
+          <th style={{ textAlign: 'right', width: isA5 ? 90 : undefined, whiteSpace: 'nowrap' }}>
+            {isA5 ? 'Số lượng' : 'SL'}
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -72,7 +78,7 @@ export default function PickingSlipPrint({ sale, store, onClose }) {
               <div style={{ fontWeight: 700 }}>{it.name_snapshot}</div>
               <div style={{ fontSize: isA5 ? 10 : 9 }}>{it.sku}{it.note ? ` · ${it.note}` : ''}</div>
             </td>
-            <td style={{ verticalAlign: 'top', paddingTop: 3, fontWeight: 700 }}>
+            <td style={{ verticalAlign: 'top', paddingTop: 3, fontWeight: 700, whiteSpace: 'nowrap', paddingRight: 4 }}>
               {it.location || '—'}
             </td>
             <td style={{ textAlign: 'right', verticalAlign: 'top', paddingTop: 3, fontWeight: 700, whiteSpace: 'nowrap' }}>

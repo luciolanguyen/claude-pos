@@ -70,6 +70,7 @@ tx(() => {
     show_qr_bank: true,
     show_cost: false,
     k80_width: 72,   // vùng in thực của giấy 80mm
+    k80_font: 'small',   // cỡ chữ in K80: small / medium / large
     copies: 1,
     auto_print: false,
     prefix: 'HD',

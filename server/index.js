@@ -3,6 +3,7 @@ import https from 'node:https';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 import catalog from './routes/catalog.js';
@@ -46,6 +47,29 @@ const tlsState = { enabled: false, port: HTTPS_PORT, info: null, error: '' };
 
 const app = express();
 app.use(express.json({ limit: '80mb' }));
+
+/* Nén gzip phản hồi JSON lớn (16/11/2026). Danh mục màn hình bán hàng với
+   20.000 mã hàng là ~16 MB chữ; nén còn chừng một phần mười, qua Wi-Fi trong
+   tiệm nhanh hơn hẳn. Đặt TRƯỚC lớp cắt giá vốn: lớp đó bọc res.json sau nên
+   chạy trước, nén nhận dữ liệu đã cắt. Phản hồi nhỏ gửi thẳng, khỏi tốn công. */
+const GZIP_MIN = 32 * 1024;
+app.use('/api', (req, res, next) => {
+  if (!/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return next();
+  const json = res.json.bind(res);
+  res.json = (payload) => {
+    const body = JSON.stringify(payload);
+    if (body === undefined || body.length < GZIP_MIN) return json(payload);
+    zlib.gzip(body, { level: 4 }, (err, buf) => {
+      if (err || res.headersSent) { if (!res.headersSent) json(payload); return; }
+      res.set('Content-Type', 'application/json; charset=utf-8');
+      res.set('Content-Encoding', 'gzip');
+      res.set('Vary', 'Accept-Encoding');
+      res.end(buf);
+    });
+    return res;
+  };
+  next();
+});
 
 // Cho phép các máy khác trong LAN gọi API khi chạy dev (Vite ở cổng khác)
 app.use((req, res, next) => {
