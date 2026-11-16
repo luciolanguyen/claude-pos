@@ -109,6 +109,18 @@ export function AppProvider({ children }) {
     return () => window.removeEventListener('thpos:auth-expired', onExpired);
   }, [logout, toast]);
 
+  /* Cỡ chữ in K80 (16/11/2026): gắn lên thẻ <html> để mọi mẫu K80 — hoá đơn,
+     phiếu soạn hàng, phiếu thu, phiếu bảo hành… — cùng to lên một lượt.
+     Xem .print-k80 trong index.css. */
+  useEffect(() => {
+    const inv = settings?.invoice || {};
+    const root = document.documentElement;
+    const font = ['medium', 'large'].includes(inv.k80_font) ? inv.k80_font : 'small';
+    if (font === 'small') root.removeAttribute('data-k80-font');
+    else root.setAttribute('data-k80-font', font);
+    root.style.setProperty('--k80-w', `${Number(inv.k80_width) || 72}mm`);
+  }, [settings]);
+
   const saveSettings = useCallback(async (patch) => {
     const next = await api.put('/settings', patch);
     setSettings(next);

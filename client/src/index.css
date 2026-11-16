@@ -276,6 +276,19 @@
   padding: 2mm 0;
 }
 .print-k80 h1 { font-size: 14px; }
+
+/* Cỡ chữ K80: Nhỏ (mặc định) / Vừa / Lớn — chọn ở Thiết lập → Mẫu in.
+   Các mẫu K80 đặt cỡ chữ bằng số px ở từng dòng, nên phóng cả tờ bằng zoom
+   rồi THU bề rộng trước khi phóng lại đúng tỉ lệ đó: ra giấy vẫn đúng bề rộng
+   đã căn (--k80-w), chỉ chữ to hơn và mỗi dòng ít chữ hơn. Tem dán lên hàng
+   (.k80-fixed) giữ nguyên, vì mã vạch trên tem có bề rộng cố định. */
+:root { --k80-w: 72mm; --k80-zoom: 1; }
+:root[data-k80-font="medium"] { --k80-zoom: 1.15; }
+:root[data-k80-font="large"] { --k80-zoom: 1.3; }
+:root[data-k80-font] .print-k80:not(.k80-fixed) {
+  zoom: var(--k80-zoom);
+  width: calc(var(--k80-w) / var(--k80-zoom)) !important;
+}
 .print-k80 table { width: 100%; border-collapse: collapse; }
 .print-k80 .dashed { border-top: 1px dashed #000; margin: 5px 0; }
 

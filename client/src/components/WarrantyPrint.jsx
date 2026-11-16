@@ -248,7 +248,7 @@ function TagLabel({ t, head, size, store, forPrint, pos }) {
 
 function TagK80({ t, head, store, widthMm, pos, last }) {
   return (
-    <div className="print-k80 text-black bg-white"
+    <div className="print-k80 k80-fixed text-black bg-white"
       style={{ width: `${widthMm}mm`, padding: '2mm', borderBottom: last ? 'none' : '1px dashed #000' }}>
       <div style={{ textAlign: 'center', fontWeight: 700 }}>{store.name}</div>
       <Barcode code={tagScanCode(t.code)} widthMm={widthMm - 10} heightPx={34} showText={false} />

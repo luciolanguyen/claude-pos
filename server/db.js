@@ -573,6 +573,19 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_customers_phone3 ON customers(phone3)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_si_unit ON sale_items(unit_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_pi_unit ON purchase_items(unit_id)');
 
+/* Chỉ mục theo mã hàng / mã chứng từ của các bảng dòng (16/11/2026). Thiếu
+   chúng thì mỗi câu "giá nhập gần nhất của món này" quét lại cả bảng dòng
+   nhập: 20.000 mã hàng × 40.000 dòng nhập làm màn hình bán hàng nạp danh mục
+   mất 42 giây, có chỉ mục còn 60 ms. Mở hoá đơn cũng quét cả bảng sale_items. */
+db.exec('CREATE INDEX IF NOT EXISTS idx_pi_product ON purchase_items(product_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_pi_purchase ON purchase_items(purchase_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_si_sale ON sale_items(sale_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_si_product ON sale_items(product_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_sri_return ON sale_return_items(return_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_sri_sale_item ON sale_return_items(sale_item_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_pri_return ON purchase_return_items(return_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_sci_sale ON sale_consign_items(sale_id)');
+
 /* Nối chứng từ CŨ vào mã đơn vị theo tên đã lưu. Chỉ đụng dòng còn trống,
    nên chạy lại mỗi lần khởi động vô hại; dòng có tên đơn vị đã bị xoá khỏi
    danh mục thì để trống — không đoán bừa. */

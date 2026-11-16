@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Search, Plus, X, UserPlus, Printer, Percent, Package, ShoppingCart, ArrowLeft,
   FileText, Grid3x3, Truck, Save, History, Eye, EyeOff, FolderOpen, AlertTriangle,
-  ClipboardList, MapPin, ShieldCheck, Trash2, Star, ReceiptText,
+  ClipboardList, ClipboardCheck, MapPin, ShieldCheck, Trash2, Star, ReceiptText,
   FolderTree, Layers, Zap, Check, Handshake, Lightbulb, GripVertical,
   Maximize2, Wallet, Camera,
 } from 'lucide-react';
@@ -523,10 +523,33 @@ export default function POS() {
       : t)));
   }, [activeId, setTabs]);
 
-  const { data: products, busy, reload } = useFetch(
-    () => api.posProducts({ warehouse_id: warehouseId }),
+  /* Danh mục cả tiệm: nạp đủ một lần khi mở màn hình / đổi kho. Tiệm có
+     20.000 mã thì một lần nạp là cả chục MB, nên thanh toán xong KHÔNG nạp
+     lại cả danh mục nữa — chỉ hỏi tồn của đúng những món vừa bán (xem
+     refreshStock). Nạp lại cả danh mục khi đã quá 10 phút, để giá / tên hàng
+     ai đó sửa ở máy khác cũng về tới quầy. */
+  const loaded = useRef({ at: 0, wh: null });
+  const { data: products, busy, reload, setData: setProducts } = useFetch(
+    () => api.posProducts({ warehouse_id: warehouseId }).then((d) => {
+      loaded.current = { at: Date.now(), wh: warehouseId };
+      return d;
+    }),
     [warehouseId], { skip: !warehouseId }
   );
+  const refreshStock = useCallback(async (ids) => {
+    if (Date.now() - loaded.current.at > 10 * 60 * 1000) { reload(); return; }
+    const list = [...new Set(ids.filter(Boolean))];
+    if (!list.length) return;
+    try {
+      const rows = await api.get('/products/pos/stock', { warehouse_id: warehouseId, ids: list.join(',') });
+      const m = new Map(rows.map((x) => [x.id, x.stock]));
+      setProducts((prev) => prev && prev.map((p) => (m.has(p.id) && p.stock !== m.get(p.id)
+        ? { ...p, stock: m.get(p.id) } : p)));
+    } catch { reload(); }
+  }, [warehouseId, reload, setProducts]);
+  /* Vòng quay chỉ hiện khi CHƯA có gì để xem (mở lần đầu / vừa đổi kho).
+     Nạp lại nền thì lưới cũ vẫn đứng đó, thu ngân bán tiếp được. */
+  const gridLoading = busy && (!products || loaded.current.wh !== warehouseId);
   const { data: customers, reload: reloadCustomers } = useFetch(() => api.customers({ active: 1 }), []);
   const { data: carriers } = useFetch(() => api.get('/carriers'), []);
   /* Chủ hàng vãng lai để chọn lúc thêm món mua hộ (tài liệu 24, phần 5.1) */
@@ -1319,7 +1342,7 @@ export default function POS() {
     if (tab.draftId) { try { await api.del(`/drafts/${tab.draftId}`); } catch { /* đã xoá */ } }
     dropTab(tab.id);
     setPayOpen(false);
-    reload();
+    refreshStock(tab.cart.map((l) => l.product_id));   // chỉ tồn món vừa bán, không nạp lại cả danh mục
     reloadCustomers();          // để dòng cảnh báo nợ cập nhật ngay
     /* Đếm lại nợ quá hạn: bán nợ xong mà khách vừa chạm mốc trễ hạn thì nút
        phải hiện ra ngay, không đợi tải lại trang. */
@@ -1330,10 +1353,35 @@ export default function POS() {
     return res;
   };
 
+  /* Phiếu soạn hàng TRƯỚC khi thu tiền (16/11/2026): khách chưa trả mà đã
+     cần người đi lấy hàng — đơn giao, khách đứng chờ, hay để thu ngân bán
+     song song trong lúc nhân viên soạn. Dựng từ giỏ đang mở, dùng chung mẫu
+     in phiếu soạn hàng (không có giá tiền). Vị trí kệ lấy từ danh mục. */
+  const buildPickSlip = () => {
+    const locOf = new Map((products || []).map((p) => [p.id, p.location]));
+    return {
+      code: 'CHƯA THANH TOÁN',
+      ts: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' '),
+      customer_name: customer?.name || 'Khách lẻ',
+      delivery_address: tab.delivery ? (deliveryBody(tab.delivery).delivery_address || 'giao') : null,
+      note: tab.note,
+      items: tab.cart.map((l, i) => ({
+        id: i, product_id: l.product_id, name_snapshot: l.name, sku: l.sku,
+        unit_name: l.unit_name, qty: l.qty, note: l.note, location: locOf.get(l.product_id) || null,
+      })),
+      consign_items: (tab.consign || []).map((c, i) => ({
+        id: i, name: c.name, unit_name: c.unit_name, qty: c.qty,
+      })),
+    };
+  };
+  const printPickSlip = () => setPrintQueue((q) => [...q,
+    { kind: 'pick', key: `pt${Date.now()}`, sale: buildPickSlip() }]);
+
   /* Hoá đơn tạm tính: dựng đối tượng giống hoá đơn thật để dùng chung mẫu in */
   const buildProvisional = () => ({
     code: 'TẠM TÍNH',
-    ts: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    /* Giờ máy, không phải giờ UTC (trước đây in lệch 7 tiếng) */
+    ts: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' '),
     customer_name: customer?.name || 'Khách lẻ',
     customer_phone: customer?.phone,
     customer_address: customer?.address,
@@ -1718,7 +1766,7 @@ export default function POS() {
           />
 
           <div ref={gridRef} className="flex-1 overflow-y-auto p-3">
-            {busy ? <Spinner label="Đang tải hàng hoá..." />
+            {gridLoading ? <Spinner label="Đang tải hàng hoá..." />
               /* Chế độ ẩn lưới: chỉ vẽ khi đã gõ tìm hoặc đã lọc nhóm hàng.
                  Chọn nhóm cũng là một ý muốn xem hàng, nên tính luôn. */
               : hideGrid && !search.trim() && !catSet ? (
@@ -2136,7 +2184,7 @@ export default function POS() {
             </div>
 
             {/* Hàng nút phụ */}
-            <div className="grid grid-cols-5 gap-1.5 mb-2">
+            <div className="grid grid-cols-6 gap-1.5 mb-2">
               <button onClick={() => setOrderOpen(true)} disabled={!tab.cart.length}
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs"
                 title="Khách hỏi món hết hàng: biến giỏ này thành đơn đặt, nhận cọc luôn">
@@ -2160,6 +2208,12 @@ export default function POS() {
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs">
                 <Printer size={14} aria-hidden="true" />
                 Tạm tính
+              </button>
+              <button onClick={printPickSlip} disabled={!totals.count}
+                className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs"
+                title="In phiếu soạn hàng cho nhân viên đi lấy hàng — không có giá, khách chưa trả tiền vẫn in được">
+                <ClipboardCheck size={14} aria-hidden="true" />
+                Soạn hàng
               </button>
               <button onClick={clearTab} disabled={!totals.count}
                 className="btn btn-sm btn-outline flex-col !gap-0.5 !py-1.5 text-2xs !text-danger">

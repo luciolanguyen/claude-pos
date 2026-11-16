@@ -448,6 +448,20 @@ r.get('/products/filters', (req, res) => {
   });
 });
 
+/** Tồn kho hiện tại của vài mã hàng — màn hình bán hàng gọi sau khi thanh
+ *  toán để cập nhật đúng những món vừa bán, khỏi nạp lại cả danh mục
+ *  (20.000 mã là cả chục MB). `?warehouse_id=1&ids=3,7,12` → [{ id, stock }] */
+r.get('/products/pos/stock', (req, res) => {
+  const warehouseId = Number(req.query.warehouse_id) || 1;
+  const ids = [...new Set(String(req.query.ids || '').split(',')
+    .map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 500);
+  if (!ids.length) return res.json([]);
+  res.json(all(`
+    SELECT p.id, COALESCE(s.qty, 0) AS stock
+      FROM products p LEFT JOIN stock s ON s.product_id = p.id AND s.warehouse_id = ?
+     WHERE p.id IN (${ids.map(() => '?').join(',')})`, [warehouseId, ...ids]));
+});
+
 /** Danh mục rút gọn cho màn hình POS: kèm đơn vị + giá theo mọi bảng giá. */
 r.get('/products/pos', (req, res) => {
   const warehouseId = Number(req.query.warehouse_id) || 1;
